@@ -80,6 +80,7 @@ connection_thread = None
 replay_thread = None
 processing_thread = None
 stop_event = threading.Event()
+app = Dash(__name__, external_stylesheets=[dbc.themes.SLATE], suppress_callback_exceptions=True)
 data_queue = queue.Queue()
 data_store = {}
 timing_state = {} # Holds persistent timing state per driver
@@ -1348,7 +1349,7 @@ app.layout = dbc.Container([
         dbc.Col(dcc.Graph(id='track-map-graph', style={'height': '60vh'})) # Adjust height as needed
     ], className="mt-3"), # Add margin-top
     # --- END ADDED ---
-    dcc.Interval(id='interval-component', interval=100, n_intervals=0),
+    dcc.Interval(id='interval-component', interval=200, n_intervals=0),
 ], fluid=True)
 
 # --- Dash Callbacks ---
@@ -1793,8 +1794,24 @@ def update_track_map(n):
 if __name__ == '__main__':
     main_logger.info("Application starting...")
     stop_event.clear()
+    try:
+        dash_logger = logging.getLogger('werkzeug')
+        dash_logger.setLevel(logging.ERROR)
+        #dash_logger.disabled
+        main_logger.info("Set Werkzeug log level to ERROR.")
+    except Exception as e_werkzeug:
+        main_logger.error(f"Failed to configure Werkzeug logger: {e_werkzeug}")
+    try:
+        # Make sure 'app' is your Dash app object
+        if app and hasattr(app, 'logger'):
+             app.logger.disabled = True
+             main_logger.info("Attempted to disable Flask app logger.")
+        else:
+             main_logger.warning("Flask app object 'app' not found or has no logger attribute here.")
+    except Exception as e_flask:
+        main_logger.error(f"Failed to disable Flask app logger: {e_flask}")
+    # --- END ADDED ---
     def run_dash():
-        global app
         main_logger.info("Dash thread started.")
         try:
             app.run(debug=False, host='0.0.0.0', port=8050, use_reloader=False)
@@ -1882,6 +1899,7 @@ if __name__ == '__main__':
             current_state = app_state.app_status["state"]
             conn_thread_obj = connection_thread
             replay_thread_obj = replay_thread
+            dash_thread_obj = dash_thread
         if current_state in ["Live", "Connecting", "Stopping"] or (conn_thread_obj and conn_thread_obj.is_alive()):
             main_logger.info("Cleanup: Stopping connection...")
             stop_connection()
@@ -1893,11 +1911,11 @@ if __name__ == '__main__':
             processing_thread.join(timeout=3) # Wait max 3 seconds
             if processing_thread.is_alive():
                 main_logger.warning("Data Processing thread did not exit cleanly.")
-        if dash_thread and dash_thread.is_alive():
-            main_logger.info("Waiting for Dash thread...")
-            dash_thread.join(timeout=2)
-            if dash_thread.is_alive():
-                main_logger.warning("Dash thread didn't exit cleanly.")
+        #if dash_thread and dash_thread.is_alive():
+#            main_logger.info("Waiting for Dash thread...")
+#            dash_thread.join(timeout=3)
+#            if dash_thread.is_alive():
+#                main_logger.warning("Dash thread didn't exit cleanly.")
         close_database()
         local_live_data_file = globals().get('app_state.live_data_file') # Use local var for check
         if local_live_data_file and not local_live_data_file.closed:
