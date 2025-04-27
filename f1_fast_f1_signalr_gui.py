@@ -11,6 +11,7 @@ import sys
 import os
 import queue
 import sqlite3
+import app_state
 import numpy as np
 import plotly.graph_objects as go # Make sure this is imported at the top
 
@@ -57,7 +58,7 @@ DEFAULT_REPLAY_FILENAME = "2023-yas-marina-quali.data.txt" # Default replay file
 
 # --- Logging Setup ---
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-log_level = logging.DEBUG # Change to logging.DEBUG for more detail if needed
+log_level = logging.INFO # Change to logging.DEBUG for more detail if needed
 
 # Main application logger
 main_logger = logging.getLogger("F1App")
@@ -77,6 +78,7 @@ if not signalr_logger.hasHandlers(): signalr_logger.addHandler(signalr_handler)
 hub_connection = None
 connection_thread = None
 replay_thread = None
+processing_thread = None
 stop_event = threading.Event()
 data_queue = queue.Queue()
 data_store = {}
@@ -84,9 +86,6 @@ timing_state = {} # Holds persistent timing state per driver
 track_status_data = {} # To store TrackStatus info (Status, Message)
 session_details = {} # To store SessionInfo/SessionData details
 track_coordinates_cache = {'x': None, 'y': None, 'range_x': None, 'range_y': None, 'rotation': None, 'corner_x': None, 'corner_y': None, 'session_key': None} # Expanded cache
-app_status = {"state": "Idle", "connection": "Disconnected", "subscribed_streams": [], "last_heartbeat": None}
-app_state_lock = threading.Lock()
-live_data_file = None
 db_conn = None
 db_cursor = None
 db_lock = threading.Lock()
@@ -358,7 +357,7 @@ def _process_timing_data(data):
          main_logger.warning(f"Unexpected TimingData format received: {type(data)}")
 
 def _process_track_status(data):
-    """Handles TrackStatus data. MUST be called within app_state_lock."""
+    """Handles TrackStatus data. MUST be called within app_state.app_state_lock."""
     global track_status_data # Access the global variable
 
     if not isinstance(data, dict):
@@ -377,7 +376,7 @@ def _process_track_status(data):
         # TODO: Add logic here if you need to trigger immediate UI updates based on status change
 
 def _process_position_data(data):
-    """Handles Position data. MUST be called within app_state_lock."""
+    """Handles Position data. MUST be called within app_state.app_state_lock."""
     global timing_state
 
     if 'timing_state' not in globals():
@@ -422,7 +421,7 @@ def _process_position_data(data):
                 main_logger.debug(f"Updated Position for {car_number_str}: X={x_pos}, Y={y_pos}")
 
 def _process_car_data(data):
-    """Handles CarData. MUST be called within app_state_lock."""
+    """Handles CarData. MUST be called within app_state.app_state_lock."""
     global timing_state # Use timing_state as the main driver data store
 
     if 'timing_state' not in globals():
@@ -498,7 +497,7 @@ def _process_car_data(data):
 
 def _process_session_data(data):
     """ Processes SessionData updates (like status).
-        MUST be called within app_state_lock.
+        MUST be called within app_state.app_state_lock.
     """
     global session_details # Access the global dictionary
 
@@ -529,7 +528,7 @@ def _process_session_data(data):
 
 def _process_session_info(data):
     """ Processes SessionInfo data and stores it in the global session_details dict.
-        MUST be called within app_state_lock.
+        MUST be called within app_state.app_state_lock.
     """
     global session_details # Access the global dictionary
 
@@ -599,140 +598,152 @@ def rotate_coords(x, y, angle_deg):
     y_rotated = x * np.sin(angle_rad) + y * np.cos(angle_rad)
     return x_rotated, y_rotated
 
-def process_data_queue():
-    global data_store, app_status, live_data_file, db_cursor, timing_state # No fastf1 map needed
-    processed_count = 0
-    max_process = 100
+def data_processing_loop():
+    global data_store, db_cursor, timing_state # No fastf1 map needed
+    # processed_count = 0
+    # max_process = 100
 
-    while not data_queue.empty() and processed_count < max_process:
-        processed_count += 1
-        item = None # Initialize item to None for this iteration
+    while not stop_event.is_set():
+        # processed_count += 1
         try:
-            item = data_queue.get_nowait()
-            # Expect item = {"stream": stream_name, "data": data, "timestamp": timestamp}
-            # OR item = {"stream": None, "data": {"R":{...}}, "timestamp": timestamp} for snapshot
-
-            timestamp = item['timestamp']
-            top_level_data = item['data']
-            top_level_stream_name = item['stream']
-            streams_to_process_this_item = {} # Initialize dictionary for this item
-
-            # --- Check for initial snapshot structure 'R' ---
-            if isinstance(top_level_data, dict) and 'R' in top_level_data:
-                 main_logger.info("Processing initial snapshot message block (R:)...")
-                 initial_snapshot_data = top_level_data.get('R', {})
-                 if isinstance(initial_snapshot_data, dict):
-                     # Extract streams from within the 'R' dictionary
-                     for stream_name_key, stream_data_value in initial_snapshot_data.items():
-                          streams_to_process_this_item[stream_name_key] = stream_data_value # Store raw data
-                 else:
-                     main_logger.warning(f"Snapshot block 'R' contained non-dict data: {type(initial_snapshot_data)}")
+            item = None # Initialize item to None for this iteration
+            try:
+                item = data_queue.get(block=True, timeout=0.2)
+                # Expect item = {"stream": stream_name, "data": data, "timestamp": timestamp}
+                # OR item = {"stream": None, "data": {"R":{...}}, "timestamp": timestamp} for snapshot
+    
+                timestamp = item['timestamp']
+                top_level_data = item['data']
+                top_level_stream_name = item['stream']
+                streams_to_process_this_item = {} # Initialize dictionary for this item
+    
+                # --- Check for initial snapshot structure 'R' ---
+                if isinstance(top_level_data, dict) and 'R' in top_level_data:
+                     main_logger.info("Processing initial snapshot message block (R:)...")
+                     initial_snapshot_data = top_level_data.get('R', {})
+                     if isinstance(initial_snapshot_data, dict):
+                         # Extract streams from within the 'R' dictionary
+                         for stream_name_key, stream_data_value in initial_snapshot_data.items():
+                              streams_to_process_this_item[stream_name_key] = stream_data_value # Store raw data
+                     else:
+                         main_logger.warning(f"Snapshot block 'R' contained non-dict data: {type(initial_snapshot_data)}")
+                         data_queue.task_done() # Mark done even if skipped
+                         continue
+    
+                # --- Check for normal message structure 'M' ---
+                elif isinstance(top_level_data, dict) and 'M' in top_level_data:
+                     main_logger.debug("Processing standard message block (M:)...")
+                     if isinstance(top_level_data['M'], list):
+                         for msg_container in top_level_data['M']:
+                              if isinstance(msg_container, dict) and msg_container.get("M") == "feed":
+                                  msg_args = msg_container.get("A")
+                                  if isinstance(msg_args, list) and len(msg_args) >= 2:
+                                       stream_name = msg_args[0]
+                                       stream_data = msg_args[1]
+                                       # Allow individual message timestamp override if present
+                                       if len(msg_args) > 2: timestamp = msg_args[2]
+                                       streams_to_process_this_item[stream_name] = stream_data
+                # --- Handle case where the queued item IS the direct stream data ---
+                elif top_level_stream_name:
+                     main_logger.debug(f"Processing direct stream message for: {top_level_stream_name}")
+                     streams_to_process_this_item[top_level_stream_name] = top_level_data
+    
+                else:
+                     # Unexpected structure
+                     main_logger.warning(f"Skipping queue item with unexpected structure: stream={top_level_stream_name}, data_type={type(top_level_data)}")
                      data_queue.task_done() # Mark done even if skipped
                      continue
-
-            # --- Check for normal message structure 'M' ---
-            elif isinstance(top_level_data, dict) and 'M' in top_level_data:
-                 main_logger.debug("Processing standard message block (M:)...")
-                 if isinstance(top_level_data['M'], list):
-                     for msg_container in top_level_data['M']:
-                          if isinstance(msg_container, dict) and msg_container.get("M") == "feed":
-                              msg_args = msg_container.get("A")
-                              if isinstance(msg_args, list) and len(msg_args) >= 2:
-                                   stream_name = msg_args[0]
-                                   stream_data = msg_args[1]
-                                   # Allow individual message timestamp override if present
-                                   if len(msg_args) > 2: timestamp = msg_args[2]
-                                   streams_to_process_this_item[stream_name] = stream_data
-            # --- Handle case where the queued item IS the direct stream data ---
-            elif top_level_stream_name:
-                 main_logger.debug(f"Processing direct stream message for: {top_level_stream_name}")
-                 streams_to_process_this_item[top_level_stream_name] = top_level_data
-
-            else:
-                 # Unexpected structure
-                 main_logger.warning(f"Skipping queue item with unexpected structure: stream={top_level_stream_name}, data_type={type(top_level_data)}")
-                 data_queue.task_done() # Mark done even if skipped
-                 continue
-
-            # --- If no streams were extracted, skip further processing for this item ---
-            if not streams_to_process_this_item:
-                main_logger.debug("No processable streams found in the queue item.")
-                data_queue.task_done()
+    
+                # --- If no streams were extracted, skip further processing for this item ---
+                if not streams_to_process_this_item:
+                    main_logger.debug("No processable streams found in the queue item.")
+                    data_queue.task_done()
+                    continue
+    
+                # --- Loop through streams found in the message ---
+                processed_data_for_saving = {} # Store processed/decompressed data for saving
+                for stream_name_raw, stream_data in streams_to_process_this_item.items():
+                    stream_name = stream_name_raw
+                    actual_data = stream_data
+    
+                    # Decompress if needed
+                    if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
+                         stream_name = stream_name_raw[:-2]
+                         actual_data = _decode_and_decompress(stream_data)
+                         if actual_data is None:
+                              main_logger.warning(f"Failed to decompress {stream_name_raw}.")
+                              continue # Skip processing this specific stream
+    
+                    processed_data_for_saving[stream_name] = actual_data # Store for saving later
+    
+                    # --- Process individual streams (Update state) ---
+                    with app_state.app_state_lock: # Lock for timing_state and data_store updates
+                        data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
+    
+                        # Specific stream handlers
+                        if stream_name == "Heartbeat":
+                            app_state.app_status["last_heartbeat"] = timestamp
+                        elif stream_name == "DriverList":
+                            _process_driver_list(actual_data) # Existing handler
+                        elif stream_name == "TimingData":
+                            _process_timing_data(actual_data) # Existing handler
+                        elif stream_name == "SessionInfo":
+                             _process_session_info(actual_data) # Existing handler
+                        # --- ADDED Stream Handlers ---
+                        elif stream_name == "SessionData":
+                             _process_session_data(actual_data) # Call the new handler
+                        # --- END ADDED ---
+                        elif stream_name == "TrackStatus":
+                             _process_track_status(actual_data) # Call new handler
+                        elif stream_name == "CarData":
+                             _process_car_data(actual_data) # Call new handler
+                        elif stream_name == "Position":
+                            _process_position_data(actual_data) # Call the position handler
+                        # --- END ADDED Stream Handlers ---
+                        # Add other handlers here (WeatherData, TimingStats, etc.)
+                        # elif stream_name == "WeatherData":
+                        #    _process_weather_data(actual_data) # Need to create this function
+                        else:
+                            # Optional: Log if you want to know about unhandled streams that made it this far
+                            main_logger.debug(f"No specific handler for stream: {stream_name}")
+    
+                # --- Database/File saving (Done AFTER processing all streams in the item) ---
+                # Check state BEFORE trying to save to DB
+                with app_state.app_state_lock:
+                    # Read the current state safely
+                    is_currently_live = app_state.app_status.get('state') == 'Live'
+                    # Also check if db_cursor is valid (it should be None during replay now)
+                    db_is_ready = db_cursor is not None
+                
+                if is_currently_live and db_is_ready:
+                    # Only save to DB if in Live state and DB is initialized
+                    for stream_name_saved, data_saved in processed_data_for_saving.items():
+                        # Make sure save_to_database handles potential errors gracefully
+                        save_to_database(stream_name_saved, data_saved, timestamp)
+    
+                data_queue.task_done() # Mark the original queue item as done
+    
+            except queue.Empty:
                 continue
+                #break # No more items
+        except Exception as e: # <<< Catch ALL exceptions within the while loop's iteration
+            # Log the full traceback to understand *why* the thread might be stopping
+            main_logger.error(f"!!! Unhandled exception in data_processing_loop !!! Error: {e}", exc_info=True)
+            # Depending on the error, you might want to break the loop or attempt recovery
+            # For now, we just log and continue, but if it repeats rapidly, the thread might still be problematic.
+            # Consider adding a small sleep here if errors are continuous: time.sleep(1)
 
-            # --- Loop through streams found in the message ---
-            processed_data_for_saving = {} # Store processed/decompressed data for saving
-            for stream_name_raw, stream_data in streams_to_process_this_item.items():
-                stream_name = stream_name_raw
-                actual_data = stream_data
-
-                # Decompress if needed
-                if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
-                     stream_name = stream_name_raw[:-2]
-                     actual_data = _decode_and_decompress(stream_data)
-                     if actual_data is None:
-                          main_logger.warning(f"Failed to decompress {stream_name_raw}.")
-                          continue # Skip processing this specific stream
-
-                processed_data_for_saving[stream_name] = actual_data # Store for saving later
-
-                # --- Process individual streams (Update state) ---
-                with app_state_lock: # Lock for timing_state and data_store updates
-                    data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
-
-                    # Specific stream handlers
-                    if stream_name == "Heartbeat":
-                        app_status["last_heartbeat"] = timestamp
-                    elif stream_name == "DriverList":
-                        _process_driver_list(actual_data) # Existing handler
-                    elif stream_name == "TimingData":
-                        _process_timing_data(actual_data) # Existing handler
-                    elif stream_name == "SessionInfo":
-                         _process_session_info(actual_data) # Existing handler
-                    # --- ADDED Stream Handlers ---
-                    elif stream_name == "SessionData":
-                         _process_session_data(actual_data) # Call the new handler
-                    # --- END ADDED ---
-                    elif stream_name == "TrackStatus":
-                         _process_track_status(actual_data) # Call new handler
-                    elif stream_name == "CarData":
-                         _process_car_data(actual_data) # Call new handler
-                    elif stream_name == "Position":
-                        _process_position_data(actual_data) # Call the position handler
-                    # --- END ADDED Stream Handlers ---
-                    # Add other handlers here (WeatherData, TimingStats, etc.)
-                    # elif stream_name == "WeatherData":
-                    #    _process_weather_data(actual_data) # Need to create this function
-                    else:
-                        # Optional: Log if you want to know about unhandled streams that made it this far
-                        main_logger.debug(f"No specific handler for stream: {stream_name}")
-
-            # --- Database/File saving (Done AFTER processing all streams in the item) ---
-            for stream_name_saved, data_saved in processed_data_for_saving.items():
-                  save_to_database(stream_name_saved, data_saved, timestamp)
-
-            if live_data_file and not live_data_file.closed:
+            # Ensure task_done is called even if error occurred after get() but before original task_done()
+            # Note: This might mark a task done even if processing failed halfway.
+            if item is not None:
                 try:
-                    # Save the original item structure to the live file
-                    live_data_file.write(json.dumps(item) + "\n")
-                except TypeError as e: main_logger.error(f"JSON Error (live file): {e}", exc_info=False)
-                except Exception as e: main_logger.error(f"Live file write error: {e}", exc_info=True)
+                    app_state.data_queue.task_done()
+                    main_logger.info("Marked task done after catching exception.")
+                except (ValueError, AttributeError, Exception):
+                     main_logger.warning("Could not mark task done after exception.")
+                     pass # Ignore errors during cleanup after error
 
-            data_queue.task_done() # Mark the original queue item as done
-
-        except queue.Empty:
-            break # No more items
-        except Exception as e:
-            main_logger.error(f"Outer queue processing error for item {item}: {e}", exc_info=True)
-            try: data_queue.task_done() # Mark done even on error
-            except ValueError: pass
-            except AttributeError: pass # Handle cases where item might be None if error occurred early
-
-# --- Ensure Helper functions exist and are correct ---
-# _process_driver_list(data) - Use version from previous response (stream only TLA)
-# _process_timing_data(data) - Use version from previous response
-# _process_session_info(data) - Placeholder or implement as needed
-# _decode_and_decompress(message) - Should exist from original code
+    main_logger.info("Data processing thread finished cleanly (stop_event set).") # Changed log message
 
 # --- Database Functions ---
 def init_database(filename):
@@ -763,10 +774,10 @@ def save_to_database(stream_name, data, timestamp):
     # Check connection and cursor existence *before* trying to lock/save
     if not db_conn or not db_cursor:
         # Log only if it seems like it *should* be open (e.g., during live feed/replay)
-        with app_state_lock:
-            app_state = app_status["state"]
-        if app_state in ["Live", "Replaying", "Connecting", "Initializing"]:
-             main_logger.warning(f"DB save skipped: db_conn ({db_conn is not None}) or db_cursor ({db_cursor is not None}) is None during active state '{app_state}'.")
+        with app_state.app_state_lock:
+            local_app_state = app_state.app_status["state"]
+        if local_app_state in ["Live", "Replaying", "Connecting", "Initializing"]:
+             main_logger.warning(f"DB save skipped: db_conn ({db_conn is not None}) or db_cursor ({db_cursor is not None}) is None during active state '{local_app_state}'.")
         return # Exit function if no valid connection/cursor
 
     try:
@@ -847,92 +858,91 @@ def on_error(error):
         main_logger.warning(f"Ignoring SignalR error (closed): {error}")
         return
     main_logger.error(f"SignalR err cb: {error} ({type(error).__name__})")
-    with app_state_lock:
-        if app_status["state"] not in ["Error", "Stopping", "Stopped"]:
-            app_status.update({"connection": f"SignalR Error: {type(error).__name__}", "state": "Error"})
+    with app_state.app_state_lock:
+        if app_state.app_status["state"] not in ["Error", "Stopping", "Stopped"]:
+            app_state.app_status.update({"connection": f"SignalR Error: {type(error).__name__}", "state": "Error"})
 
 def on_close():
     main_logger.warning("SignalR close cb.")
-    with app_state_lock:
-        if app_status["state"] not in ["Stopping", "Stopped", "Error", "Playback Complete"]:
+    with app_state.app_state_lock:
+        if app_state.app_status["state"] not in ["Stopping", "Stopped", "Error", "Playback Complete"]:
              main_logger.warning("Conn closed unexpectedly.")
-             app_status.update({"connection": "Closed Unexpectedly", "state": "Stopped"})
+             app_state.app_status.update({"connection": "Closed Unexpectedly", "state": "Stopped"})
 
 def on_open():
     main_logger.info("SignalR open cb.")
-    with app_state_lock:
-        if app_status["state"] == "Connecting":
-            app_status.update({"connection": "Connected, Subscribing", "state": "Live"})
+    with app_state.app_state_lock:
+        if app_state.app_status["state"] == "Connecting":
+            app_state.app_status.update({"connection": "Connected, Subscribing", "state": "Live"})
         else:
-            main_logger.warning(f"on_open unexpected state: {app_status['state']}.")
-            app_status["connection"] = "Connected (out of sync?)"
+            main_logger.warning(f"on_open unexpected state: {app_state.app_status['state']}.")
+            app_state.app_status["connection"] = "Connected (out of sync?)"
     temp_hub = hub_connection
     if temp_hub:
         try:
             main_logger.info(f"Subscribing to: {STREAMS_TO_SUBSCRIBE}")
             temp_hub.invoke("Subscribe", STREAMS_TO_SUBSCRIBE)
-            with app_state_lock:
-                app_status["subscribed_streams"] = STREAMS_TO_SUBSCRIBE
-                if app_status["state"] == "Live":
-                    app_status["connection"] = "Live / Subscribed"
+            with app_state.app_state_lock:
+                app_state.app_status["subscribed_streams"] = STREAMS_TO_SUBSCRIBE
+                if app_state.app_status["state"] == "Live":
+                    app_state.app_status["connection"] = "Live / Subscribed"
             main_logger.info("Subscribed OK.")
         except (HubConnectionError, HubError) as e:
             main_logger.error(f"Sub error: {e}", exc_info=True)
-            with app_state_lock:
-                app_status.update({"connection": f"Sub Error: {type(e).__name__}", "state": "Error"})
+            with app_state.app_state_lock:
+                app_state.app_status.update({"connection": f"Sub Error: {type(e).__name__}", "state": "Error"})
             if not stop_event.is_set():
                 stop_event.set()
         except Exception as e:
             main_logger.error(f"Unexpected sub error: {e}", exc_info=True)
-            with app_state_lock:
-                app_status.update({"connection": f"Unexpected Sub Error: {type(e).__name__}", "state": "Error"})
+            with app_state.app_state_lock:
+                app_state.app_status.update({"connection": f"Unexpected Sub Error: {type(e).__name__}", "state": "Error"})
             if not stop_event.is_set():
                 stop_event.set()
     else:
         main_logger.error("on_open: hub_connection None.")
-        with app_state_lock:
-            app_status.update({"connection": "Sub Failed (No Hub)", "state": "Error"})
+        with app_state.app_state_lock:
+            app_state.app_status.update({"connection": "Sub Failed (No Hub)", "state": "Error"})
         if not stop_event.is_set():
             stop_event.set()
 
 def start_signalr_connection():
-    global live_data_file
-    global hub_connection, connection_thread, live_data_file, db_conn, db_cursor, stop_event, timing_state
+    global hub_connection, connection_thread, db_conn, db_cursor, stop_event, timing_state
     if connection_thread and connection_thread.is_alive():
         main_logger.warning("Conn thread running.")
         return
     stop_event.clear()
     main_logger.debug("Stop event cleared (start conn).")
-    with app_state_lock:
-        app_status.update({"state": "Initializing", "connection": "Negotiating", "subscribed_streams": [], "last_heartbeat": None})
+    with app_state.app_state_lock:
+        app_state.app_status.update({"state": "Initializing", "connection": "Negotiating", "subscribed_streams": [], "last_heartbeat": None})
         data_store.clear()
         timing_state.clear()
     connection_url = build_connection_url(NEGOTIATE_URL_BASE, HUB_NAME)
     if not connection_url:
         main_logger.error("Build URL fail.")
-        with app_state_lock:
-            app_status.update({"state": "Error", "connection": "Negotiation Failed"})
+        with app_state.app_state_lock:
+            app_state.app_status.update({"state": "Error", "connection": "Negotiation Failed"})
         return
     timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     data_filename = DATA_FILENAME_TEMPLATE.format(timestamp=timestamp_str)
     db_filename = DATABASE_FILENAME_TEMPLATE.format(timestamp=timestamp_str)
     if not init_database(db_filename):
         main_logger.error("DB init fail.")
-        with app_state_lock:
-            app_status.update({"state": "Error", "connection": "DB Init Failed"})
+        with app_state.app_state_lock:
+            app_state.app_status.update({"state": "Error", "connection": "DB Init Failed"})
         return
     try:
-        if live_data_file and not live_data_file.closed:
+        if app_state.live_data_file and not app_state.live_data_file.closed:
             main_logger.warning("Closing old live file.")
-            live_data_file.close()
-        live_data_file = open(data_filename, 'w', encoding='utf-8')
+            app_state.live_data_file.close()
+        app_state.live_data_file = open(data_filename, 'w', encoding='utf-8')
         main_logger.info(f"Live data file: {data_filename}")
     except IOError as e:
         main_logger.error(f"Live file open error: {e}", exc_info=True)
-        live_data_file = None
+        app_state.live_data_file = None
         close_database()
-        with app_state_lock:
-            app_status.update({"state": "Error", "connection": "File Open Failed"})
+        with app_state.app_state_lock:
+            app_state.app_status.update({"state": "Error", "connection": "File Open Failed"})
         return
     hub_connection = None
     try:
@@ -942,25 +952,24 @@ def start_signalr_connection():
     except Exception as e:
         main_logger.error(f"Hub build error: {e}", exc_info=True)
         close_database()
-        if live_data_file and not live_data_file.closed:
+        if app_state.live_data_file and not app_state.live_data_file.closed:
             try:
-                live_data_file.close()
+                app_state.live_data_file.close()
             except Exception as file_e:
                  main_logger.error(f"Error closing live data file during hub build cleanup: {file_e}")
-        live_data_file = None
-        with app_state_lock:
-            app_status.update({"state": "Error", "connection": "Hub Build Failed"})
+        app_state.live_data_file = None
+        with app_state.app_state_lock:
+            app_state.app_status.update({"state": "Error", "connection": "Hub Build Failed"})
         return
     hub_connection.on_open(on_open)
     hub_connection.on_close(on_close)
     hub_connection.on_error(on_error)
     hub_connection.on("feed", handle_message)
-    with app_state_lock:
-        app_status.update({"state": "Connecting", "connection": "Socket Connecting"})
+    with app_state.app_state_lock:
+        app_state.app_status.update({"state": "Connecting", "connection": "Socket Connecting"})
 
     def connect():
         # Moved global declaration here
-        global live_data_file
         try:
             if not hub_connection:
                 main_logger.error("Hub None (thread).")
@@ -974,19 +983,19 @@ def start_signalr_connection():
             main_logger.info("Conn loop finished.")
         except UnAuthorizedHubError as e:
             main_logger.error(f"Auth error: {e}", exc_info=True)
-            with app_state_lock:
-                app_status.update({"connection": "Auth Failed", "state": "Error"})
+            with app_state.app_state_lock:
+                app_state.app_status.update({"connection": "Auth Failed", "state": "Error"})
         except HubConnectionError as e:
             main_logger.error(f"Hub connect error: {e}", exc_info=True)
-            with app_state_lock:
-                 if app_status["state"] not in ["Stopping", "Stopped"]:
-                     app_status.update({"connection": f"Conn Error: {type(e).__name__}", "state": "Error"})
+            with app_state.app_state_lock:
+                 if app_state.app_status["state"] not in ["Stopping", "Stopped"]:
+                     app_state.app_status.update({"connection": f"Conn Error: {type(e).__name__}", "state": "Error"})
         except Exception as e:
             # This will now catch the AttributeError if connection_alive doesn't exist either
             main_logger.error(f"Unexpected conn thread error: {e}", exc_info=True)
-            with app_state_lock:
-                if app_status["state"] not in ["Stopping", "Stopped"]:
-                    app_status.update({"connection": f"Unexpected Error: {type(e).__name__}", "state": "Error"})
+            with app_state.app_state_lock:
+                if app_state.app_status["state"] not in ["Stopping", "Stopped"]:
+                    app_state.app_status.update({"connection": f"Unexpected Error: {type(e).__name__}", "state": "Error"})
         finally:
             main_logger.info("Conn thread cleanup...")
             temp_hub = hub_connection # Use local copy
@@ -1001,24 +1010,24 @@ def start_signalr_connection():
                 except Exception as e:
                     main_logger.error(f"Err stopping hub (finally): {e}", exc_info=True)
 
-            # Close file ('global live_data_file' declared at top of function)
-            if live_data_file and not live_data_file.closed:
-                main_logger.info(f"Closing live file: {live_data_file.name}")
+            # Close file ('global app_state.live_data_file' declared at top of function)
+            if app_state.live_data_file and not app_state.live_data_file.closed:
+                main_logger.info(f"Closing live file: {app_state.live_data_file.name}")
                 try:
-                    live_data_file.close()
+                    app_state.live_data_file.close()
                 except Exception as e:
                      main_logger.error(f"Err closing live file: {e}")
-                live_data_file = None # Reset global variable
+                app_state.live_data_file = None # Reset global variable
 
             close_database() # Close DB
 
             # Update status
-            with app_state_lock:
-                 if app_status["state"] not in ["Stopped", "Error", "Playback Complete"]:
-                     if stop_event.is_set() and app_status["state"] != "Stopping":
-                         app_status.update({"state": "Stopped", "connection": "Disconnected"})
-                     elif app_status["state"] != "Error":
-                         app_status.update({"state": "Stopped", "connection": "Disconnected / Thread End"})
+            with app_state.app_state_lock:
+                 if app_state.app_status["state"] not in ["Stopped", "Error", "Playback Complete"]:
+                     if stop_event.is_set() and app_state.app_status["state"] != "Stopping":
+                         app_state.app_status.update({"state": "Stopped", "connection": "Disconnected"})
+                     elif app_state.app_status["state"] != "Error":
+                         app_state.app_status.update({"state": "Stopped", "connection": "Disconnected / Thread End"})
             # Signal main thread if needed
             if not stop_event.is_set():
                 main_logger.info("Conn thread setting stop event.")
@@ -1034,22 +1043,22 @@ def start_signalr_connection():
 def stop_connection():
     global hub_connection, connection_thread, stop_event
     main_logger.info("Stop connection requested.")
-    with app_state_lock:
-        current_state = app_status["state"]
+    with app_state.app_state_lock:
+        current_state = app_state.app_status["state"]
         thread_running = connection_thread and connection_thread.is_alive()
     if current_state not in ["Connecting", "Live", "Stopping"] and not thread_running:
          main_logger.warning(f"Stop conn called, state={current_state}, thread_active={thread_running}. No active conn.")
          if not stop_event.is_set():
              stop_event.set()
-         with app_state_lock:
+         with app_state.app_state_lock:
              if current_state in ["Connecting", "Live"]:
-                 app_status.update({"state": "Stopped", "connection": "Disconnected (Force Stop)"})
+                 app_state.app_status.update({"state": "Stopped", "connection": "Disconnected (Force Stop)"})
          return
-    with app_state_lock:
+    with app_state.app_state_lock:
         if current_state == "Stopping":
             main_logger.info("Stop already in progress.")
             return
-        app_status.update({"state": "Stopping", "connection": "Disconnecting"})
+        app_state.app_status.update({"state": "Stopping", "connection": "Disconnecting"})
     stop_event.set()
     main_logger.debug("Stop event set.")
     temp_hub = hub_connection
@@ -1068,10 +1077,10 @@ def stop_connection():
             main_logger.warning("Connection thread did not join cleanly.")
         else:
             main_logger.info("Connection thread joined.")
-    with app_state_lock:
-        if app_status["state"] == "Stopping":
-            app_status.update({"state": "Stopped", "connection": "Disconnected"})
-        app_status["subscribed_streams"] = []
+    with app_state.app_state_lock:
+        if app_state.app_status["state"] == "Stopping":
+            app_state.app_status.update({"state": "Stopped", "connection": "Disconnected"})
+        app_state.app_status["subscribed_streams"] = []
     globals()['hub_connection'] = None
     globals()['connection_thread'] = None
     main_logger.info("Stop connection sequence complete.")
@@ -1085,22 +1094,29 @@ def replay_from_file(data_file_path, replay_speed=1.0):
     main_logger.debug("Stop event cleared (replay).")
     if not os.path.exists(data_file_path):
         main_logger.error(f"File not found: {data_file_path}")
-        with app_state_lock:
-            app_status.update({"state": "Error", "connection": f"File Not Found: {os.path.basename(data_file_path)}"})
+        with app_state.app_state_lock:
+            app_state.app_status.update({"state": "Error", "connection": f"File Not Found: {os.path.basename(data_file_path)}"})
         return
-    with app_state_lock:
-        app_status.update({"state": "Initializing", "connection": f"Preparing Replay: {os.path.basename(data_file_path)}", "subscribed_streams": [], "last_heartbeat": None})
+    with app_state.app_state_lock:
+        app_state.app_status.update({"state": "Initializing", "connection": f"Preparing Replay: {os.path.basename(data_file_path)}", "subscribed_streams": [], "last_heartbeat": None})
         data_store.clear()
         timing_state.clear() # Clear persistent state
+        
+    # --- MODIFICATION START: Disable DB Init for Replay ---
+    main_logger.info("Replay mode: Closing active DB connection (if any) and skipping init.")
+    close_database() # <<< ADD call to close existing connection
+    # Ensure global vars are None after closing (assuming close_database does this, or add explicitly)
+    # db_conn = None
+    # db_cursor = None
 
-    db_filename = os.path.splitext(data_file_path)[0] + ".db"
-    if not init_database(db_filename):
-        main_logger.error("Replay DB init fail.")
-        with app_state_lock:
-            app_status.update({"state": "Error", "connection": "Replay DB Init Failed"})
-        return
-    with app_state_lock:
-        app_status.update({"state": "Replaying", "connection": f"File: {os.path.basename(data_file_path)}", "subscribed_streams": ["Replay"]})
+    #db_filename = os.path.splitext(data_file_path)[0] + ".db"
+#    if not init_database(db_filename):
+#        main_logger.error("Replay DB init fail.")
+#        with app_state.app_state_lock:
+#            app_state.app_status.update({"state": "Error", "connection": "Replay DB Init Failed"})
+#        return
+    with app_state.app_state_lock:
+        app_state.app_status.update({"state": "Replaying", "connection": f"File: {os.path.basename(data_file_path)}", "subscribed_streams": ["Replay"]})
         
         def replay(): # The actual replay loop
             main_logger.info(f"Starting main replay loop: {data_file_path}, speed {replay_speed}")
@@ -1243,22 +1259,22 @@ def replay_from_file(data_file_path, replay_speed=1.0):
 	        # --- Exception handling & cleanup ---
             except FileNotFoundError:
 	            main_logger.error(f"Replay file not found: {data_file_path}")
-	            with app_state_lock:
-	                app_status.update({"state": "Error", "connection": "Replay File Error"})
+	            with app_state.app_state_lock:
+	                app_state.app_status.update({"state": "Error", "connection": "Replay File Error"})
             except Exception as e:
 	            main_logger.error(f"Error during playback: {e}", exc_info=True)
-	            with app_state_lock:
-	                app_status.update({"state": "Error", "connection": "Replay Runtime Error"})
+	            with app_state.app_state_lock:
+	                app_state.app_status.update({"state": "Error", "connection": "Replay Runtime Error"})
             finally:
 	             main_logger.info("Replay thread cleanup...")
 	             close_database()
-	             with app_state_lock:
-	                 current_state = app_status["state"]
+	             with app_state.app_state_lock:
+	                 current_state = app_state.app_status["state"]
 	                 if current_state not in ["Error", "Stopped", "Playback Complete"]:
 	                     if stop_event.is_set():
-	                          app_status.update({"state": "Stopped", "connection": "Disconnected"})
+	                          app_state.app_status.update({"state": "Stopped", "connection": "Disconnected"})
 	                     else:
-	                          app_status.update({"state": "Error", "connection": "Thread End Unexpectedly"})
+	                          app_state.app_status.update({"state": "Error", "connection": "Thread End Unexpectedly"})
 	             main_logger.info("Replay thread cleanup finished.")
 	             
     globals()['replay_thread'] = threading.Thread(target=replay, name="ReplayThread", daemon=True)
@@ -1268,23 +1284,23 @@ def replay_from_file(data_file_path, replay_speed=1.0):
 def stop_replay():
     global replay_thread, stop_event
     main_logger.info("Stop replay requested.")
-    with app_state_lock: current_state = app_status["state"]; thread_running = replay_thread and replay_thread.is_alive()
+    with app_state.app_state_lock: current_state = app_state.app_status["state"]; thread_running = replay_thread and replay_thread.is_alive()
     if not thread_running and current_state != "Replaying":
         main_logger.warning(f"Stop replay called, state={current_state}, thread_active={thread_running}.")
-        with app_state_lock:
-            if current_state == "Replaying": app_status.update({"state": "Stopped", "connection": "Disconnected (Force Stop)"})
+        with app_state.app_state_lock:
+            if current_state == "Replaying": app_state.app_status.update({"state": "Stopped", "connection": "Disconnected (Force Stop)"})
         return
-    with app_state_lock:
+    with app_state.app_state_lock:
         if current_state == "Stopping": main_logger.info("Stop already in progress."); return
-        app_status.update({"state": "Stopping", "connection": "Stopping Replay"})
+        app_state.app_status.update({"state": "Stopping", "connection": "Stopping Replay"})
     stop_event.set(); main_logger.debug("Stop event set for replay.")
     local_replay_thread = globals().get('replay_thread')
     if local_replay_thread and local_replay_thread.is_alive():
         main_logger.info("Waiting for replay thread join..."); local_replay_thread.join(timeout=5)
         if local_replay_thread.is_alive(): main_logger.warning("Replay thread did not join cleanly.")
         else: main_logger.info("Replay thread joined.")
-    with app_state_lock:
-        if app_status["state"] == "Stopping": app_status.update({"state": "Stopped", "connection": "Disconnected"})
+    with app_state.app_state_lock:
+        if app_state.app_status["state"] == "Stopping": app_state.app_status.update({"state": "Stopped", "connection": "Disconnected"})
     globals()['replay_thread'] = None
     main_logger.info("Stop replay sequence complete.")
 
@@ -1332,7 +1348,7 @@ app.layout = dbc.Container([
         dbc.Col(dcc.Graph(id='track-map-graph', style={'height': '60vh'})) # Adjust height as needed
     ], className="mt-3"), # Add margin-top
     # --- END ADDED ---
-    dcc.Interval(id='interval-component', interval=500, n_intervals=0),
+    dcc.Interval(id='interval-component', interval=100, n_intervals=0),
 ], fluid=True)
 
 # --- Dash Callbacks ---
@@ -1347,7 +1363,7 @@ app.layout = dbc.Container([
     Input('interval-component', 'n_intervals')
 )
 def update_output(n):
-    process_data_queue() # Process any pending data first
+    #process_data_queue() # Process any pending data first
 
     status_text = "State: Unknown"
     heartbeat_text = "Last HB: N/A"
@@ -1357,10 +1373,10 @@ def update_output(n):
     table_data = []
     timing_timestamp_text = "Waiting for TimingData..."
 
-    with app_state_lock:
+    with app_state.app_state_lock:
         # Update status and heartbeat displays
-        status_text = f"State: {app_status['state']} | Conn: {app_status['connection']}"
-        heartbeat_text = f"Last HB: {app_status['last_heartbeat'] or 'N/A'}"
+        status_text = f"State: {app_state.app_status['state']} | Conn: {app_state.app_status['connection']}"
+        heartbeat_text = f"Last HB: {app_state.app_status['last_heartbeat'] or 'N/A'}"
         
         # --- ADDED: Get and Format Track Status ---
         track_status_code = track_status_data.get('Status', '0')
@@ -1485,6 +1501,13 @@ def update_output(n):
             processed_table_data.sort(key=pos_sort_key)
             table_data = processed_table_data
         # --- End Timing Table Data ---
+    try:
+         # Log position of car '1' if it exists, just to see if it changes
+         pos_x_final = timing_state.get('1', {}).get('PositionData', {}).get('X', 'N/A')
+         main_logger.debug(f"UpdateOutput Final Check: Car 1 X = {pos_x_final}")
+    except Exception as log_ex:
+         main_logger.error(f"Error during final log check: {log_ex}")
+    # --- END Log ---
 
     # --- Return all outputs in correct order ---
     return (status_text, heartbeat_text, track_display_text,
@@ -1493,7 +1516,7 @@ def update_output(n):
 
 @app.callback( Output('start-button', 'disabled'), Output('stop-button', 'disabled'), Output('replay-button', 'disabled'), Output('replay-file-input', 'disabled'), Output('replay-speed-input', 'disabled'), Input('interval-component', 'n_intervals'))
 def update_button_states(n):
-    with app_state_lock: state = app_status['state']
+    with app_state.app_state_lock: state = app_state.app_status['state']
     is_idle = state in ["Idle", "Stopped", "Error", "Playback Complete"]; is_running = state in ["Connecting", "Live", "Replaying", "Initializing"]; is_stopping = state == "Stopping"
     start_disabled = is_running or is_stopping; replay_disabled = is_running or is_stopping; stop_disabled = is_idle; input_disabled = is_running or is_stopping
     return start_disabled, stop_disabled, replay_disabled, input_disabled, input_disabled
@@ -1503,20 +1526,20 @@ def handle_start_button(n_clicks):
     if n_clicks is None or n_clicks == 0: return dash.no_update
     main_logger.info(f"Start Live clicked (n={n_clicks}).")
     start_signalr_connection()
-    with app_state_lock: return f"State: {app_status['state']} | Conn: {app_status['connection']}"
+    with app_state.app_state_lock: return f"State: {app_state.app_status['state']} | Conn: {app_state.app_status['connection']}"
 
 @app.callback(Output('status-display', 'children', allow_duplicate=True), Input('stop-button', 'n_clicks'), prevent_initial_call=True)
 def handle_stop_button(n_clicks):
     if n_clicks is None or n_clicks == 0: return dash.no_update
     main_logger.info(f"Stop clicked (n={n_clicks}).")
     triggered_stop = False; current_state_on_click = "Unknown"
-    with app_state_lock: state = app_status['state']; current_state_on_click = state
+    with app_state.app_state_lock: state = app_state.app_status['state']; current_state_on_click = state
     if state in ["Replaying", "Initializing"]: stop_replay(); triggered_stop = True
     elif state in ["Live", "Connecting"]: stop_connection(); triggered_stop = True
     elif state == "Stopping": main_logger.info("Stop clicked while stopping.")
     else: main_logger.warning(f"Stop clicked in state {state}. Set stop event.");
     if not stop_event.is_set(): stop_event.set()
-    with app_state_lock: new_state = app_status['state']; new_conn = app_status['connection']
+    with app_state.app_state_lock: new_state = app_state.app_status['state']; new_conn = app_state.app_status['connection']
     if triggered_stop: return f"Stop req from '{current_state_on_click}'. New: {new_state} | {new_conn}"
     else: return f"Stop ignored ('{current_state_on_click}'). Current: {new_state} | {new_conn}"
 
@@ -1530,7 +1553,7 @@ def handle_replay_button(n_clicks, file_path, speed_val):
     file_path_to_use = file_path_cleaned if file_path_cleaned else DEFAULT_REPLAY_FILENAME
     main_logger.info(f"Replay file: {file_path_to_use}, speed: {speed}")
     replay_from_file(file_path_to_use, speed)
-    with app_state_lock: return f"State: {app_status['state']} | Conn: {app_status['connection']}"
+    with app_state.app_state_lock: return f"State: {app_state.app_status['state']} | Conn: {app_state.app_status['connection']}"
     
 @app.callback(
     Output('track-map-graph', 'figure'),
@@ -1553,7 +1576,7 @@ def update_track_map(n):
     current_session_key = None
 
     # --- Load track data: Check cache or fetch from API ---
-    with app_state_lock:
+    with app_state.app_state_lock:
         # 1. Identify Current Session Year and Circuit Key
         year = session_details.get('Year')
         circuit_key = session_details.get('CircuitKey')
@@ -1592,17 +1615,17 @@ def update_track_map(n):
 
                 # --- Extract data from API response ---
                 # --- TEMPORARY LOGS - Inspect API Response ---
-                main_logger.info(f"--- MultiViewer API Response Received (Keys) ---")
-                main_logger.info(f"Top-level Keys: {list(map_api_data.keys())}")
-                # Log specific parts to verify structure/existence:
-                main_logger.info(f"Rotation Key ('rotation'): {map_api_data.get('rotation')}")
-                main_logger.info(f"Corners Key ('corners') Type: {type(map_api_data.get('corners'))}")
-                main_logger.info(f"Track Key ('track') Type: {type(map_api_data.get('track'))}")
-                main_logger.info(f"Boundary Keys ('xMin', 'xMax', 'yMin', 'yMax'): "
-                                 f"{map_api_data.get('xMin')}, {map_api_data.get('xMax')}, "
-                                 f"{map_api_data.get('yMin')}, {map_api_data.get('yMax')}")
+                #main_logger.info(f"--- MultiViewer API Response Received (Keys) ---")
+#                main_logger.info(f"Top-level Keys: {list(map_api_data.keys())}")
+#                # Log specific parts to verify structure/existence:
+#                main_logger.info(f"Rotation Key ('rotation'): {map_api_data.get('rotation')}")
+#                main_logger.info(f"Corners Key ('corners') Type: {type(map_api_data.get('corners'))}")
+#                main_logger.info(f"Track Key ('track') Type: {type(map_api_data.get('track'))}")
+#                main_logger.info(f"Boundary Keys ('xMin', 'xMax', 'yMin', 'yMax'): "
+#                                 f"{map_api_data.get('xMin')}, {map_api_data.get('xMax')}, "
+#                                 f"{map_api_data.get('yMin')}, {map_api_data.get('yMax')}")
                 # You could even log the whole thing if it's not too large initially:
-                main_logger.info(f"Full API Response (snippet): {json.dumps(map_api_data, indent=2)[:1000]}")
+                # main_logger.info(f"Full API Response (snippet): {json.dumps(map_api_data, indent=2)[:1000]}")
                 # --- END TEMPORARY LOGS ---
 
                                 # --- CORRECTED Data Extraction ---
@@ -1720,9 +1743,9 @@ def update_track_map(n):
     if drivers_x_raw:
          # Ensure raw coords are numbers before rotating
          # --- TEMPORARY LOGS ---
-         main_logger.info(f"Applying rotation angle: {rotation_angle}") # Log angle used
-         main_logger.info(f"Raw X[:5]: {drivers_x_raw[:5]}")
-         main_logger.info(f"Raw Y[:5]: {drivers_y_raw[:5]}")
+        # main_logger.info(f"Applying rotation angle: {rotation_angle}") # Log angle used
+#         main_logger.info(f"Raw X[:5]: {drivers_x_raw[:5]}")
+#         main_logger.info(f"Raw Y[:5]: {drivers_y_raw[:5]}")
          # --- END TEMP LOGS ---
          #try:
 #              drivers_x_np = np.array([float(x) for x in drivers_x_raw])
@@ -1788,29 +1811,50 @@ if __name__ == '__main__':
     dash_thread = threading.Thread(target=run_dash, name="DashThread", daemon=True)
     dash_thread.start()
     main_logger.info("Dash server starting on http://localhost:8050")
+    
+    # --- ADDED: Start Data Processing Thread ---
+    stop_event.clear()
+    processing_thread = threading.Thread(target=data_processing_loop, name="DataProcessingThread", daemon=True)
+    processing_thread.start()
+    main_logger.info("Data processing thread started.")
+    # --- END ADDED ---
+    
     try:
         while not stop_event.is_set():
-            with app_state_lock:
-                current_state=app_status["state"]
+            with app_state.app_state_lock:
+                current_state=app_state.app_status["state"]
                 conn_thread_obj=connection_thread
                 replay_thread_obj=replay_thread
+                proc_thread_obj=processing_thread
             conn_active = conn_thread_obj and conn_thread_obj.is_alive()
             replay_active = replay_thread_obj and replay_thread_obj.is_alive()
-
+            proc_active = proc_thread_obj and proc_thread_obj.is_alive()
             # Check thread states
             if current_state in ["Connecting", "Live"] and not conn_active:
                  main_logger.warning("Conn thread died. Stopping.")
                  if not stop_event.is_set():
                      stop_event.set()
-                 with app_state_lock:
-                     if app_status["state"] not in ["Error", "Stopped"]:
-                         app_status.update({"state": "Error", "connection": "Conn Thread Died"})
+                 with app_state.app_state_lock:
+                     if app_state.app_status["state"] not in ["Error", "Stopped"]:
+                         app_state.app_status.update({"state": "Error", "connection": "Conn Thread Died"})
                  break
 
             if current_state == "Replaying" and not replay_active:
                  main_logger.warning("Replay thread died.")
                  if globals().get('replay_thread') is replay_thread_obj:
                      globals()['replay_thread'] = None
+                 with app_state.app_state_lock:
+                     if app_state.app_status["state"] == "Replaying":
+                          app_state.app_status["state"] = "Stopped" # Or Error
+                          
+            # --- ADDED: Check Processing Thread ---
+            if not proc_active:
+                 # Should this stop the app? Depends on if it can restart...
+                 # For now, just log it and maybe stop everything if it dies unexpectedly
+                 main_logger.error("FATAL: Data Processing thread died! Stopping application.")
+                 if not stop_event.is_set(): stop_event.set()
+                 break # Exit main loop
+            # --- END ADDED ---
 
             if not dash_thread.is_alive():
                  main_logger.warning("Dash thread died. Stopping.")
@@ -1834,8 +1878,8 @@ if __name__ == '__main__':
         if not stop_event.is_set():
             main_logger.info("Setting stop event (cleanup).")
             stop_event.set()
-        with app_state_lock:
-            current_state = app_status["state"]
+        with app_state.app_state_lock:
+            current_state = app_state.app_status["state"]
             conn_thread_obj = connection_thread
             replay_thread_obj = replay_thread
         if current_state in ["Live", "Connecting", "Stopping"] or (conn_thread_obj and conn_thread_obj.is_alive()):
@@ -1844,19 +1888,24 @@ if __name__ == '__main__':
         if current_state in ["Replaying", "Stopping"] or (replay_thread_obj and replay_thread_obj.is_alive()):
             main_logger.info("Cleanup: Stopping replay...")
             stop_replay()
+        if processing_thread and processing_thread.is_alive():
+            main_logger.info("Waiting for Data Processing thread...")
+            processing_thread.join(timeout=3) # Wait max 3 seconds
+            if processing_thread.is_alive():
+                main_logger.warning("Data Processing thread did not exit cleanly.")
         if dash_thread and dash_thread.is_alive():
             main_logger.info("Waiting for Dash thread...")
             dash_thread.join(timeout=2)
             if dash_thread.is_alive():
                 main_logger.warning("Dash thread didn't exit cleanly.")
         close_database()
-        local_live_data_file = globals().get('live_data_file') # Use local var for check
+        local_live_data_file = globals().get('app_state.live_data_file') # Use local var for check
         if local_live_data_file and not local_live_data_file.closed:
              main_logger.warning("Live file open cleanup. Closing.")
              try:
                  local_live_data_file.close()
              except Exception as e:
                  main_logger.error(f"Err closing live file: {e}")
-             globals()['live_data_file'] = None # Clear global reference
+             globals()['app_state.live_data_file'] = None # Clear global reference
         main_logger.info("Shutdown complete.")
         print("\n --- App Exited --- \n")

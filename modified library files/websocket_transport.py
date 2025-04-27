@@ -13,6 +13,14 @@ import ssl
 import logging # Already present in the provided file
 import json # Needed for negotiate logic that was merged into start()
 import urllib.parse # Needed for url construction
+try:
+    # This imports the module you created
+    import app_state
+except ImportError:
+    # Handle case where library might be used outside your app context
+    app_state = None
+    # Maybe add logging here if self.logger exists at this point
+    print("WARNING: app_state module not found by websocket_transport.")
 from functools import partial
 from .reconnection import ConnectionStateChecker
 from .connection import ConnectionState
@@ -223,6 +231,38 @@ class WebsocketTransport(BaseTransport):
     # on_message (Patched Version from Response #79 - Calls hub handler AFTER handshake)
     def on_message(self, wsapp, message):
         """Callback for websocket-client receiving messages."""
+        # --- MODIFICATION START: Add Raw String Recording ---
+        # Declare globals needed for recording check within this function's scope
+        # IMPORTANT: This assumes these variables are accessible globally from your main script.
+        # Modifying library files like this has risks and couples the library to your app.
+        #global live_data_file, app_status, app_state_lock, record_live_data
+
+        if app_state: # Check if import succeeded
+            try:
+                # Use app_state.<variable_name>
+                with app_state.app_state_lock:
+                    is_live_recording_active = (app_state.app_status.get('state') == 'Live' and app_state.record_live_data)
+                    file_handle = app_state.live_data_file
+    
+                if is_live_recording_active and file_handle and not file_handle.closed:
+                     # ... (rest of the writing logic using file_handle) ...
+                     if isinstance(message, (str, bytes)):
+                         try:
+                             msg_str = message if isinstance(message, str) else message.decode('utf-8', errors='ignore')
+                             if msg_str and msg_str != "{}":
+                                file_handle.write(msg_str + "\n")
+                         except Exception as write_err:
+                             self.logger.error(f"Error writing raw live data from transport: {write_err}")
+                     else:
+                        self.logger.warning(f"Transport on_message received non-str/bytes for recording: {type(message)}")
+            except AttributeError as ae:
+                self.logger.error(f"Recording failed: Attribute missing from app_state? {ae}")
+            except Exception as record_check_err:
+                self.logger.error(f"Error checking/performing recording status in transport: {record_check_err}")
+        else:
+            self.logger.warning("Skipping recording check because app_state module was not imported.")
+        # --- END MODIFIED RECORDING LOGIC ---
+        
         # --- ADDED Raw Log Line ---
         self.logger.debug(f"SYNC Raw message received by transport: {message!r}")
         # --- END Added Line ---
