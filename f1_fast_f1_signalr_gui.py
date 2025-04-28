@@ -63,7 +63,7 @@ DEFAULT_REPLAY_FILENAME = "2023-yas-marina-quali.data.txt" # Default replay file
 
 # --- Logging Setup ---
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-log_level = logging.INFO # Change to logging.DEBUG for more detail if needed
+log_level = logging.DEBUG # Change to logging.DEBUG for more detail if needed
 
 # Main application logger
 main_logger = logging.getLogger("F1App")
@@ -92,8 +92,6 @@ timing_state = {} # Holds persistent timing state per driver
 track_status_data = {} # To store TrackStatus info (Status, Message)
 session_details = {} # To store SessionInfo/SessionData details
 track_coordinates_cache = {'x': None, 'y': None, 'range_x': None, 'range_y': None, 'rotation': None, 'corner_x': None, 'corner_y': None, 'session_key': None} # Expanded cache
-db_conn = None
-db_cursor = None
 db_lock = threading.Lock()
 
 # --- F1 Helper Functions ---
@@ -223,7 +221,6 @@ def run_connection_manual_neg(target_url, headers_for_ws):
 
         # Use helper functions for cleanup (assuming they exist)
         close_live_file()
-        close_database()
 
         with app_state.app_state_lock:
              if app_state.app_status["state"] not in ["Stopped", "Error", "Playback Complete"]:
@@ -322,6 +319,91 @@ def handle_message(message_data):
         else:
             main_logger.warning(f"Received unexpected message format: {type(message_data)} - {str(message_data)[:100]}")
 
+def _process_timing_app_data(data):
+    """ Helper function to process TimingAppData stream data (contains Stint/Tyre info) """
+    global timing_state # Access the global state
+    if not timing_state:
+        return # Cannot process without initialized timing_state
+
+    if isinstance(data, dict) and 'Lines' in data and isinstance(data['Lines'], dict):
+        for car_num_str, line_data in data['Lines'].items():
+            driver_current_state = timing_state.get(car_num_str)
+            if driver_current_state and isinstance(line_data, dict):
+
+                 current_compound = driver_current_state.get('TyreCompound', '-')
+                 current_age = driver_current_state.get('TyreAge', '?') # Keep previous age as default before processing
+
+                 stints_data = line_data.get('Stints')
+                 if isinstance(stints_data, dict) and stints_data:
+                     try:
+                         latest_stint_key = sorted(stints_data.keys(), key=int)[-1]
+                         latest_stint_info = stints_data[latest_stint_key]
+
+                         if isinstance(latest_stint_info, dict):
+                             # --- Compound Processing ---
+                             compound_value = latest_stint_info.get('Compound')
+                             if isinstance(compound_value, str):
+                                 current_compound = compound_value.upper()
+                             # else: keep previous/default compound
+
+                             # --- Age Processing with Debug Logging ---
+                             age_determined = False # Flag to see if we set age in this block
+
+                             # Check for TotalLaps first
+                             total_laps_value = latest_stint_info.get('TotalLaps')
+                             main_logger.debug(f"Driver {car_num_str}, Stint {latest_stint_key}: Checking 'TotalLaps'. Found: {total_laps_value} (Type: {type(total_laps_value)})")
+                             if total_laps_value is not None:
+                                 try:
+                                     # Attempt conversion just in case it's a string sometimes
+                                     current_age = int(total_laps_value)
+                                     main_logger.debug(f"Driver {car_num_str}: Using age from TotalLaps: {current_age}")
+                                     age_determined = True
+                                 except (ValueError, TypeError):
+                                      main_logger.warning(f"Driver {car_num_str}: Could not convert TotalLaps '{total_laps_value}' to int.")
+                                      # Keep existing current_age (which might be previous value or '?')
+
+                             # If TotalLaps didn't yield age, try calculating from StartLaps
+                             if not age_determined:
+                                 start_laps_value = latest_stint_info.get('StartLaps')
+                                 num_laps_value = driver_current_state.get('NumberOfLaps') # Get completed laps from state
+                                 main_logger.debug(f"Driver {car_num_str}, Stint {latest_stint_key}: 'TotalLaps' not used. Checking 'StartLaps': {start_laps_value}, State 'NumberOfLaps': {num_laps_value}")
+
+                                 if start_laps_value is not None and num_laps_value is not None:
+                                     try:
+                                         start_lap = int(start_laps_value)
+                                         current_lap_completed = int(num_laps_value)
+                                         # Age = laps completed *on this tyre set* + 1?
+                                         age_calc = current_lap_completed - start_lap + 1
+                                         current_age = age_calc if age_calc >= 0 else '?'
+                                         main_logger.debug(f"Driver {car_num_str}: Calculated age {current_age} (Completed={current_lap_completed}, Start={start_lap})")
+                                         age_determined = True
+                                     except (ValueError, TypeError) as e:
+                                          main_logger.warning(f"Driver {car_num_str}: Error converting StartLaps/NumberOfLaps for age calculation: {e}")
+                                          # Keep existing current_age
+
+                             # If age still wasn't determined by TotalLaps or calculation
+                             if not age_determined:
+                                  main_logger.debug(f"Driver {car_num_str}: Could not determine age from Stint {latest_stint_key} info in this message. Keeping previous/default.")
+                                  # current_age retains its value from start of block (previous state or '?')
+                             # --- End Age Processing ---
+
+                         else: # latest_stint_info was not a dict
+                             main_logger.warning(f"Driver {car_num_str}: Data for Stint {latest_stint_key} is not a dictionary: {type(latest_stint_info)}")
+
+                     except (ValueError, IndexError, KeyError, TypeError) as e:
+                          main_logger.error(f"Driver {car_num_str}: Error processing Stints data in TimingAppData: {e} - Data was: {stints_data}", exc_info=False) # Hide traceback for cleaner logs unless needed
+
+                 # Update the state with the final values for this processing cycle
+                 driver_current_state['TyreCompound'] = current_compound
+                 driver_current_state['TyreAge'] = current_age
+                 # Log final state for this driver after processing this specific message
+                 main_logger.debug(f"Driver {car_num_str} state post-TimingAppData: Compound='{current_compound}', Age='{current_age}'")
+
+            elif not driver_current_state:
+                 pass # Silently skip if driver not found
+    elif data:
+         main_logger.warning(f"Unexpected TimingAppData format received: {type(data)}")
+
 def _process_driver_list(data):
     """ Helper to process DriverList data ONLY from the stream """
     global timing_state # No driver_tla_map needed here
@@ -393,7 +475,7 @@ def _process_timing_data(data):
     """ Helper function to process TimingData stream data """
     global timing_state
     if not timing_state:
-        main_logger.debug("TimingData received before DriverList processed, skipping.")
+        # main_logger.debug("TimingData received before DriverList processed, skipping.")
         return # Cannot process without initialized timing_state
 
     if isinstance(data, dict) and 'Lines' in data and isinstance(data['Lines'], dict):
@@ -402,6 +484,11 @@ def _process_timing_data(data):
             # Process only if driver exists in state and line_data is a dict
             if driver_current_state and isinstance(line_data, dict):
                  # Update direct fields
+                 # --- >>> Log the incoming line_data for this driver (Careful, can be verbose!) <<< ---
+                 # Temporarily uncomment this to see ALL data for a specific driver if needed
+                # if car_num_str == '1': # Example: Log only for driver #1
+#                    main_logger.debug(f"TimingData line_data for Driver {car_num_str}: {line_data}")
+                 # --- >>> END Log incoming line_data <<< ---
                  for key in ["Position", "Time", "GapToLeader", "InPit", "Retired", "Stopped", "PitOut", "NumberOfLaps", "NumberOfPitStops"]: # Added Laps/Stops
                      if key in line_data: driver_current_state[key] = line_data[key]
 
@@ -440,13 +527,12 @@ def _process_timing_data(data):
                           driver_current_state["Speeds"] = {}
                       driver_current_state["Speeds"].update(line_data["Speeds"])
 
-
                  # Update overall status
                  status_flags = []
                  if driver_current_state.get("Retired"): status_flags.append("Retired")
                  if driver_current_state.get("InPit"): status_flags.append("In Pit")
                  if driver_current_state.get("Stopped"): status_flags.append("Stopped")
-                 if driver_current_state.get("PitOut"): status_flags.append("Pit Out")
+                 if driver_current_state.get("PitOut"): status_flags.append("Out Lap")
                  if status_flags:
                       driver_current_state["Status"] = ", ".join(status_flags)
                  elif driver_current_state.get("Position", "-") != "-": # If has position and no flags, assume On Track
@@ -520,7 +606,7 @@ def _process_position_data(data):
                 if y_pos is not None: pos_data_dict['Y'] = y_pos
                 if status is not None: pos_data_dict['Status'] = status
                 if timestamp is not None: pos_data_dict['Timestamp'] = timestamp
-                main_logger.debug(f"Updated Position for {car_number_str}: X={x_pos}, Y={y_pos}")
+                # main_logger.debug(f"Updated Position for {car_number_str}: X={x_pos}, Y={y_pos}")
 
 def _process_car_data(data):
     """Handles CarData. MUST be called within app_state.app_state_lock."""
@@ -795,6 +881,8 @@ def data_processing_loop():
                         elif stream_name == "SessionData":
                              _process_session_data(actual_data) # Call the new handler
                         # --- END ADDED ---
+                        elif stream_name == "TimingAppData":
+                            _process_timing_app_data(actual_data) # Updates timing_state with tyre info
                         elif stream_name == "TrackStatus":
                              _process_track_status(actual_data) # Call new handler
                         elif stream_name == "CarData":
@@ -807,21 +895,7 @@ def data_processing_loop():
                         #    _process_weather_data(actual_data) # Need to create this function
                         else:
                             # Optional: Log if you want to know about unhandled streams that made it this far
-                            main_logger.debug(f"No specific handler for stream: {stream_name}")
-    
-                # --- Database/File saving (Done AFTER processing all streams in the item) ---
-                # Check state BEFORE trying to save to DB
-                with app_state.app_state_lock:
-                    # Read the current state safely
-                    is_currently_live = app_state.app_status.get('state') == 'Live'
-                    # Also check if db_cursor is valid (it should be None during replay now)
-                    db_is_ready = db_cursor is not None
-                
-                if is_currently_live and db_is_ready:
-                    # Only save to DB if in Live state and DB is initialized
-                    for stream_name_saved, data_saved in processed_data_for_saving.items():
-                        # Make sure save_to_database handles potential errors gracefully
-                        save_to_database(stream_name_saved, data_saved, timestamp)
+                            main_logger.debug(f"No specific handler for stream: {stream_name}") 
     
                 data_queue.task_done() # Mark the original queue item as done
     
@@ -943,34 +1017,6 @@ def handle_error(error): # Was on_error
         main_logger.info("Setting stop_event due to SignalR error.")
         stop_event.set()
 
-def init_database():
-     global db_conn, db_cursor, db_filename
-     # ... (logic to set filename, open conn, store in app_state.db_conn) ...
-     # Return True on success, False on failure
-     try:
-          timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-          db_filename = f"f1_signalr_data_{timestamp_str}.db"
-          db_filename = os.path.join(os.getcwd(), db_filename) # Store path if needed
-          main_logger.info(f"Initializing database: {db_filename}")
-          with app_state.app_state_lock:
-              # Close previous connection if open
-              if db_conn:
-                   try: db_conn.close()
-                   except: pass
-              db_conn = sqlite3.connect(db_filename, check_same_thread=False)
-              db_cursor = db_conn.cursor()
-              # Create tables if they don't exist (add your schema)
-              db_cursor.execute("CREATE TABLE IF NOT EXISTS messages (timestamp REAL, stream TEXT, data TEXT)")
-              db_conn.commit()
-          main_logger.info(f"DB initialized: {db_filename}")
-          return True
-     except Exception as e:
-          main_logger.error(f"DB init error: {e}", exc_info=True)
-          with app_state.app_state_lock:
-              db_conn = None
-              db_cursor = None
-          return False
-
 def init_live_file():
       global db_conn, db_cursor, db_filename
       # ... (logic to set filename, open file, store in app_state.live_data_file) ...
@@ -996,23 +1042,6 @@ def init_live_file():
              app_state.live_data_file = None
              app_state.is_saving_active = False
          return False
-
-
-def close_database():
-      global db_conn, db_cursor, db_filename
-      # ... (logic to close connection stored in app_state.db_conn) ...
-      with app_state.app_state_lock:
-         if db_conn:
-             try:
-                 db_name = getattr(db_conn, 'name', db_filename) # Try to get filename
-                 main_logger.info(f"Closing DB: {db_name}")
-                 db_conn.close()
-                 main_logger.info(f"DB closed.")
-             except Exception as e:
-                  main_logger.error(f"Error closing DB: {e}")
-             finally:
-                 db_conn = None
-                 db_cursor = None
 
 def close_live_file():
     # ... (logic to close file stored in app_state.live_data_file) ...
@@ -1091,7 +1120,6 @@ def replay_from_file(data_file_path, replay_speed=1.0):
         
     # --- MODIFICATION START: Disable DB Init for Replay ---
     main_logger.info("Replay mode: Closing active DB connection (if any) and skipping init.")
-    close_database() # <<< ADD call to close existing connection
     with app_state.app_state_lock:
         app_state.app_status.update({"state": "Replaying", "connection": f"File: {os.path.basename(data_file_path)}", "subscribed_streams": ["Replay"]})
         
@@ -1244,7 +1272,7 @@ def replay_from_file(data_file_path, replay_speed=1.0):
 	                app_state.app_status.update({"state": "Error", "connection": "Replay Runtime Error"})
             finally:
 	             main_logger.info("Replay thread cleanup...")
-	             close_database()
+	             close_live_file()
 	             with app_state.app_state_lock:
 	                 current_state = app_state.app_status["state"]
 	                 if current_state not in ["Error", "Stopped", "Playback Complete"]:
@@ -1288,6 +1316,7 @@ timing_table_columns = [
     # --- Existing Columns ---
     {"name": "Car", "id": "Car"}, # Keep your logic for TLA/Number
     {"name": "Pos", "id": "Pos"},
+    {"name": "Tyre", "id": "Tyre"},
     {"name": "Time", "id": "Time"}, # Assuming 'Time' is the gap/time field you want
     {"name": "Interval", "id": "Interval"},
     {"name": "Gap", "id": "Gap"}, # Assuming 'Gap' is GapToLeader
@@ -1319,7 +1348,19 @@ app.layout = dbc.Container([
     # --- END ADDED ---
     ], className="mb-3"),
     dbc.Row([dbc.Col(dbc.Button("Start Live Feed", id="start-button", color="success", className="me-1"), width="auto"), dbc.Col(dbc.Button("Stop Feed / Replay", id="stop-button", color="danger", className="me-1"), width="auto"), dbc.Col(dbc.Input(id="replay-file-input", placeholder="Enter .data file path or blank", type="text", value=DEFAULT_REPLAY_FILENAME, debounce=True), width=4), dbc.Col(dbc.Input(id="replay-speed-input", placeholder="Speed", type="number", min=0, step=0.1, value=1.0, debounce=True), width="auto"), dbc.Col(dbc.Button("Start Replay", id="replay-button", color="primary", className="me-1"), width="auto")], className="mb-3 align-items-center"),
-    dbc.Row([dbc.Col([html.H3("Latest Data (Non-Timing)"), html.Div(id='live-data-display', style={'maxHeight': '300px', 'overflowY': 'auto', 'border': '1px solid grey', 'padding': '10px', 'marginBottom': '10px'}), html.H3("Timing Data Details"), html.Div(id='timing-data-table', children=[html.P(id='timing-data-timestamp', children="Waiting for data..."), dash_table.DataTable(id='timing-data-actual-table', columns=timing_table_columns, data=[], fixed_rows={'headers': True}, style_table={'height': '400px', 'overflowY': 'auto', 'overflowX': 'auto'}, style_cell={'minWidth': '50px', 'width': '80px', 'maxWidth': '120px','overflow': 'hidden','textOverflow': 'ellipsis','textAlign': 'left','padding': '5px','backgroundColor': 'rgb(50, 50, 50)','color': 'white'}, style_header={'backgroundColor': 'rgb(30, 30, 30)','fontWeight': 'bold','border': '1px solid grey'}, style_data={'borderBottom': '1px solid grey'}, style_data_conditional=[{'if': {'row_index': 'odd'},'backgroundColor': 'rgb(60, 60, 60)'}], tooltip_duration=None)])], width=12)]),
+    dbc.Row([dbc.Col([html.H3("Latest Data (Non-Timing)"), html.Div(id='live-data-display', style={'maxHeight': '300px', 'overflowY': 'auto', 'border': '1px solid grey', 'padding': '10px', 'marginBottom': '10px'}), html.H3("Timing Data Details"), html.Div(id='timing-data-table', children=[html.P(id='timing-data-timestamp', children="Waiting for data..."), dash_table.DataTable(id='timing-data-actual-table', columns=timing_table_columns, data=[], fixed_rows={'headers': True}, style_table={'height': '400px', 'overflowY': 'auto', 'overflowX': 'auto'}, style_cell={'minWidth': '50px', 'width': '80px', 'maxWidth': '120px','overflow': 'hidden','textOverflow': 'ellipsis','textAlign': 'left','padding': '5px','backgroundColor': 'rgb(50, 50, 50)','color': 'white'}, style_header={'backgroundColor': 'rgb(30, 30, 30)','fontWeight': 'bold','border': '1px solid grey'}, style_data={'borderBottom': '1px solid grey'}, style_data_conditional=[{'if': {'row_index': 'odd'},'backgroundColor': 'rgb(60, 60, 60)'},{'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "SOFT"'},
+            'backgroundColor': '#FF3333', 'color': 'black', 'fontWeight': 'bold'}, # Red for Soft
+        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "MEDIUM"'},
+            'backgroundColor': '#FFF333', 'color': 'black', 'fontWeight': 'bold'}, # Yellow for Medium
+        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "HARD"'},
+            'backgroundColor': '#FFFFFF', 'color': 'black', 'fontWeight': 'bold'}, # White for Hard
+        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "INTERMEDIATE"'},
+            'backgroundColor': '#33FF33', 'color': 'black', 'fontWeight': 'bold'}, # Green for Intermediate
+        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "WET"'},
+            'backgroundColor': '#3333FF', 'color': 'white', 'fontWeight': 'bold'}, # Blue for Wet
+        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} = "-"'}, # Default/Unknown
+            'backgroundColor': 'inherit', 'color': 'grey'}, # Grey out if unknown ('inherit' uses row bg)
+], tooltip_duration=None)])], width=12)]),
     # --- ADDED: Track Map Row ---
     dbc.Row([
         dbc.Col(dcc.Graph(id='track-map-graph', style={'height': '60vh'})) # Adjust height as needed
@@ -1415,6 +1456,11 @@ def update_output(n):
 
             for car_num in sorted_driver_numbers:
                 driver_state = timing_state[car_num]
+                
+                tyre_compound = driver_state.get('TyreCompound', '-') # Default '-'
+                tyre_age = driver_state.get('TyreAge', '?') # Default '?'
+                
+                tyre_display = f"{tyre_compound} ({tyre_age}L)" if tyre_compound != '-' else '-'
 
                 # Helper function to safely get nested dictionary values (remains the same)
                 def get_nested_state(d, *keys, default=None):
@@ -1443,6 +1489,7 @@ def update_output(n):
                 row = {
                     'Car': car_display_value, # Use the determined display value
                     'Pos': driver_state.get('Position', '-'),
+                    "Tyre": tyre_display, # Use the formatted tyre string
                     'Time': driver_state.get('Time', '-'),
                     'Gap': driver_state.get('GapToLeader', '-'),
                     'Interval': get_nested_state(driver_state, 'IntervalToPositionAhead', 'Value', default='-'),
@@ -1583,12 +1630,9 @@ def start_live_callback(n_clicks):
     if websocket_url and ws_headers:
         # Initialize DB/File
         # Ensure these functions correctly update app_state.db_conn / app_state.live_data_file
-        if not init_database(): # Assuming uses app_state.db_filename or similar
-             # ... error handling ...
-             return "Status: Error", "DB Error!"
         if not init_live_file(): # Assuming uses app_state.data_filename or similar
              # ... error handling ...
-             close_database()
+             close_live_file()
              return "Status: Error", "File Error!"
 
         # Start the thread
@@ -1779,7 +1823,7 @@ def update_track_map(n):
         for car_num, driver_state in timing_state.items():
              # ... (extract raw x, y, text, color) ...
              pos_data = driver_state.get('PositionData')
-             status_string = driver_state.get('Status', '').lower(); is_off_main_track = ('pit' in status_string or 'retired' in status_string)
+             status_string = driver_state.get('Status', '').lower(); is_off_main_track = ('pit' in status_string or 'retired' in status_string or 'out' in status_string)
              if pos_data and 'X' in pos_data and 'Y' in pos_data:
                   drivers_x_raw.append(pos_data['X'])
                   drivers_y_raw.append(pos_data['Y'])
@@ -1956,6 +2000,7 @@ if __name__ == '__main__':
         if current_state in ["Replaying", "Stopping"] or (replay_thread_obj and replay_thread_obj.is_alive()):
             main_logger.info("Cleanup: Stopping replay...")
             stop_replay()
+            close_live_file()
         if processing_thread and processing_thread.is_alive():
             main_logger.info("Waiting for Data Processing thread...")
             processing_thread.join(timeout=3) # Wait max 3 seconds
@@ -1966,7 +2011,6 @@ if __name__ == '__main__':
 #            dash_thread.join(timeout=3)
 #            if dash_thread.is_alive():
 #                main_logger.warning("Dash thread didn't exit cleanly.")
-        close_database()
         local_live_data_file = globals().get('app_state.live_data_file') # Use local var for check
         if local_live_data_file and not local_live_data_file.closed:
              main_logger.warning("Live file open cleanup. Closing.")
