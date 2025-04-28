@@ -8,8 +8,10 @@ import time
 import threading
 import urllib.parse
 import sys
+import urllib.parse
 import os
 import queue
+import requests
 import sqlite3
 import app_state
 import numpy as np
@@ -31,6 +33,9 @@ from signalrcore.hub_connection_builder import HubConnectionBuilder
 from signalrcore.transport.websockets.connection import ConnectionState # Assuming ConnectionState enum is still valid for comparison if needed elsewhere
 from signalrcore.hub.errors import HubConnectionError, HubError, UnAuthorizedHubError
 from signalrcore.hub.base_hub_connection import BaseHubConnection
+from signalrcore.protocol.json_hub_protocol import JsonHubProtocol
+from signalrcore.hub_connection_builder import HubConnectionBuilder
+from signalrcore.hub.base_hub_connection import BaseHubConnection # For type check maybe
 
 # Added for Dash GUI
 try:
@@ -133,6 +138,102 @@ def _decode_and_decompress(message):
             return None # Return None on error
     # Return non-string messages as-is (though handle_message primarily sends strings needing decode)
     return message
+
+def run_connection_manual_neg(target_url, headers_for_ws):
+    """Target function for connection thread using pre-negotiated URL."""
+    global db_conn, db_cursor, db_filename
+    global hub_connection # Allow modification of the global reference
+
+    hub_connection = None # Ensure clean slate
+
+    try:
+        main_logger.info("Connection thread: Initializing HubConnection (manual neg)...")
+        # --- Build Hub Connection with skip_negotiation=True ---
+        hub_connection = (
+            HubConnectionBuilder()
+            .with_url(target_url, options={
+                "verify_ssl": True,
+                "headers": headers_for_ws, # Pass ALL required headers from main thread
+                "skip_negotiation": True   # MUST skip internal negotiation
+                })
+            .with_hub_protocol(JsonHubProtocol()) # Keep explicit protocol
+            .configure_logging(logging.INFO) # Use logger defined elsewhere
+            # Add reconnect logic here if/when needed
+            .build()
+        )
+        # --- End Builder ---
+
+        # --- CHECK Type (Keep for now) ---
+        if hub_connection:
+            main_logger.info(f"CHECK (Manual Neg Build): Type returned by build(): {type(hub_connection)}")
+            main_logger.info(f"CHECK (Manual Neg Build): Hub has 'send' attribute? {hasattr(hub_connection, 'send')}")
+            if not hasattr(hub_connection, 'send'):
+                 raise HubConnectionError("Built object missing '.send()' method!")
+        else:
+            main_logger.error("CHECK (Manual Neg Build): Hub build returned None!")
+            raise HubConnectionError("Builder returned None")
+        # --- END CHECK ---
+
+        # Register handlers (Make sure function names match your definitions)
+        hub_connection.on_open(handle_connect) # Use your open handler name
+        hub_connection.on_close(handle_disconnect) # Use your close handler name
+        hub_connection.on_error(handle_error) # Use your error handler name
+
+        # Register message handlers (assuming functions exist)
+        hub_connection.on("CarData.z", lambda data: handle_compressed_stream("CarData.z", data))
+        hub_connection.on("Position.z", lambda data: handle_compressed_stream("Position.z", data))
+        # Simplified registration loop
+        for stream in STREAMS_TO_SUBSCRIBE:
+            if stream.endswith(".z"):
+                if stream not in ["CarData.z", "Position.z"]: # Avoid duplicate handlers if already specific
+                     handler = lambda data, s=stream: handle_compressed_stream(s, data)
+                     hub_connection.on(stream, handler)
+            else:
+                handler = lambda data, s=stream: handle_uncompressed_stream(s, data)
+                hub_connection.on(stream, handler)
+        main_logger.info("Connection thread: Handlers registered.")
+
+        # Update app state before starting
+        with app_state.app_state_lock:
+             app_state.app_status.update({"state": "Connecting", "connection": "Socket Connecting"})
+
+        main_logger.info("Connection thread: Starting connection (manual neg)...")
+        hub_connection.start() # Start the connection
+
+        main_logger.info("Connection thread: Hub connection started. Waiting for stop_event...")
+        stop_event.wait() # Wait until stopped externally or by callbacks
+        main_logger.info("Connection thread: Stop event received.")
+
+    except Exception as e:
+        main_logger.error(f"Connection thread error (manual neg): {e}", exc_info=True)
+        with app_state.app_state_lock:
+            app_state.app_status.update({"state": "Error", "connection": f"Thread Error: {type(e).__name__}"})
+        if not stop_event.is_set(): stop_event.set() # Ensure stop event is set on error
+
+    finally:
+        main_logger.info("Connection thread finishing (manual neg).")
+        temp_hub = hub_connection # Use local copy for cleanup
+        if temp_hub:
+             try:
+                 main_logger.info("Attempting final hub stop...")
+                 temp_hub.stop()
+                 main_logger.info("Hub stopped (finally).")
+             except Exception as e:
+                 main_logger.error(f"Err stopping hub (finally): {e}", exc_info=True)
+
+        # Use helper functions for cleanup (assuming they exist)
+        close_live_file()
+        close_database()
+
+        with app_state.app_state_lock:
+             if app_state.app_status["state"] not in ["Stopped", "Error", "Playback Complete"]:
+                 app_state.app_status.update({"state": "Stopped", "connection": "Disconnected / Thread End"})
+        if not stop_event.is_set():
+             main_logger.warning("Setting stop event during cleanup (manual neg).")
+             stop_event.set()
+        globals()['hub_connection'] = None # Clear global reference
+        main_logger.info("Conn thread cleanup finished (manual neg).")
+
 
 def handle_message(message_data):
     """
@@ -746,91 +847,6 @@ def data_processing_loop():
 
     main_logger.info("Data processing thread finished cleanly (stop_event set).") # Changed log message
 
-# --- Database Functions ---
-def init_database(filename):
-    global db_conn, db_cursor
-    main_logger.info(f"Initializing database: {filename}")
-    try:
-        with db_lock:
-            if db_conn:
-                try:
-                    db_conn.close()
-                    main_logger.debug("Closed existing DB conn.")
-                except Exception as e:
-                     main_logger.error(f"Err closing old DB: {e}", exc_info=True)
-            db_conn = sqlite3.connect(filename, check_same_thread=False, timeout=10)
-            db_cursor = db_conn.cursor()
-            db_cursor.execute("PRAGMA journal_mode=WAL;")
-            db_cursor.execute('CREATE TABLE IF NOT EXISTS signalr_data (id INTEGER PRIMARY KEY AUTOINCREMENT, stream_name TEXT NOT NULL, data TEXT NOT NULL, timestamp TEXT NOT NULL, received_at DATETIME DEFAULT CURRENT_TIMESTAMP)')
-            db_cursor.execute('CREATE INDEX IF NOT EXISTS idx_stream_timestamp ON signalr_data (stream_name, timestamp)')
-            db_conn.commit()
-        main_logger.info(f"DB initialized: {filename}")
-        return True
-    except sqlite3.Error as e:
-        main_logger.error(f"DB init error: {e}", exc_info=True)
-        db_conn = None; db_cursor = None
-        return False
-
-def save_to_database(stream_name, data, timestamp):
-    # Check connection and cursor existence *before* trying to lock/save
-    if not db_conn or not db_cursor:
-        # Log only if it seems like it *should* be open (e.g., during live feed/replay)
-        with app_state.app_state_lock:
-            local_app_state = app_state.app_status["state"]
-        if local_app_state in ["Live", "Replaying", "Connecting", "Initializing"]:
-             main_logger.warning(f"DB save skipped: db_conn ({db_conn is not None}) or db_cursor ({db_cursor is not None}) is None during active state '{local_app_state}'.")
-        return # Exit function if no valid connection/cursor
-
-    try:
-        # Acquire lock *before* accessing shared resources (db_cursor)
-        with db_lock:
-            # Double-check cursor *inside* the lock, as it might have been closed between the outer check and acquiring the lock
-            if not db_cursor:
-                main_logger.warning("DB save skipped: db_cursor became None before save operation inside lock.")
-                return
-
-            data_json = None
-            try:
-                data_json = json.dumps(data)
-            except TypeError as e:
-                main_logger.error(f"JSON Error (DB): {e}. Sample: {str(data)[:100]}", exc_info=False)
-                data_json = json.dumps({"error": "Not serializable"})
-
-            try:
-                # Perform execute and commit together inside the try/except block
-                db_cursor.execute('INSERT INTO signalr_data (stream_name, data, timestamp) VALUES (?, ?, ?)', (stream_name, data_json, timestamp))
-                db_conn.commit()
-            except sqlite3.Error as e:
-                 main_logger.error(f"DB insert/commit error: {e}", exc_info=True)
-                 try:
-                     # Attempt rollback only if an error occurred during execute/commit
-                     if db_conn: # Check if connection still exists before rollback
-                         db_conn.rollback()
-                         main_logger.info("DB rolled back due to error.")
-                 except Exception as rb_e:
-                     main_logger.error(f"DB rollback error: {rb_e}")
-
-    # Catch potential errors acquiring lock or other unexpected issues outside the inner try/except
-    except Exception as e:
-         main_logger.error(f"Outer DB save error: {e}", exc_info=True)
-
-def close_database():
-    global db_conn, db_cursor
-    with db_lock:
-        if db_conn:
-            db_name = str(db_conn)
-            main_logger.info(f"Closing DB: {db_name}")
-            try:
-                 if db_cursor:
-                     db_cursor.close()
-                 db_conn.close()
-                 main_logger.info(f"DB closed: {db_name}")
-            except Exception as e:
-                 main_logger.error(f"Err closing DB {db_name}: {e}", exc_info=True)
-            finally:
-                 db_conn = None
-                 db_cursor = None
-
 # --- SignalR Connection Handling ---
 def build_connection_url(negotiate_url, hub_name):
     main_logger.info(f"Negotiating connection: {negotiate_url}/negotiate")
@@ -854,192 +870,162 @@ def build_connection_url(negotiate_url, hub_name):
         main_logger.error(f"Negotiation error: {e}", exc_info=True)
     return None
 
-def on_error(error):
-    if "already closed" in str(error).lower():
-        main_logger.warning(f"Ignoring SignalR error (closed): {error}")
-        return
-    main_logger.error(f"SignalR err cb: {error} ({type(error).__name__})")
+def handle_connect(): # Was on_open
+    global hub_connection # Access the global connection object
+    conn_id = "N/A"
+    temp_hub = hub_connection # Use local variable
+
+    # Safely access transport and connection_id
+    if temp_hub and temp_hub.transport:
+         conn_id = getattr(temp_hub.transport, 'connection_id', 'N/A')
+
+    main_logger.info(f"****** Connection Opened! ****** Connection ID: {conn_id}")
+
+    # Update state FIRST
+    with app_state.app_state_lock:
+         if app_state.app_status["state"] == "Connecting":
+             app_state.app_status.update({"connection": "Connected, Subscribing", "state": "Live"})
+         else:
+             # This case might happen if connection drops and reconnects automatically later
+             main_logger.warning(f"handle_connect called but unexpected state: {app_state.app_status['state']}. Proceeding with subscribe.")
+             app_state.app_status["connection"] = "Reconnected? Subscribing"
+             # Don't change state if it was Error/Stopping etc.
+
+    # --- USE .send() HERE ---
+    if temp_hub:
+        # --- Optional: Add the dir() check again here if you're still unsure ---
+        # main_logger.info(f"Attributes in handle_connect: {dir(temp_hub)}")
+        # ---
+        try:
+            if hasattr(temp_hub, 'send'): # Check if send exists before calling
+                main_logger.info(f"Attempting to subscribe using .send(): {STREAMS_TO_SUBSCRIBE}")
+                temp_hub.send("Subscribe", [STREAMS_TO_SUBSCRIBE]) # Use .send()
+                main_logger.info("Subscription request sent via .send().")
+                with app_state.app_state_lock: # Update status after successful send
+                    if app_state.app_status["state"] == "Live": # Check state again
+                         app_state.app_status["connection"] = "Live / Subscribed"
+            else:
+                # This case should ideally not happen if the builder check passed
+                main_logger.error(".send() method not found on hub object in handle_connect!")
+                raise AttributeError("Object missing '.send()' method")
+
+        except Exception as e:
+            main_logger.error(f"Error sending subscribe via .send(): {e}", exc_info=True)
+            with app_state.app_state_lock:
+                  app_state.app_status.update({"state": "Error", "connection": "Subscribe Send Error"})
+            if not stop_event.is_set(): stop_event.set() # Trigger shutdown on error
+    else:
+        main_logger.error("Cannot subscribe: hub_connection is None in handle_connect.")
+        with app_state.app_state_lock:
+             app_state.app_status.update({"state": "Error", "connection": "Hub None Error"})
+        if not stop_event.is_set(): stop_event.set()
+
+def handle_disconnect(): # Was on_close
+    main_logger.warning("Connection closed.")
+    with app_state.app_state_lock:
+         # Only update state if we weren't already stopping/stopped/error
+         if app_state.app_status["state"] not in ["Stopping", "Stopped", "Error", "Playback Complete"]:
+              app_state.app_status.update({"connection": "Closed Unexpectedly", "state": "Stopped"})
+    if not stop_event.is_set():
+        main_logger.info("Setting stop_event due to disconnect.")
+        stop_event.set()
+
+def handle_error(error): # Was on_error
+    # Avoid logging expected closure errors if possible
+    if "WebSocket connection is already closed" in str(error):
+         main_logger.info(f"Ignoring expected SignalR error on close: {error}")
+         return
+    main_logger.error(f"Connection error received: {error}")
     with app_state.app_state_lock:
         if app_state.app_status["state"] not in ["Error", "Stopping", "Stopped"]:
-            app_state.app_status.update({"connection": f"SignalR Error: {type(error).__name__}", "state": "Error"})
+             app_state.app_status.update({"connection": f"SignalR Error: {type(error).__name__}", "state": "Error"})
+    if not stop_event.is_set():
+        main_logger.info("Setting stop_event due to SignalR error.")
+        stop_event.set()
 
-def on_close():
-    main_logger.warning("SignalR close cb.")
-    with app_state.app_state_lock:
-        if app_state.app_status["state"] not in ["Stopping", "Stopped", "Error", "Playback Complete"]:
-             main_logger.warning("Conn closed unexpectedly.")
-             app_state.app_status.update({"connection": "Closed Unexpectedly", "state": "Stopped"})
+def init_database():
+     global db_conn, db_cursor, db_filename
+     # ... (logic to set filename, open conn, store in app_state.db_conn) ...
+     # Return True on success, False on failure
+     try:
+          timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+          db_filename = f"f1_signalr_data_{timestamp_str}.db"
+          db_filename = os.path.join(os.getcwd(), db_filename) # Store path if needed
+          main_logger.info(f"Initializing database: {db_filename}")
+          with app_state.app_state_lock:
+              # Close previous connection if open
+              if db_conn:
+                   try: db_conn.close()
+                   except: pass
+              db_conn = sqlite3.connect(db_filename, check_same_thread=False)
+              db_cursor = db_conn.cursor()
+              # Create tables if they don't exist (add your schema)
+              db_cursor.execute("CREATE TABLE IF NOT EXISTS messages (timestamp REAL, stream TEXT, data TEXT)")
+              db_conn.commit()
+          main_logger.info(f"DB initialized: {db_filename}")
+          return True
+     except Exception as e:
+          main_logger.error(f"DB init error: {e}", exc_info=True)
+          with app_state.app_state_lock:
+              db_conn = None
+              db_cursor = None
+          return False
 
-def on_open():
-    main_logger.info("SignalR open cb.")
-    with app_state.app_state_lock:
-        if app_state.app_status["state"] == "Connecting":
-            app_state.app_status.update({"connection": "Connected, Subscribing", "state": "Live"})
-        else:
-            main_logger.warning(f"on_open unexpected state: {app_state.app_status['state']}.")
-            app_state.app_status["connection"] = "Connected (out of sync?)"
-    temp_hub = hub_connection
-    if temp_hub:
-        try:
-            main_logger.info(f"Subscribing to: {STREAMS_TO_SUBSCRIBE}")
-            temp_hub.invoke("Subscribe", STREAMS_TO_SUBSCRIBE)
-            with app_state.app_state_lock:
-                app_state.app_status["subscribed_streams"] = STREAMS_TO_SUBSCRIBE
-                if app_state.app_status["state"] == "Live":
-                    app_state.app_status["connection"] = "Live / Subscribed"
-            main_logger.info("Subscribed OK.")
-        except (HubConnectionError, HubError) as e:
-            main_logger.error(f"Sub error: {e}", exc_info=True)
-            with app_state.app_state_lock:
-                app_state.app_status.update({"connection": f"Sub Error: {type(e).__name__}", "state": "Error"})
-            if not stop_event.is_set():
-                stop_event.set()
-        except Exception as e:
-            main_logger.error(f"Unexpected sub error: {e}", exc_info=True)
-            with app_state.app_state_lock:
-                app_state.app_status.update({"connection": f"Unexpected Sub Error: {type(e).__name__}", "state": "Error"})
-            if not stop_event.is_set():
-                stop_event.set()
-    else:
-        main_logger.error("on_open: hub_connection None.")
-        with app_state.app_state_lock:
-            app_state.app_status.update({"connection": "Sub Failed (No Hub)", "state": "Error"})
-        if not stop_event.is_set():
-            stop_event.set()
+def init_live_file():
+      global db_conn, db_cursor, db_filename
+      # ... (logic to set filename, open file, store in app_state.live_data_file) ...
+      # Return True on success, False on failure
+      try:
+          timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+          data_filename = f"f1_live_data_{timestamp_str}.data.txt" # Adjusted name
+          filepath = os.path.join(os.getcwd(), data_filename) # Or specific folder path
+          main_logger.info(f"Initializing live data file: {filepath}")
+          with app_state.app_state_lock:
+              # Close previous file if open
+              if app_state.live_data_file and not app_state.live_data_file.closed:
+                   try: app_state.live_data_file.close()
+                   except: pass
+              # Open new file (ensure 'app_state.live_data_file' is the correct variable)
+              app_state.live_data_file = open(filepath, "w", buffering=1, encoding='utf-8') # Use 'w' for new file
+              app_state.is_saving_active = True # Assume saving starts with live connection
+          main_logger.info(f"Live data file initialized: {filepath}")
+          return True
+      except IOError as e:
+         main_logger.error(f"Live file open error: {e}", exc_info=True)
+         with app_state.app_state_lock:
+             app_state.live_data_file = None
+             app_state.is_saving_active = False
+         return False
 
-def start_signalr_connection():
-    global hub_connection, connection_thread, db_conn, db_cursor, stop_event, timing_state
-    if connection_thread and connection_thread.is_alive():
-        main_logger.warning("Conn thread running.")
-        return
-    stop_event.clear()
-    main_logger.debug("Stop event cleared (start conn).")
-    with app_state.app_state_lock:
-        app_state.app_status.update({"state": "Initializing", "connection": "Negotiating", "subscribed_streams": [], "last_heartbeat": None})
-        data_store.clear()
-        timing_state.clear()
-    connection_url = build_connection_url(NEGOTIATE_URL_BASE, HUB_NAME)
-    if not connection_url:
-        main_logger.error("Build URL fail.")
-        with app_state.app_state_lock:
-            app_state.app_status.update({"state": "Error", "connection": "Negotiation Failed"})
-        return
-    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    data_filename = DATA_FILENAME_TEMPLATE.format(timestamp=timestamp_str)
-    db_filename = DATABASE_FILENAME_TEMPLATE.format(timestamp=timestamp_str)
-    if not init_database(db_filename):
-        main_logger.error("DB init fail.")
-        with app_state.app_state_lock:
-            app_state.app_status.update({"state": "Error", "connection": "DB Init Failed"})
-        return
-    try:
-        if app_state.live_data_file and not app_state.live_data_file.closed:
-            main_logger.warning("Closing old live file.")
-            app_state.live_data_file.close()
-        app_state.live_data_file = open(data_filename, 'w', encoding='utf-8')
-        main_logger.info(f"Live data file: {data_filename}")
-    except IOError as e:
-        main_logger.error(f"Live file open error: {e}", exc_info=True)
-        app_state.live_data_file = None
-        close_database()
-        with app_state.app_state_lock:
-            app_state.app_status.update({"state": "Error", "connection": "File Open Failed"})
-        return
-    hub_connection = None
-    try:
-        hub_connection = (HubConnectionBuilder().with_url(connection_url, options={"verify_ssl": True, "skip_negotiation": True})
-                          .configure_logging(logging.INFO, handler=signalr_handler).build())
-        main_logger.info("Hub built.")
-    except Exception as e:
-        main_logger.error(f"Hub build error: {e}", exc_info=True)
-        close_database()
-        if app_state.live_data_file and not app_state.live_data_file.closed:
-            try:
-                app_state.live_data_file.close()
-            except Exception as file_e:
-                 main_logger.error(f"Error closing live data file during hub build cleanup: {file_e}")
-        app_state.live_data_file = None
-        with app_state.app_state_lock:
-            app_state.app_status.update({"state": "Error", "connection": "Hub Build Failed"})
-        return
-    hub_connection.on_open(on_open)
-    hub_connection.on_close(on_close)
-    hub_connection.on_error(on_error)
-    hub_connection.on("feed", handle_message)
-    with app_state.app_state_lock:
-        app_state.app_status.update({"state": "Connecting", "connection": "Socket Connecting"})
 
-    def connect():
-        # Moved global declaration here
-        try:
-            if not hub_connection:
-                main_logger.error("Hub None (thread).")
-                raise HubConnectionError("Hub None.")
-            main_logger.info("Starting connect (thread)...")
-            hub_connection.start()
-            main_logger.info("Connect initiated.")
-            # *** CORRECTED ATTRIBUTE NAME HERE ***
-            while hub_connection and hub_connection.transport and hub_connection.transport.connection_alive and not stop_event.is_set():
-                time.sleep(0.5)
-            main_logger.info("Conn loop finished.")
-        except UnAuthorizedHubError as e:
-            main_logger.error(f"Auth error: {e}", exc_info=True)
-            with app_state.app_state_lock:
-                app_state.app_status.update({"connection": "Auth Failed", "state": "Error"})
-        except HubConnectionError as e:
-            main_logger.error(f"Hub connect error: {e}", exc_info=True)
-            with app_state.app_state_lock:
-                 if app_state.app_status["state"] not in ["Stopping", "Stopped"]:
-                     app_state.app_status.update({"connection": f"Conn Error: {type(e).__name__}", "state": "Error"})
-        except Exception as e:
-            # This will now catch the AttributeError if connection_alive doesn't exist either
-            main_logger.error(f"Unexpected conn thread error: {e}", exc_info=True)
-            with app_state.app_state_lock:
-                if app_state.app_status["state"] not in ["Stopping", "Stopped"]:
-                    app_state.app_status.update({"connection": f"Unexpected Error: {type(e).__name__}", "state": "Error"})
-        finally:
-            main_logger.info("Conn thread cleanup...")
-            temp_hub = hub_connection # Use local copy
+def close_database():
+      global db_conn, db_cursor, db_filename
+      # ... (logic to close connection stored in app_state.db_conn) ...
+      with app_state.app_state_lock:
+         if db_conn:
+             try:
+                 db_name = getattr(db_conn, 'name', db_filename) # Try to get filename
+                 main_logger.info(f"Closing DB: {db_name}")
+                 db_conn.close()
+                 main_logger.info(f"DB closed.")
+             except Exception as e:
+                  main_logger.error(f"Error closing DB: {e}")
+             finally:
+                 db_conn = None
+                 db_cursor = None
 
-            # Stop hub connection if transport exists and connection is alive
-            # *** CORRECTED ATTRIBUTE NAME HERE ***
-            if temp_hub and temp_hub.transport and getattr(temp_hub.transport, 'connection_alive', False): # Safely check attribute
-                try:
-                    main_logger.info("Final hub stop...")
-                    temp_hub.stop()
-                    main_logger.info("Hub stopped (finally).")
-                except Exception as e:
-                    main_logger.error(f"Err stopping hub (finally): {e}", exc_info=True)
-
-            # Close file ('global app_state.live_data_file' declared at top of function)
-            if app_state.live_data_file and not app_state.live_data_file.closed:
-                main_logger.info(f"Closing live file: {app_state.live_data_file.name}")
-                try:
-                    app_state.live_data_file.close()
-                except Exception as e:
-                     main_logger.error(f"Err closing live file: {e}")
-                app_state.live_data_file = None # Reset global variable
-
-            close_database() # Close DB
-
-            # Update status
-            with app_state.app_state_lock:
-                 if app_state.app_status["state"] not in ["Stopped", "Error", "Playback Complete"]:
-                     if stop_event.is_set() and app_state.app_status["state"] != "Stopping":
-                         app_state.app_status.update({"state": "Stopped", "connection": "Disconnected"})
-                     elif app_state.app_status["state"] != "Error":
-                         app_state.app_status.update({"state": "Stopped", "connection": "Disconnected / Thread End"})
-            # Signal main thread if needed
-            if not stop_event.is_set():
-                main_logger.info("Conn thread setting stop event.")
-                stop_event.set()
-            # Clear global hub reference
-            globals()['hub_connection'] = None
-            main_logger.info("Conn thread cleanup finished.")
-
-    connection_thread = threading.Thread(target=connect, name="SignalRConnectionThread", daemon=True)
-    connection_thread.start()
-    main_logger.info("Conn thread started.")
+def close_live_file():
+    # ... (logic to close file stored in app_state.live_data_file) ...
+     with app_state.app_state_lock:
+          if app_state.live_data_file and not app_state.live_data_file.closed:
+              try:
+                  file_name = app_state.live_data_file.name
+                  main_logger.info(f"Closing live file: {file_name}")
+                  app_state.live_data_file.close()
+              except Exception as e:
+                   main_logger.error(f"Err closing live file: {e}")
+          app_state.live_data_file = None
+          app_state.is_saving_active = False # Stop saving when file closed
 
 def stop_connection():
     global hub_connection, connection_thread, stop_event
@@ -1106,16 +1092,6 @@ def replay_from_file(data_file_path, replay_speed=1.0):
     # --- MODIFICATION START: Disable DB Init for Replay ---
     main_logger.info("Replay mode: Closing active DB connection (if any) and skipping init.")
     close_database() # <<< ADD call to close existing connection
-    # Ensure global vars are None after closing (assuming close_database does this, or add explicitly)
-    # db_conn = None
-    # db_cursor = None
-
-    #db_filename = os.path.splitext(data_file_path)[0] + ".db"
-#    if not init_database(db_filename):
-#        main_logger.error("Replay DB init fail.")
-#        with app_state.app_state_lock:
-#            app_state.app_status.update({"state": "Error", "connection": "Replay DB Init Failed"})
-#        return
     with app_state.app_state_lock:
         app_state.app_status.update({"state": "Replaying", "connection": f"File: {os.path.basename(data_file_path)}", "subscribed_streams": ["Replay"]})
         
@@ -1523,11 +1499,114 @@ def update_button_states(n):
     return start_disabled, stop_disabled, replay_disabled, input_disabled, input_disabled
 
 @app.callback(Output('status-display', 'children', allow_duplicate=True), Input('start-button', 'n_clicks'), prevent_initial_call=True)
-def handle_start_button(n_clicks):
-    if n_clicks is None or n_clicks == 0: return dash.no_update
-    main_logger.info(f"Start Live clicked (n={n_clicks}).")
-    start_signalr_connection()
-    with app_state.app_state_lock: return f"State: {app_state.app_status['state']} | Conn: {app_state.app_status['connection']}"
+def start_live_callback(n_clicks):
+    global connection_thread # Manage the global thread variable
+
+    # Check if already running
+    with app_state.app_state_lock:
+         current_state = app_state.app_status["state"]
+         if current_state in ["Connecting", "Live", "Replaying"]:
+             main_logger.warning(f"Start Live clicked but already active (State: {current_state}).")
+             # Return current status without starting again
+             return f"Status: {current_state}", app_state.app_status.get("connection", "N/A")
+
+    main_logger.info(f"Start Live clicked (n={n_clicks}). Initiating connection sequence...")
+
+    # --- Manual Negotiation ---
+    negotiate_cookie = None
+    connection_token = None
+    websocket_url = None
+    ws_headers = None
+
+    try:
+        # Set initial state
+        with app_state.app_state_lock:
+             app_state.app_status.update({"state": "Initializing", "connection": "Negotiating..."})
+             # Reset stop event for new connection attempt
+             stop_event.clear()
+
+        # Perform Negotiation
+        connection_data = json.dumps([{"name": HUB_NAME}])
+        params = { "connectionData": connection_data, "clientProtocol": "1.5" }
+        negotiate_url_full = f"{NEGOTIATE_URL_BASE}/negotiate?{urllib.parse.urlencode(params)}"
+        main_logger.info(f"Negotiating connection: {negotiate_url_full}")
+        negotiate_headers = {"User-Agent": "Python Requests"}
+        response = requests.get(negotiate_url_full, headers=negotiate_headers, verify=True, timeout=15)
+        main_logger.info(f"Negotiate status: {response.status_code}")
+        response.raise_for_status()
+
+        # Extract Cookie
+        if response.cookies:
+             cookie_list = [f"{c.name}={c.value}" for c in response.cookies]
+             negotiate_cookie = "; ".join(cookie_list)
+             main_logger.info(f"Got negotiation cookie(s): {negotiate_cookie}")
+        else:
+             main_logger.warning("No cookie found in negotiate response.")
+
+        # Extract Token
+        neg_data = response.json()
+        if "ConnectionToken" in neg_data:
+            connection_token = neg_data["ConnectionToken"]
+            main_logger.info("Got connection token.")
+        else:
+            raise HubConnectionError("Negotiation response missing ConnectionToken.")
+
+        # Build WebSocket URL & Headers (Match F1 Docs + Cookie logic)
+        ws_params = {
+            "clientProtocol": "1.5",
+            "transport": "webSockets",
+            "connectionToken": connection_token,
+            "connectionData": connection_data
+        }
+        websocket_url = f"{WEBSOCKET_URL_BASE}/connect?{urllib.parse.urlencode(ws_params)}"
+        main_logger.info(f"Constructed WebSocket URL: {websocket_url}")
+
+        # Headers required by F1 endpoint + Cookie for builder options
+        ws_headers = {
+            "User-Agent": "BestHTTP",
+            "Accept-Encoding": "gzip, identity"
+        }
+        if negotiate_cookie:
+             ws_headers["Cookie"] = negotiate_cookie # Will be passed via builder options
+        main_logger.info(f"Will use WebSocket headers in builder options: {ws_headers}")
+
+    except requests.exceptions.RequestException as req_ex:
+        main_logger.error(f"HTTP Negotiation failed: {req_ex}", exc_info=True)
+        with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Negotiation Failed"})
+        return "Status: Error", "Negotiation Failed!" # Update status outputs
+    except Exception as e:
+        main_logger.error(f"Error during negotiation/setup: {e}", exc_info=True)
+        with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Setup Error"})
+        return "Status: Error", "Setup Error!" # Update status outputs
+
+    # --- Start Connection Thread (Only if Negotiation Succeeded) ---
+    if websocket_url and ws_headers:
+        # Initialize DB/File
+        # Ensure these functions correctly update app_state.db_conn / app_state.live_data_file
+        if not init_database(): # Assuming uses app_state.db_filename or similar
+             # ... error handling ...
+             return "Status: Error", "DB Error!"
+        if not init_live_file(): # Assuming uses app_state.data_filename or similar
+             # ... error handling ...
+             close_database()
+             return "Status: Error", "File Error!"
+
+        # Start the thread
+        main_logger.info("Starting connection thread (manual neg)...")
+        connection_thread = threading.Thread(
+            target=run_connection_manual_neg,
+            args=(websocket_url, ws_headers), # Pass URL and Headers
+            name="SignalRConnectionThread",
+            daemon=True)
+        connection_thread.start()
+        main_logger.info("Connection thread started.")
+        # Return status updates for UI
+        return "Status: Connecting", "Connecting..."
+    else:
+         main_logger.error("Cannot start connection thread: URL or Headers missing.")
+         with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Internal Setup Error"})
+         return "Status: Error", "Internal Error!"
+
 
 @app.callback(Output('status-display', 'children', allow_duplicate=True), Input('stop-button', 'n_clicks'), prevent_initial_call=True)
 def handle_stop_button(n_clicks):
@@ -1613,21 +1692,6 @@ def update_track_map(n):
                 # --- End Add Header ---
                 response.raise_for_status() # Check for 4xx/5xx errors AFTER getting response
                 map_api_data = response.json()
-
-                # --- Extract data from API response ---
-                # --- TEMPORARY LOGS - Inspect API Response ---
-                #main_logger.info(f"--- MultiViewer API Response Received (Keys) ---")
-#                main_logger.info(f"Top-level Keys: {list(map_api_data.keys())}")
-#                # Log specific parts to verify structure/existence:
-#                main_logger.info(f"Rotation Key ('rotation'): {map_api_data.get('rotation')}")
-#                main_logger.info(f"Corners Key ('corners') Type: {type(map_api_data.get('corners'))}")
-#                main_logger.info(f"Track Key ('track') Type: {type(map_api_data.get('track'))}")
-#                main_logger.info(f"Boundary Keys ('xMin', 'xMax', 'yMin', 'yMax'): "
-#                                 f"{map_api_data.get('xMin')}, {map_api_data.get('xMax')}, "
-#                                 f"{map_api_data.get('yMin')}, {map_api_data.get('yMax')}")
-                # You could even log the whole thing if it's not too large initially:
-                # main_logger.info(f"Full API Response (snippet): {json.dumps(map_api_data, indent=2)[:1000]}")
-                # --- END TEMPORARY LOGS ---
 
                                 # --- CORRECTED Data Extraction ---
                 temp_track_x = map_api_data.get('x') # Get list from 'x' key
@@ -1743,20 +1807,6 @@ def update_track_map(n):
     # 5. Rotate Live Car Positions and Add Trace
     if drivers_x_raw:
          # Ensure raw coords are numbers before rotating
-         # --- TEMPORARY LOGS ---
-        # main_logger.info(f"Applying rotation angle: {rotation_angle}") # Log angle used
-#         main_logger.info(f"Raw X[:5]: {drivers_x_raw[:5]}")
-#         main_logger.info(f"Raw Y[:5]: {drivers_y_raw[:5]}")
-         # --- END TEMP LOGS ---
-         #try:
-#              drivers_x_np = np.array([float(x) for x in drivers_x_raw])
-#              drivers_y_np = np.array([float(y) for y in drivers_y_raw])
-#             # Add try-except around rotation and plotting
-#              drivers_x_rotated, drivers_y_rotated = rotate_coords(np.array(drivers_x_raw), np.array(drivers_y_raw), rotation_angle)
-#              # --- TEMPORARY LOGS ---
-#              main_logger.info(f"Rotated X[:5]: {drivers_x_rotated[:5]}")
-#              main_logger.info(f"Rotated Y[:5]: {drivers_y_rotated[:5]}")
-#              # --- END TEMP LOGS ---
     
          try:
                   figure_data.append(go.Scatter(

@@ -109,6 +109,7 @@ class WebsocketTransport(BaseTransport):
         """Starts negotiation (if not skipped) and websocket connection."""
         websocket_url_to_connect = self.url
         final_ws_headers = self.headers.copy()
+        ws_headers = {}
         negotiate_cookie = None
         HUB_NAME = "Streaming" # Define HUB_NAME needed for connectionData
 
@@ -121,66 +122,93 @@ class WebsocketTransport(BaseTransport):
             # Use headers provided initially for negotiation
             session.headers.update(self.headers)
             try:
-                 # Use POST for negotiation as per standard SignalR Core? Blog said GET but POST is safer.
                  response = session.post(negotiate_url_full, verify=self.verify_ssl, timeout=10)
                  self.logger.debug(f"Negotiate response status code: {response.status_code}"); response.raise_for_status()
-                 # Extract cookie from session jar AFTER request
+
+                 # Extract cookie string SEPARATELY
                  negotiate_cookie_str = '; '.join([f'{c.name}={c.value}' for c in session.cookies])
-                 if negotiate_cookie_str: final_ws_headers['Cookie'] = negotiate_cookie_str; self.logger.info(f"Got negotiation cookie: {negotiate_cookie_str}")
-                 else: self.logger.warning("No negotiation cookie received.")
+                 if negotiate_cookie_str:
+                     self.logger.info(f"Got negotiation cookie: {negotiate_cookie_str}")
+                 else:
+                     self.logger.warning("No negotiation cookie received.") # Might cause 400 later if cookie required
 
-                 neg_data = response.json(); self.logger.debug(f"Negotiate response data: {neg_data}")
-                 connection_id = neg_data.get("connectionId"); connection_token = neg_data.get("connectionToken")
-                 available_transports = neg_data.get("availableTransports", [])
-                 azure_url = neg_data.get('url'); azure_token = neg_data.get('accessToken')
+                 neg_data = response.json()
+                 self.logger.info(f"Negotiate Response JSON: {neg_data}")
+                 # --- Get ConnectionToken (Correct Case) ---
+                 connection_token = neg_data.get("ConnectionToken")
 
-                 # Check if WebSockets is supported by server
-                 if not any(t.get("transport") == "WebSockets" for t in available_transports):
-                     raise HubConnectionError("WebSockets transport not supported by server.")
+                 # Check if token exists (no need to check TryWebSockets anymore, assume it works if token given)
+                 if not connection_token:
+                     raise HubConnectionError("Negotiation response missing ConnectionToken.")
 
-                 if azure_url and azure_token: # Azure redirect takes precedence
-                      self.logger.info(f"Azure SignalR redirect detected."); websocket_url_to_connect = azure_url if azure_url.startswith("ws") else Helpers.http_to_websocket(azure_url)
-                      self.token = azure_token; final_ws_headers = {"Authorization": f"Bearer {self.token}"}; self.logger.debug("Using Azure headers.")
-                 elif connection_token: # Standard SignalR Core
-                      self.logger.debug("Standard SignalR negotiation.")
-                      # F1 endpoint requires /connect path and token in query string
-                      ws_params = {"clientProtocol": "1.5", "transport": "webSockets", "connectionToken": connection_token, "connectionData": json.dumps([{"name": HUB_NAME}])}
-                      connect_url_base = original_url.replace("https://", "wss://", 1).split('/negotiate')[0]
-                      websocket_url_to_connect = f"{connect_url_base}/connect?{urllib.parse.urlencode(ws_params)}"; self.logger.info(f"Constructed WSS URL: {websocket_url_to_connect}")
-                 else: raise HubConnectionError("Negotiation response missing ConnectionToken or Azure redirect.")
+                # --- CONSTRUCT URL (FIX DOUBLE ENCODING) ---
+                 # Define hub data *without* manually encoding
+                 hub_data_json = json.dumps([{"name": HUB_NAME}])
+
+                 # Build parameters dictionary with RAW token and RAW JSON string
+                 ws_params = {
+                     "clientProtocol": "1.5",
+                     "transport": "webSockets",
+                     # --- PASS RAW TOKEN ---
+                     "connectionToken": connection_token,
+                     # --- PASS RAW JSON STRING ---
+                     "connectionData": hub_data_json
+                 }
+
+                 # Let urlencode handle the encoding
+                 connect_url_base = original_url.replace("https://", "wss://", 1).split('/negotiate')[0]
+                 # Use urlencode directly on the dict with raw values
+                 websocket_url_to_connect = f"{connect_url_base}/connect?{urllib.parse.urlencode(ws_params)}" # urlencode does the job
+                 self.logger.info(f"Constructed WSS URL (Fixed Encoding): {websocket_url_to_connect}")
+                 # --- END URL CONSTRUCTION FIX ---
+
+
             except requests.exceptions.RequestException as req_ex: raise HubError(f"Negotiation request failed: {req_ex}")
             except Exception as e: raise HubError(f"Negotiation processing failed: {e}")
         else: # Skipped negotiation
-             websocket_url_to_connect = self.url; final_ws_headers = self.headers; self.logger.info("Skipping negotiation step.")
+             # Logic for skipped negotiation might need adjustment if headers/cookies expected
+             websocket_url_to_connect = self.url
+             # Try to get cookie from initial headers if skipping
+             negotiate_cookie_str = self.headers.get("Cookie")
+             self.logger.info("Skipping negotiation step.")
+
 
         # --- State Check & Connection ---
         if self.state == ConnectionState.connected: self.logger.warning("Already connected."); return False
-        self.state = ConnectionState.connecting; self.logger.debug(f"Connecting to: {websocket_url_to_connect}"); self.logger.debug(f"Using headers: {final_ws_headers}"); self.handshake_received = False
-        ws_header_list = [f"{k}: {v}" for k, v in final_ws_headers.items()]
+        self.state = ConnectionState.connecting
+        self.logger.debug(f"Connecting to: {websocket_url_to_connect}")
+
+        # --- SET REQUIRED HEADERS (Case Sensitive!) ---
+        ws_headers = {
+            'User-Agent': 'BestHTTP',
+            'Accept-Encoding': 'gzip,identity'
+            # DO NOT add Cookie here, use the cookie parameter below
+        }
+        # Add any *other* custom headers passed initially, overwriting if needed
+        ws_headers.update({k: v for k, v in self.headers.items() if k.lower() not in ['user-agent', 'accept-encoding', 'cookie']})
+        # --- END SET HEADERS ---
+
+        self.logger.debug(f"Using headers: {ws_headers}") # Log headers being sent
+        self.logger.debug(f"Using cookie: {negotiate_cookie_str}") # Log cookie being sent
+        self.handshake_received = False
+
+        # Prepare header list from dict for websocket-client
+        ws_header_list = [f"{k}: {v}" for k, v in ws_headers.items()]
 
         # Setup websocket-client app instance
-        self._ws = websocket.WebSocketApp(websocket_url_to_connect, header=ws_header_list, on_message=self.on_message, on_error=self.on_socket_error, on_close=self.on_close, on_open=self.on_open)
-
-        # --- Modified Thread Target with Error Catching ---
-        def run_forever_with_catch():
-            thread_logger = logging.getLogger("WSThread") # Separate logger for thread
-            try:
-                 thread_logger.debug("Thread target: Calling run_forever...")
-                 # Pass SSL options based on verify_ssl flag
-                 ssl_opts = {}
-                 if websocket_url_to_connect.startswith("wss"):
-                      ssl_opts = {"cert_reqs": ssl.CERT_REQUIRED if self.verify_ssl else ssl.CERT_NONE}
-                      if not self.verify_ssl:
-                           ssl_opts["check_hostname"] = False # Disable hostname check if not verifying
-                 thread_logger.debug(f"run_forever sslopt: {ssl_opts}")
-                 self._ws.run_forever(sslopt=ssl_opts if ssl_opts else None) # Pass None if empty
-                 thread_logger.debug("Thread target: run_forever completed.")
-            except Exception as thread_ex:
-                 thread_logger.error(f"Exception in run_forever thread: {thread_ex}", exc_info=True)
-                 if callable(self._internal_on_error_handler): self._internal_on_error_handler(thread_ex)
-            finally: thread_logger.debug("Thread target: Exiting run_forever_with_catch.")
-
-        self._thread = threading.Thread(target=run_forever_with_catch, daemon=True); self._thread.start(); self.logger.debug("Websocket run_forever thread started."); return True
+        self._ws = websocket.WebSocketApp(
+            websocket_url_to_connect,
+            header=ws_header_list,         # <-- Headers list
+            cookie=negotiate_cookie_str,    # <-- Pass cookie string here
+            on_message=self.on_message,
+            on_error=self.on_socket_error,
+            on_close=self.on_close,
+            on_open=self.on_open
+        )
+        self._thread = threading.Thread(target=self._ws.run_forever, kwargs={'sslopt': {"cert_reqs": ssl.CERT_NONE} if not self.verify_ssl else {}})
+        self._thread.daemon = True
+        self._thread.start()
+        return True # Indicate connection attempt started
 
     # evaluate_handshake (Patched Version from Response #79)
     def evaluate_handshake(self, message):
@@ -236,32 +264,36 @@ class WebsocketTransport(BaseTransport):
         # IMPORTANT: This assumes these variables are accessible globally from your main script.
         # Modifying library files like this has risks and couples the library to your app.
         #global live_data_file, app_status, app_state_lock, record_live_data
-
-        if app_state: # Check if import succeeded
+        save_file_object = None
+        is_saving_active = False
+        if app_state and hasattr(app_state, 'is_saving_active') and hasattr(app_state, 'live_data_file'):
             try:
-                # Use app_state.<variable_name>
-                with app_state.app_state_lock:
-                    is_live_recording_active = (app_state.app_status.get('state') == 'Live' and app_state.record_live_data)
-                    file_handle = app_state.live_data_file
-    
-                if is_live_recording_active and file_handle and not file_handle.closed:
-                     # ... (rest of the writing logic using file_handle) ...
-                     if isinstance(message, (str, bytes)):
-                         try:
-                             msg_str = message if isinstance(message, str) else message.decode('utf-8', errors='ignore')
-                             if msg_str and msg_str != "{}":
-                                file_handle.write(msg_str + "\n")
-                         except Exception as write_err:
-                             self.logger.error(f"Error writing raw live data from transport: {write_err}")
-                     else:
-                        self.logger.warning(f"Transport on_message received non-str/bytes for recording: {type(message)}")
-            except AttributeError as ae:
-                self.logger.error(f"Recording failed: Attribute missing from app_state? {ae}")
-            except Exception as record_check_err:
-                self.logger.error(f"Error checking/performing recording status in transport: {record_check_err}")
-        else:
-            self.logger.warning("Skipping recording check because app_state module was not imported.")
-        # --- END MODIFIED RECORDING LOGIC ---
+                # Access shared state via app_state (assuming these exist)
+                is_saving_active = app_state.record_live_data
+                save_file_object = app_state.live_data_file
+            except AttributeError:
+                # Handle cases where attributes might not be initialized yet
+                pass
+        if is_saving_active and save_file_object is not None:
+            try:
+                # Ensure the message is a string (it usually is raw from websocket)
+                if isinstance(message, bytes):
+                    message_str = message.decode('utf-8') # Decode if necessary
+                else:
+                    message_str = str(message)
+
+                # Write the raw message string followed by a newline
+                save_file_object.write(message_str + "\n")
+                # Optional: Flush occasionally if buffering is an issue,
+                # but standard line buffering might be sufficient.
+                # save_file_object.flush()
+            except IOError as e:
+                # Log error, maybe disable saving?
+                self.logger.error(f"Error writing to live data file: {e}")
+                # Consider adding logic to set app_state.is_saving_active = False here
+            except Exception as e:
+                self.logger.error(f"Unexpected error during message saving: {e}", exc_info=True)
+        # --- END ADDED SAVE LOGIC ---
         
         # --- ADDED Raw Log Line ---
         self.logger.debug(f"SYNC Raw message received by transport: {message!r}")
