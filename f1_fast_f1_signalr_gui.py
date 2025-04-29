@@ -1476,7 +1476,7 @@ app.layout = dbc.Container([
         dbc.Col(dcc.Graph(id='track-map-graph', style={'height': '60vh'})) # Adjust height as needed
     ], className="mt-3"), # Add margin-top
     # --- END ADDED ---
-    dcc.Interval(id='interval-component', interval=200, n_intervals=0),
+    dcc.Interval(id='interval-component', interval=250, n_intervals=0),
 ], fluid=True)
 
 # --- Dash Callbacks ---
