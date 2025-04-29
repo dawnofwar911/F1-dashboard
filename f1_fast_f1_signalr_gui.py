@@ -8,17 +8,12 @@ import time
 import threading
 import urllib.parse
 import sys
-import urllib.parse
 import os
 import queue
 import requests
-import sqlite3
 import app_state
 import numpy as np
 import plotly.graph_objects as go # Make sure this is imported at the top
-
-# Use standard requests library for sync negotiation
-import requests
 
 # Import for F1 Schedule / Data
 try:
@@ -318,6 +313,19 @@ def handle_message(message_data):
             main_logger.debug("Ignoring empty keep-alive message.")
         else:
             main_logger.warning(f"Received unexpected message format: {type(message_data)} - {str(message_data)[:100]}")
+
+def _process_weather_data(data):
+    """ Helper function to process WeatherData stream """
+    global data_store # Use data_store for less frequently updated info
+    if isinstance(data, dict):
+        # WeatherData stream payload seems to be the dict itself
+        # Update the 'WeatherData' entry in data_store directly
+        # No need to nest under ['data'] like we did for SessionData previously
+        if 'WeatherData' not in data_store: data_store['WeatherData'] = {}
+        data_store['WeatherData'].update(data) # Update with received keys/values
+        main_logger.info(f"Updated WeatherData: {data}")
+    else:
+        main_logger.warning(f"Unexpected WeatherData format received: {type(data)}")
 
 def _process_timing_app_data(data):
     """ Helper function to process TimingAppData stream data (contains Stint/Tyre info) """
@@ -891,8 +899,8 @@ def data_processing_loop():
                             _process_position_data(actual_data) # Call the position handler
                         # --- END ADDED Stream Handlers ---
                         # Add other handlers here (WeatherData, TimingStats, etc.)
-                        # elif stream_name == "WeatherData":
-                        #    _process_weather_data(actual_data) # Need to create this function
+                        elif stream_name == "WeatherData":
+                            _process_weather_data(actual_data) # call the weather handler
                         else:
                             # Optional: Log if you want to know about unhandled streams that made it this far
                             main_logger.debug(f"No specific handler for stream: {stream_name}") 
@@ -1374,19 +1382,18 @@ app.layout = dbc.Container([
     Output('status-display', 'children'),
     Output('heartbeat-display', 'children'),
     Output('track-status-display', 'children'), # <<< ADDED Output
-    Output('session-info-display', 'children'), # <<< ADDED Output
+    # Output('session-info-display', 'children'), # <<< ADDED Output
     Output('live-data-display', 'children'),
     Output('timing-data-actual-table', 'data'),
     Output('timing-data-timestamp', 'children'),
     Input('interval-component', 'n_intervals')
 )
 def update_output(n):
-    #process_data_queue() # Process any pending data first
 
     status_text = "State: Unknown"
     heartbeat_text = "Last HB: N/A"
     track_display_text = "Track: Unknown"
-    session_info_display_children = "Session Details: Waiting..." # <<< Initialize
+    # session_info_display_children = "Session Details: Waiting..." # <<< Initialize
     other_data_display = []
     table_data = []
     timing_timestamp_text = "Waiting for TimingData..."
@@ -1396,35 +1403,13 @@ def update_output(n):
         status_text = f"State: {app_state.app_status['state']} | Conn: {app_state.app_status['connection']}"
         heartbeat_text = f"Last HB: {app_state.app_status['last_heartbeat'] or 'N/A'}"
         
-        # --- ADDED: Get and Format Track Status ---
+        # --- ADDED: Get and Format Track Status --
         track_status_code = track_status_data.get('Status', '0')
-        track_status_message = track_status_data.get('Message', '')
         track_status_map = {
-            '1': "AllClear", '2': "Yellow", '3': "SC Retiring?", # Adjust map as needed
-            '4': "SC Deployed", '5': "Red Flag", '6': "VSC Ending", '7': "VSC Deployed"
+                '1': "Track Clear", '2': "Yellow Flag", '3': "Flag",
+                '4': "SC Deployed", '5': "Red Flag", '6': "VSC Deployed", '7': "VSC Ending"
         }
         track_display_text = f"Track: {track_status_map.get(track_status_code, f'Unknown ({track_status_code})')}"
-        # Optionally add message if different from standard mapping
-        # if track_status_message and track_status_message != track_status_map.get(track_status_code):
-        #      track_display_text += f" ({track_status_message})"
-        # --- END ADDED ---
-        
-        # --- ADDED: Get and Format Session Details ---
-        # Extract details safely using .get()
-        meeting_name = session_details.get('Meeting', {}).get('Name', 'Unknown Meeting')
-        session_name = session_details.get('Name', 'Unknown Session')
-        circuit_name = session_details.get('Circuit', {}).get('ShortName', 'Unknown Circuit') # Or 'OfficialName'
-        start_time_str = session_details.get('StartDate') # Already a string? Format if needed
-        country_name = session_details.get('Country', {}).get('Name', '')
-
-        session_info_parts = [f"Circuit: {circuit_name}"]
-        if country_name: session_info_parts.append(f"({country_name})")
-        session_info_parts.append(f"Event: {meeting_name}")
-        session_info_parts.append(f"Session: {session_name}")
-        if start_time_str: session_info_parts.append(f"Starts: {start_time_str}") # Format this date/time nicer?
-
-        session_info_display_children = " | ".join(session_info_parts)
-        # --- END ADDED ---
 
         # Display other stream data (collapsed by default except SessionInfo)
         sorted_streams = sorted([s for s in data_store.keys() if s not in ['TimingData', 'DriverList', 'Position.z', 'CarData.z']]) # Exclude high-frequency streams
@@ -1535,8 +1520,7 @@ def update_output(n):
 
     # --- Return all outputs in correct order ---
     return (status_text, heartbeat_text, track_display_text,
-            session_info_display_children, # <<< Added session info
-            other_data_display, table_data, timing_timestamp_text)
+    other_data_display, table_data, timing_timestamp_text)
 
 @app.callback( Output('start-button', 'disabled'), Output('stop-button', 'disabled'), Output('replay-button', 'disabled'), Output('replay-file-input', 'disabled'), Output('replay-speed-input', 'disabled'), Input('interval-component', 'n_intervals'))
 def update_button_states(n):
@@ -1544,6 +1528,85 @@ def update_button_states(n):
     is_idle = state in ["Idle", "Stopped", "Error", "Playback Complete"]; is_running = state in ["Connecting", "Live", "Replaying", "Initializing"]; is_stopping = state == "Stopping"
     start_disabled = is_running or is_stopping; replay_disabled = is_running or is_stopping; stop_disabled = is_idle; input_disabled = is_running or is_stopping
     return start_disabled, stop_disabled, replay_disabled, input_disabled, input_disabled
+
+@app.callback(
+        Output('session-info-display', 'children'), # Target the specific Div for session info
+        Input('interval-component', 'n_intervals') # Triggered by the same interval
+    )
+
+def update_session_info_display(n):
+        # Default values
+        session_info_parts = ["Session Info: Waiting..."]
+        weather_elements = []
+
+        try:
+            with app_state.app_state_lock:
+                # --- Read SessionInfo Data ---
+                session_info_store_entry = data_store.get('SessionInfo', {})
+                session_details = {}
+                if isinstance(session_info_store_entry, dict):
+                     if 'data' in session_info_store_entry and isinstance(session_info_store_entry['data'], dict):
+                          session_details = session_info_store_entry['data']
+                     else:
+                          session_details = session_info_store_entry
+
+                # --- Read Weather Data ---
+                weather_data = data_store.get('WeatherData', {})
+                if not isinstance(weather_data, dict): weather_data = {}
+
+                # --- Format Session Details ---
+                meeting_name = session_details.get('Meeting', {}).get('Name', 'Unknown Meeting')
+
+                session_name = session_details.get('Name', 'Unknown Session')
+
+                circuit_name = session_details.get('Circuit', {}).get('ShortName', 'Unknown Circuit') # Or 'OfficialName'
+
+                start_time_str = session_details.get('StartDate') # Already a string? Format if needed
+
+                country_name = session_details.get('Country', {}).get('Name', '')
+
+                session_info_parts = []
+                if circuit_name != 'Unknown Circuit': session_info_parts.append(f"{circuit_name}")
+                if country_name: session_info_parts.append(f"({country_name})")
+                session_info_parts.append(f"Event: {meeting_name}")
+                session_info_parts.append(f"Session: {session_name}")
+                if start_time_str: session_info_parts.append(f"Starts: {start_time_str}") # Format this date/time nicer?
+                session_info_str = " | ".join(session_info_parts) if                         session_info_parts else "Session: N/A"
+
+                # --- Format Weather Details (using CORRECT PascalCase keys) ---
+                air_temp = weather_data.get('AirTemp')         # Corrected key
+                track_temp = weather_data.get('TrackTemp')       # Corrected key
+                humidity = weather_data.get('Humidity')       # Corrected key
+                pressure = weather_data.get('Pressure')       # Corrected key
+                wind_speed = weather_data.get('WindSpeed')     # Corrected key
+                wind_dir = weather_data.get('WindDirection') # Corrected key
+                rainfall = weather_data.get('Rainfall')       # Corrected key
+
+                if air_temp is not None: weather_elements.append(f"Air: {air_temp}°C")
+                if track_temp is not None: weather_elements.append(f"Track: {track_temp}°C")
+                if humidity is not None: weather_elements.append(f"Hum: {humidity}%")
+                if pressure is not None: weather_elements.append(f"Press: {pressure} hPa") # Changed unit assumption
+                if wind_speed is not None:
+                     wind_str = f"Wind: {wind_speed} m/s" # Changed unit assumption (often m/s)
+                     if wind_dir is not None: wind_str += f" ({wind_dir}°)"
+                     weather_elements.append(wind_str)
+                if rainfall is not None and str(rainfall) == '1': # Check for '1' string (or adjust if it's 0/1 int)
+                     weather_elements.append("RAIN")
+
+                weather_string = " | ".join(weather_elements) if weather_elements else "Weather: N/A"
+
+                # --- Combine Output ---
+                combined_info = dbc.Row([
+                     dbc.Col(session_info_str, width="auto", style={'paddingRight': '15px'}),
+                     dbc.Col(weather_string, width="auto")
+                ], justify="start", className="ms-1")
+
+                return combined_info
+
+        except Exception as e:
+            main_logger.error(f"Error in update_session_info_display callback: {e}", exc_info=True)
+            return "Error loading session info..."
+
 
 @app.callback(Output('status-display', 'children', allow_duplicate=True), Input('start-button', 'n_clicks'), prevent_initial_call=True)
 def start_live_callback(n_clicks):
