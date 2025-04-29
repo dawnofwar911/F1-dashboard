@@ -109,28 +109,29 @@ def get_latest_f1_session(session_type='Race'):
         return None
 
 # --- Data Handling ---
-def _decode_and_decompress(message):
-    """Decodes and decompresses SignalR messages ending in .z"""
-    if message and isinstance(message, str): # No need to check for .z here, handle_message does that
+# Replace your _decode_and_decompress function
+
+def _decode_and_decompress(encoded_data):
+    """Decodes base64 encoded and zlib decompressed data (message payload)."""
+    if encoded_data and isinstance(encoded_data, str):
         try:
-            # The data might already be stripped of '.z' by handle_message
-            encoded_data = message
             # Add padding if necessary
             missing_padding = len(encoded_data) % 4
             if missing_padding:
                 encoded_data += '=' * (4 - missing_padding)
             decoded_data = base64.b64decode(encoded_data)
             # Use -zlib.MAX_WBITS for raw deflate data
-            return json.loads(zlib.decompress(decoded_data, -zlib.MAX_WBITS))
+            decompressed_data = zlib.decompress(decoded_data, -zlib.MAX_WBITS)
+            return json.loads(decompressed_data.decode('utf-8'))
         except json.JSONDecodeError as e:
-             main_logger.error(f"JSON decode error after decompression: {e}. Data sample: {decoded_data[:100]}...", exc_info=False)
-             return None # Return None on JSON error
+            main_logger.error(f"JSON decode error after decompression: {e}. Data sample: {decoded_data[:100]}...", exc_info=False)
+            return None
         except Exception as e:
-            # Catch other potential errors like incorrect padding, zlib errors
-            main_logger.error(f"Decode/Decompress error: {e}. Data: {message[:50]}...", exc_info=False) # Log only start of data
-            return None # Return None on error
-    # Return non-string messages as-is (though handle_message primarily sends strings needing decode)
-    return message
+            main_logger.error(f"Decode/Decompress error: {e}. Data: {str(encoded_data)[:50]}...", exc_info=False)
+            return None
+    # If input wasn't a string or was empty, return None or original? Let's return None.
+    main_logger.warning(f"decode_and_decompress received non-string or empty data: type {type(encoded_data)}")
+    return None
 
 def run_connection_manual_neg(target_url, headers_for_ws):
     """Target function for connection thread using pre-negotiated URL."""
@@ -173,19 +174,10 @@ def run_connection_manual_neg(target_url, headers_for_ws):
         hub_connection.on_error(handle_error) # Use your error handler name
 
         # Register message handlers (assuming functions exist)
-        hub_connection.on("CarData.z", lambda data: _decode_and_decompress("CarData.z", data))
-        hub_connection.on("Position.z", lambda data: _decode_and_decompress("Position.z", data))
-        # Simplified registration loop
-        for stream in STREAMS_TO_SUBSCRIBE:
-            if stream.endswith(".z"):
-                if stream not in ["CarData.z", "Position.z"]: # Avoid duplicate handlers if already specific
-                     handler = lambda data, s=stream: _decode_and_decompress(s, data)
-                     hub_connection.on(stream, handler)
-            else:
-                def handler(
-                    data, s=stream): return _decode_and_decompress(s, data)
-                hub_connection.on(stream, handler)
-        main_logger.info("Connection thread: Handlers registered.")
+        HUB_NAME = "Streaming" # Make sure HUB_NAME is defined globally or locally
+        hub_connection.on(HUB_NAME, on_message) # on_message handles parsing msg structure
+        main_logger.info(f"Connection thread: Generic handler 'on_message' registered for hub '{HUB_NAME}'.")
+    # --- >>> END ADDITION <<< ---
 
         # Update app state before starting
         with app_state.app_state_lock:
@@ -227,93 +219,93 @@ def run_connection_manual_neg(target_url, headers_for_ws):
         globals()['hub_connection'] = None # Clear global reference
         main_logger.info("Conn thread cleanup finished (manual neg).")
 
+def on_message(msg):
+    global data_queue
+    try:
+        if isinstance(msg, dict) and isinstance(msg.get('M'), list):
+            # ... (logic to loop through M, call _decode_and_decompress, queue dict) ...
+            messages_queued_count = 0
+            timestamp_from_outer_T = msg.get("T")
+            for msg_container in msg["M"]:
+                if isinstance(msg_container, dict) and msg_container.get("M") == "feed":
+                    msg_args = msg_container.get("A")
+                    if isinstance(msg_args, list) and len(msg_args) >= 2:
+                        stream_name_raw=msg_args[0]; data_content=msg_args[1]
+                        timestamp_for_queue = msg_args[2] if len(msg_args) > 2 else timestamp_from_outer_T
+                        if timestamp_for_queue is None: timestamp_for_queue = datetime.datetime.now(timezone.utc).isoformat() + 'Z'
+                        stream_name = stream_name_raw; actual_data = data_content
+                        if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
+                            stream_name = stream_name_raw[:-2]
+                            actual_data = _decode_and_decompress(data_content) # Assumes helper exists
+                            if actual_data is None: continue
+                        if actual_data is not None:
+                            data_queue.put({"stream": stream_name, "data": actual_data, "timestamp": timestamp_for_queue})
+                            messages_queued_count += 1
+        elif isinstance(msg, dict) and "R" in msg:
+             handle_message(msg) # Assumes handle_message exists and handles R
+        elif isinstance(msg, list) and len(msg) >= 2:
+             handle_message(msg) # Assumes handle_message exists and handles lists
+        elif isinstance(msg, dict) and not msg: # Check for empty dict {}
+             handle_message(msg) # Assumes handle_message exists and handles heartbeats
+        elif isinstance(msg, dict) and "C" in msg:
+             pass # Ignore Control messages
+        else:
+             main_logger.warning(f"Live on_message received unhandled structure: {type(msg)} - {str(msg)[:200]}")
+    except Exception as e:
+         main_logger.error(f"Error processing live message in on_message: {e}", exc_info=True)
+         # ... (log problematic message) ...
 
 def handle_message(message_data):
     """
-    Handles incoming SignalR messages.
-    Processes standard lists ["StreamName", Data, Timestamp]
-    and unpacks the initial snapshot dictionary {"R": {StreamName: Data, ...}}.
-    Puts individual streams onto the data_queue.
+    Handles specific incoming parsed SignalR message data types (R, List, {}).
+    Puts structured items {"stream":..., "data":..., "timestamp":...} onto the data_queue.
+    NOTE: Does NOT handle {"M": [...]} blocks - on_message handles those directly.
     """
-    main_logger.debug(f"Received message type: {type(message_data)}")
+    global data_queue # Make sure queue is accessible
 
-    # --- Case 1: Initial Snapshot Dictionary {"R": {...}} ---
     if isinstance(message_data, dict) and "R" in message_data:
-        main_logger.info("Processing initial snapshot message (R: block)...")
+        # ... (Keep the logic for handling "R" blocks from your v12.py/response #211) ...
+        # Example:
         snapshot_data = message_data.get("R", {})
-        if not isinstance(snapshot_data, dict):
-            main_logger.warning(f"Snapshot block 'R' contained non-dict data: {type(snapshot_data)}")
-            return
+        if isinstance(snapshot_data, dict):
+            snapshot_ts = snapshot_data.get("Heartbeat", {}).get("Utc") or (datetime.datetime.now(timezone.utc).isoformat() + 'Z')
+            processed_count = 0
+            for stream_name_raw, stream_data in snapshot_data.items():
+                stream_name = stream_name_raw; actual_data = stream_data
+                if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
+                    stream_name = stream_name_raw[:-2]
+                    actual_data = _decode_and_decompress(stream_data)
+                    if actual_data is None: continue
+                if actual_data is not None:
+                    # Check if stream is in STREAMS_TO_SUBSCRIBE if necessary
+                    data_queue.put({"stream": stream_name, "data": actual_data, "timestamp": snapshot_ts})
+                    processed_count += 1
+            main_logger.info(f"Queued {processed_count} streams from snapshot (R) block via handle_message.")
+        else: main_logger.warning(f"Snapshot block 'R' non-dict: {type(snapshot_data)}")
 
-        # Try to get a consistent timestamp for all streams in this snapshot
-        # Often a Heartbeat is included, use its timestamp if possible
-        snapshot_ts = snapshot_data.get("Heartbeat", {}).get("Utc")
-        if not snapshot_ts: # Fallback to current time
-             snapshot_ts = datetime.datetime.utcnow().isoformat() + 'Z'
-             main_logger.debug("Using current time as timestamp for snapshot block.")
-        else:
-             main_logger.debug(f"Using Heartbeat timestamp for snapshot block: {snapshot_ts}")
 
-
-        # Iterate through streams within the 'R' block
-        known_streams = set(STREAMS_TO_SUBSCRIBE) # Keep this set
-        for stream_name_raw, stream_data in snapshot_data.items():
-            stream_name = stream_name_raw
-            actual_data = stream_data
-            stream_name_no_z = stream_name_raw # Name without .z for queueing
-
-            # Decompress if needed (handle keys like "CarData.z")
-            if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
-                stream_name_no_z = stream_name_raw[:-2]
-                actual_data = _decode_and_decompress(stream_data)
-                if actual_data is None:
-                    main_logger.warning(f"Failed to decompress {stream_name_raw} from snapshot block.")
-                    continue # Skip this stream if decompression fails
-
-            # Check if the key looks like a stream we care about
-            # --- CORRECTED CHECK ---
-            # Check if EITHER the raw name (e.g., Position.z) OR the name without .z (e.g., Position)
-            # is in the list of streams we originally subscribed to.
-            # Also ensure the data wasn't None after potential decompression.
-            if actual_data is not None and (stream_name_raw in known_streams or stream_name_no_z in known_streams):
-                 main_logger.debug(f"Queueing stream from snapshot: {stream_name_no_z}")
-                 # Use the name WITHOUT .z when putting onto the queue
-                 data_queue.put({"stream": stream_name_no_z, "data": actual_data, "timestamp": snapshot_ts})
-            # --- END CORRECTED CHECK ---
-            # Don't need the else block logging ignored keys anymore if the check is correct
-            # else:
-            #      main_logger.debug(f"Ignoring non-stream key '{stream_name_raw}' within snapshot block.")
-
-    # --- Case 2: Standard Message List ["StreamName", Data, Timestamp] ---
     elif isinstance(message_data, list) and len(message_data) >= 2:
-        stream_name_raw = message_data[0]
-        data = message_data[1]
-        # Use provided timestamp if available, else generate one
-        timestamp = message_data[2] if len(message_data) > 2 else datetime.datetime.utcnow().isoformat() + 'Z'
-
-        stream_name = stream_name_raw
-        actual_data = data
-        # Decompress if needed
+        # ... (Keep the logic for handling direct lists from your v12.py/response #211) ...
+        # Example:
+        stream_name_raw = message_data[0]; data_content = message_data[1]
+        timestamp_for_queue = message_data[2] if len(message_data) > 2 else (datetime.datetime.now(timezone.utc).isoformat() + 'Z')
+        stream_name = stream_name_raw; actual_data = data_content
         if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
             stream_name = stream_name_raw[:-2]
-            actual_data = _decode_and_decompress(data)
-            if actual_data is None:
-                main_logger.warning(f"Decompress failed for stream {stream_name_raw}. Skipping.")
-                return # Skip if decompression fails
-
+            actual_data = _decode_and_decompress(data_content)
+            if actual_data is None: return # Skip
         if actual_data is not None:
-             main_logger.debug(f"Queueing standard stream: {stream_name}")
-             data_queue.put({"stream": stream_name, "data": actual_data, "timestamp": timestamp})
-        else:
-             main_logger.warning(f"Data was None for standard stream {stream_name}. Skipping.")
+             data_queue.put({"stream": stream_name, "data": actual_data, "timestamp": timestamp_for_queue})
 
-    # --- Case 3: Other formats (e.g., keep-alive messages, unexpected structures) ---
-    else:
-        # Ignore keep-alive messages (often empty dicts {}) or log unexpected formats
-        if isinstance(message_data, dict) and not message_data:
-            main_logger.debug("Ignoring empty keep-alive message.")
-        else:
-            main_logger.warning(f"Received unexpected message format: {type(message_data)} - {str(message_data)[:100]}")
+
+    elif isinstance(message_data, dict) and not message_data: # Heartbeat {}
+        # Update heartbeat state directly, no need to queue unless processor needs it
+        with app_state.app_state_lock:
+            app_state.app_status["last_heartbeat"] = datetime.datetime.now(timezone.utc).isoformat()
+    # NOTE: handle_message no longer needs to check for 'C' or 'M' if called correctly by on_message
+    # else:
+    #    main_logger.warning(f"handle_message received unexpected format: {type(message_data)}")
+
 
 
 # Replace your parse_iso_timestamp_safe function with this version
@@ -862,131 +854,65 @@ def data_processing_loop():
 
     while not stop_event.is_set():
         # processed_count += 1
-        try:
             item = None # Initialize item to None for this iteration
             try:
                 item = data_queue.get(block=True, timeout=0.2)
-                # Expect item = {"stream": stream_name, "data": data, "timestamp": timestamp}
-                # OR item = {"stream": None, "data": {"R":{...}}, "timestamp": timestamp} for snapshot
-    
-                timestamp = item['timestamp']
-                top_level_data = item['data']
-                top_level_stream_name = item['stream']
-                streams_to_process_this_item = {} # Initialize dictionary for this item
-    
-                # --- Check for initial snapshot structure 'R' ---
-                if isinstance(top_level_data, dict) and 'R' in top_level_data:
-                     main_logger.info("Processing initial snapshot message block (R:)...")
-                     initial_snapshot_data = top_level_data.get('R', {})
-                     if isinstance(initial_snapshot_data, dict):
-                         # Extract streams from within the 'R' dictionary
-                         for stream_name_key, stream_data_value in initial_snapshot_data.items():
-                              streams_to_process_this_item[stream_name_key] = stream_data_value # Store raw data
-                     else:
-                         main_logger.warning(f"Snapshot block 'R' contained non-dict data: {type(initial_snapshot_data)}")
-                         data_queue.task_done() # Mark done even if skipped
-                         continue
-    
-                # --- Check for normal message structure 'M' ---
-                elif isinstance(top_level_data, dict) and 'M' in top_level_data:
-                     main_logger.debug("Processing standard message block (M:)...")
-                     if isinstance(top_level_data['M'], list):
-                         for msg_container in top_level_data['M']:
-                              if isinstance(msg_container, dict) and msg_container.get("M") == "feed":
-                                  msg_args = msg_container.get("A")
-                                  if isinstance(msg_args, list) and len(msg_args) >= 2:
-                                       stream_name = msg_args[0]
-                                       stream_data = msg_args[1]
-                                       # Allow individual message timestamp override if present
-                                       if len(msg_args) > 2: timestamp = msg_args[2]
-                                       streams_to_process_this_item[stream_name] = stream_data
-                # --- Handle case where the queued item IS the direct stream data ---
-                elif top_level_stream_name:
-                     main_logger.debug(f"Processing direct stream message for: {top_level_stream_name}")
-                     streams_to_process_this_item[top_level_stream_name] = top_level_data
-    
-                else:
-                     # Unexpected structure
-                     main_logger.warning(f"Skipping queue item with unexpected structure: stream={top_level_stream_name}, data_type={type(top_level_data)}")
-                     data_queue.task_done() # Mark done even if skipped
-                     continue
-    
-                # --- If no streams were extracted, skip further processing for this item ---
-                if not streams_to_process_this_item:
-                    main_logger.debug("No processable streams found in the queue item.")
-                    data_queue.task_done()
+                # --- Expect item = {"stream": stream_name, "data": data, "timestamp": timestamp} ---
+                if not isinstance(item, dict) or 'stream' not in item or 'data' not in item:
+                    main_logger.warning(f"Skipping queue item with unexpected structure: {type(item)}")
+                    if item is not None: data_queue.task_done()
                     continue
+
+                stream_name = item['stream']
+                actual_data = item['data']
+                timestamp = item.get('timestamp') # Use .get for safety, might be None from some sources
     
-                # --- Loop through streams found in the message ---
-                processed_data_for_saving = {} # Store processed/decompressed data for saving
-                for stream_name_raw, stream_data in streams_to_process_this_item.items():
-                    stream_name = stream_name_raw
-                    actual_data = stream_data
+                # --- Process individual streams (Update state) ---
+                with app_state.app_state_lock: # Lock for timing_state and data_store updates
+                    data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
     
-                    # Decompress if needed
-                    if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
-                         stream_name = stream_name_raw[:-2]
-                         actual_data = _decode_and_decompress(stream_data)
-                         if actual_data is None:
-                              main_logger.warning(f"Failed to decompress {stream_name_raw}.")
-                              continue # Skip processing this specific stream
-    
-                    processed_data_for_saving[stream_name] = actual_data # Store for saving later
-    
-                    # --- Process individual streams (Update state) ---
-                    with app_state.app_state_lock: # Lock for timing_state and data_store updates
-                        data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
-    
-                        # Specific stream handlers
-                        if stream_name == "Heartbeat":
-                            app_state.app_status["last_heartbeat"] = timestamp
-                        elif stream_name == "DriverList":
-                            _process_driver_list(actual_data) # Existing handler
-                        elif stream_name == "TimingData":
-                            _process_timing_data(actual_data) # Existing handler
-                        elif stream_name == "SessionInfo":
-                             _process_session_info(actual_data) # Existing handler
-                        # --- ADDED Stream Handlers ---
-                        elif stream_name == "SessionData":
-                             _process_session_data(actual_data) # Call the new handler
-                        # --- END ADDED ---
-                        elif stream_name == "TimingAppData":
-                            _process_timing_app_data(actual_data) # Updates timing_state with tyre info
-                        elif stream_name == "TrackStatus":
-                             _process_track_status(actual_data) # Call new handler
-                        elif stream_name == "CarData":
-                             _process_car_data(actual_data) # Call new handler
-                        elif stream_name == "Position":
-                            _process_position_data(actual_data) # Call the position handler
-                        # --- END ADDED Stream Handlers ---
-                        # Add other handlers here (WeatherData, TimingStats, etc.)
-                        elif stream_name == "WeatherData":
-                            _process_weather_data(actual_data) # call the weather handler
-                        else:
-                            # Optional: Log if you want to know about unhandled streams that made it this far
-                            main_logger.debug(f"No specific handler for stream: {stream_name}") 
+                    # Specific stream handlers
+                    if stream_name == "Heartbeat":
+                       app_state.app_status["last_heartbeat"] = timestamp
+                    elif stream_name == "DriverList":
+                        _process_driver_list(actual_data) # Existing handler
+                    elif stream_name == "TimingData":
+                        _process_timing_data(actual_data) # Existing handler
+                    elif stream_name == "SessionInfo":
+                        _process_session_info(actual_data) # Existing handler
+                    # --- ADDED Stream Handlers ---
+                    elif stream_name == "SessionData":
+                         _process_session_data(actual_data) # Call the new handler
+                    # --- END ADDED ---
+                    elif stream_name == "TimingAppData":
+                        _process_timing_app_data(actual_data) # Updates timing_state with tyre info
+                    elif stream_name == "TrackStatus":
+                        _process_track_status(actual_data) # Call new handler
+                    elif stream_name == "CarData":
+                        _process_car_data(actual_data) # Call new handler
+                    elif stream_name == "Position":
+                        _process_position_data(actual_data) # Call the position handler
+                    # --- END ADDED Stream Handlers ---
+                    # Add other handlers here (WeatherData, TimingStats, etc.)
+                    elif stream_name == "WeatherData":
+                         _process_weather_data(actual_data) # call the weather handler
+                    else:
+                         # Optional: Log if you want to know about unhandled streams that made it this far
+                        main_logger.debug(f"No specific handler for stream: {stream_name}") 
+                        pass
     
                 data_queue.task_done() # Mark the original queue item as done
     
             except queue.Empty:
                 continue
-                #break # No more items
-        except Exception as e: # <<< Catch ALL exceptions within the while loop's iteration
-            # Log the full traceback to understand *why* the thread might be stopping
-            main_logger.error(f"!!! Unhandled exception in data_processing_loop !!! Error: {e}", exc_info=True)
-            # Depending on the error, you might want to break the loop or attempt recovery
-            # For now, we just log and continue, but if it repeats rapidly, the thread might still be problematic.
-            # Consider adding a small sleep here if errors are continuous: time.sleep(1)
-
-            # Ensure task_done is called even if error occurred after get() but before original task_done()
-            # Note: This might mark a task done even if processing failed halfway.
-            if item is not None:
-                try:
-                    app_state.data_queue.task_done()
-                    main_logger.info("Marked task done after catching exception.")
-                except (ValueError, AttributeError, Exception):
-                     main_logger.warning("Could not mark task done after exception.")
-                     pass # Ignore errors during cleanup after error
+                    #break # No more items
+            except Exception as e: # <<< Catch ALL exceptions within the while loop's iteration
+                main_logger.error(f"!!! Unhandled exception in data_processing_loop !!! Error: {e}", exc_info=True)
+                if item is not None:
+                    try:
+                        app_state.data_queue.task_done()
+                    except: pass # Ignore errors during error cleanup
+                time.sleep(0.5) # Avoid busy-looping on continuous errors
 
     main_logger.info("Data processing thread finished cleanly (stop_event set).") # Changed log message
 
@@ -1296,66 +1222,51 @@ def replay_from_file(data_file_path, replay_speed=1.0):
     
     
                             # --- Delay logic (Apply only if flag is set) ---
+                            # --- MODIFIED Delay logic (Uses last A[2] timestamp) ---
                             delay_applied = False
-                            if should_apply_delay and timestamp_for_this_line: # Check if timestamp was actually set
-                                if replay_speed > 0:
-                                    if not first_message_processed: time.sleep(0.01 / replay_speed if replay_speed > 0 else 0.001); first_message_processed = True
-                                    elif last_timestamp_for_delay: # Use the dedicated delay timestamp
-                                        current_ts_dt = parse_iso_timestamp_safe(
-                                            timestamp_for_this_line, line_num)
-                                        prev_ts_dt = parse_iso_timestamp_safe(
-                                            last_timestamp_for_delay, f"{line_num-1}(prev)")
-                                        
-                                        if current_ts_dt and prev_ts_dt:  # Check if BOTH parsing succeeded
-                                            try:  # Try block for calculations and sleep
-                                                time_diff_seconds = (
-                                                    current_ts_dt - prev_ts_dt).total_seconds()
-
-                                                if time_diff_seconds > 0:
-                                                    target_delay = time_diff_seconds / replay_speed if replay_speed > 0 else time_diff_seconds
-                                                    processing_time = time.monotonic() - start_time_line
-                                                    actual_delay = max(
-                                                        0, target_delay - processing_time)
-                                                    max_physical_delay = 2.0  # Cap max physical sleep
-                                                    actual_sleep = min(
-                                                        actual_delay, max_physical_delay)
-
-                                                    if actual_sleep > 0.001:
-                                                        time.sleep(actual_sleep)
-                                                        delay_applied = True
-                                                    # else: delay too small
-
-                                                elif time_diff_seconds < 0:
-                                                    main_logger.warning(
-                                                        f"Timestamp backwards line {line_num}: {timestamp_for_this_line} vs {last_timestamp_for_delay}")
-                                                    # Apply minimal fixed delay for backward timestamps
-                                                    time.sleep(
-                                                        0.001 / replay_speed if replay_speed > 0 else 0.001)
+                            # Use the timestamp extracted from the LAST message part processed in this block
+                            timestamp_to_use_for_current_block = timestamp_for_this_line
+                
+                            if should_apply_delay and timestamp_to_use_for_current_block:
+                                current_ts_dt = None; prev_ts_dt = None
+                
+                                if not first_message_processed:
+                                    current_ts_dt = parse_iso_timestamp_safe(timestamp_to_use_for_current_block, line_num)
+                                    first_message_processed = True
+                                elif last_timestamp_for_delay: # This holds the A[2] string from the previous relevant block
+                                    current_ts_dt = parse_iso_timestamp_safe(timestamp_to_use_for_current_block, line_num)
+                                    prev_ts_dt = parse_iso_timestamp_safe(last_timestamp_for_delay, f"{line_num-1}(prev)")
+                
+                                    if current_ts_dt and prev_ts_dt:
+                                        try:
+                                            time_diff_seconds = (current_ts_dt - prev_ts_dt).total_seconds()
+                                            if time_diff_seconds > 0:
+                                                target_delay = time_diff_seconds / replay_speed if replay_speed > 0 else time_diff_seconds
+                                                processing_time = time.monotonic() - start_time_line
+                                                actual_delay = max(0, target_delay - processing_time)
+                                                max_physical_delay = 2.0
+                                                actual_sleep = min(actual_delay, max_physical_delay)
+                                                if actual_sleep > 0.001:
+                                                    time.sleep(actual_sleep)
                                                     delay_applied = True
-                                                # else: time_diff_seconds == 0, no delay needed
-                                            except Exception as calc_err: # Catch errors during calculation/sleep
-                                                main_logger.error(f"Error during delay calculation/sleep line {line_num}: {calc_err}", exc_info=True)
-                                                # Fall through to fixed delay below
-
-                                    # else: Parsing failed for current or previous timestamp (already logged by helper)
-                                    # Fall through to fixed delay below
-
-                                # else: last_timestamp_for_delay is None (should only happen between first and second message)
-                                # Fall through to fixed delay (or maybe no delay?)
-                                
-                                # Fallback fixed delay if calculated delay wasn't applied OR parsing failed
-                                # Apply only if not the very first message where delay is skipped anyway
+                                            elif time_diff_seconds < 0:
+                                                 main_logger.warning(f"Timestamp (A[2]) backwards line {line_num}: {timestamp_to_use_for_current_block} vs {last_timestamp_for_delay}")
+                                                 time.sleep(0.001 / replay_speed if replay_speed > 0 else 0.001)
+                                                 delay_applied = True
+                                        except Exception as calc_err:
+                                             main_logger.error(f"Error during delay calculation/sleep line {line_num}: {calc_err}", exc_info=True)
+                
+                                # Fallback fixed delay if needed
                                 if not delay_applied and first_message_processed:
-                                    # main_logger.debug(f"Line {line_num}: Using minimal fixed delay due to parsing issue or zero/neg delta.")
-                                    time.sleep(0.005 / replay_speed if replay_speed > 0 else 0.005)
-                                    delay_applied = True # We applied *a* delay
-
-                                # Update the timestamp used for the *next* delay calculation
-                                last_timestamp_for_delay = timestamp_for_this_line
-                                start_time_line = time.monotonic() # Reset line processing timer
-
-                            elif not delay_applied: # If we didn't apply delay for any reason (no timestamp, etc.)
+                                     time.sleep(0.005 / replay_speed if replay_speed > 0 else 0.005)
+                
+                                # Update last_timestamp_for_delay with the CURRENT block's last A[2] timestamp string
+                                last_timestamp_for_delay = timestamp_to_use_for_current_block
                                 start_time_line = time.monotonic()
+                
+                            elif not delay_applied: # If no delay applied (e.g., R block, no timestamp, etc.)
+                                start_time_line = time.monotonic() # Still need to reset timer
+                            # --- End Modified Delay Logic ---
     
                         except json.JSONDecodeError as e:
                              lines_skipped += 1
@@ -1476,7 +1387,7 @@ app.layout = dbc.Container([
         dbc.Col(dcc.Graph(id='track-map-graph', style={'height': '60vh'})) # Adjust height as needed
     ], className="mt-3"), # Add margin-top
     # --- END ADDED ---
-    dcc.Interval(id='interval-component', interval=250, n_intervals=0),
+    dcc.Interval(id='interval-component', interval=200, n_intervals=0),
 ], fluid=True)
 
 # --- Dash Callbacks ---
