@@ -173,16 +173,17 @@ def run_connection_manual_neg(target_url, headers_for_ws):
         hub_connection.on_error(handle_error) # Use your error handler name
 
         # Register message handlers (assuming functions exist)
-        hub_connection.on("CarData.z", lambda data: handle_compressed_stream("CarData.z", data))
-        hub_connection.on("Position.z", lambda data: handle_compressed_stream("Position.z", data))
+        hub_connection.on("CarData.z", lambda data: _decode_and_decompress("CarData.z", data))
+        hub_connection.on("Position.z", lambda data: _decode_and_decompress("Position.z", data))
         # Simplified registration loop
         for stream in STREAMS_TO_SUBSCRIBE:
             if stream.endswith(".z"):
                 if stream not in ["CarData.z", "Position.z"]: # Avoid duplicate handlers if already specific
-                     handler = lambda data, s=stream: handle_compressed_stream(s, data)
+                     handler = lambda data, s=stream: _decode_and_decompress(s, data)
                      hub_connection.on(stream, handler)
             else:
-                handler = lambda data, s=stream: handle_uncompressed_stream(s, data)
+                def handler(
+                    data, s=stream): return _decode_and_decompress(s, data)
                 hub_connection.on(stream, handler)
         main_logger.info("Connection thread: Handlers registered.")
 
@@ -313,6 +314,66 @@ def handle_message(message_data):
             main_logger.debug("Ignoring empty keep-alive message.")
         else:
             main_logger.warning(f"Received unexpected message format: {type(message_data)} - {str(message_data)[:100]}")
+
+
+# Replace your parse_iso_timestamp_safe function with this version
+
+def parse_iso_timestamp_safe(timestamp_str, line_num_for_log="?"):
+    """
+    Safely parses an ISO timestamp string, replacing 'Z', padding/truncating
+    microseconds to EXACTLY 6 digits, and handling potential errors.
+    Returns a datetime object or None.
+    """
+    if not timestamp_str or not isinstance(timestamp_str, str):
+        return None
+
+    try:
+        # Always replace 'Z' first - fromisoformat might be stricter with offsets
+        cleaned_ts = timestamp_str.replace('Z', '+00:00')
+        timestamp_to_parse = cleaned_ts  # Default if no fractional part
+
+        if '.' in cleaned_ts:
+            parts = cleaned_ts.split('.', 1)
+            integer_part = parts[0]
+            fractional_part_full = parts[1]
+            offset_part = ''
+
+            # Split fractional part from timezone offset
+            if '+' in fractional_part_full:
+                frac_parts = fractional_part_full.split('+', 1)
+                fractional_part = frac_parts[0]
+                offset_part = '+' + frac_parts[1]
+            elif '-' in fractional_part_full:  # Handle just in case
+                frac_parts = fractional_part_full.split('-', 1)
+                fractional_part = frac_parts[0]
+                offset_part = '-' + frac_parts[1]
+            else:  # Should have offset now, but handle if not
+                fractional_part = fractional_part_full
+
+            # --- >>> FORCE 6 MICROSECOND DIGITS <<< ---
+            # Pad with trailing zeros if less than 6, truncate if more than 6
+            fractional_part_padded = f"{fractional_part:<06s}"[:6]
+            # --- >>> END FORCE <<< ---
+
+            # Reassemble the string with exactly 6 microsecond digits
+            timestamp_to_parse = f"{integer_part}.{fractional_part_padded}{offset_part}"
+            # Log only if modified significantly (e.g., truncated or padded)
+            if timestamp_to_parse != cleaned_ts:
+                main_logger.debug(
+                    f"Line {line_num_for_log}: Modified timestamp for parsing. Original='{timestamp_str}', ParsedAs='{timestamp_to_parse}'")
+
+        # Attempt parsing the potentially modified string
+        return datetime.datetime.fromisoformat(timestamp_to_parse)
+
+    except ValueError as e:
+        # Log the final string we tried to parse
+        main_logger.warning(
+            f"Timestamp format error line {line_num_for_log}: Original='{timestamp_str}', FinalParsedAttempt='{timestamp_to_parse}'. Err: {e}")
+        return None
+    except Exception as e:  # Catch any other unexpected error during processing
+        main_logger.error(
+            f"Unexpected error parsing timestamp line {line_num_for_log}: Original='{timestamp_str}'. Err: {e}", exc_info=True)
+        return None
 
 def _process_weather_data(data):
     """ Helper function to process WeatherData stream """
@@ -1134,7 +1195,6 @@ def replay_from_file(data_file_path, replay_speed=1.0):
         def replay(): # The actual replay loop
             main_logger.info(f"Starting main replay loop: {data_file_path}, speed {replay_speed}")
             last_timestamp_for_delay = None # Use a separate variable for delay calculation timestamp
-            start_time = time.monotonic() # Overall start time, maybe not needed? 
             lines_processed = 0; lines_skipped = 0; first_message_processed = False
             try:
                 with open(data_file_path, 'r', encoding='utf-8') as f:
@@ -1236,24 +1296,66 @@ def replay_from_file(data_file_path, replay_speed=1.0):
     
     
                             # --- Delay logic (Apply only if flag is set) ---
+                            delay_applied = False
                             if should_apply_delay and timestamp_for_this_line: # Check if timestamp was actually set
                                 if replay_speed > 0:
                                     if not first_message_processed: time.sleep(0.01 / replay_speed if replay_speed > 0 else 0.001); first_message_processed = True
                                     elif last_timestamp_for_delay: # Use the dedicated delay timestamp
-                                        try:
-                                            # Use timestamp_for_this_line which was set above for M or List messages
-                                            current_ts_dt = datetime.datetime.fromisoformat(timestamp_for_this_line.replace('Z', '+00:00'))
-                                            prev_ts_dt = datetime.datetime.fromisoformat(last_timestamp_for_delay.replace('Z', '+00:00'))
-                                            time_diff_seconds = (current_ts_dt - prev_ts_dt).total_seconds()
-                                            if time_diff_seconds > 0:
-                                                target_delay = time_diff_seconds / replay_speed; processing_time = time.monotonic() - start_time_line
-                                                actual_delay = max(0, target_delay - processing_time); time.sleep(actual_delay)
-                                            elif time_diff_seconds < 0: main_logger.warning(f"Timestamp backwards line {line_num}: {timestamp_for_this_line} vs {last_timestamp_for_delay}"); time.sleep(0.001 / replay_speed if replay_speed > 0 else 0.001)
-                                        except Exception as ts_e: main_logger.warning(f"Timestamp parse/delay error line {line_num}: '{timestamp_for_this_line}'. Err: {ts_e}. Fixed delay."); time.sleep(0.01 / replay_speed if replay_speed > 0 else 0.001)
-                                    else: time.sleep(0.01 / replay_speed if replay_speed > 0 else 0.001)
+                                        current_ts_dt = parse_iso_timestamp_safe(
+                                            timestamp_for_this_line, line_num)
+                                        prev_ts_dt = parse_iso_timestamp_safe(
+                                            last_timestamp_for_delay, f"{line_num-1}(prev)")
+                                        
+                                        if current_ts_dt and prev_ts_dt:  # Check if BOTH parsing succeeded
+                                            try:  # Try block for calculations and sleep
+                                                time_diff_seconds = (
+                                                    current_ts_dt - prev_ts_dt).total_seconds()
+
+                                                if time_diff_seconds > 0:
+                                                    target_delay = time_diff_seconds / replay_speed if replay_speed > 0 else time_diff_seconds
+                                                    processing_time = time.monotonic() - start_time_line
+                                                    actual_delay = max(
+                                                        0, target_delay - processing_time)
+                                                    max_physical_delay = 2.0  # Cap max physical sleep
+                                                    actual_sleep = min(
+                                                        actual_delay, max_physical_delay)
+
+                                                    if actual_sleep > 0.001:
+                                                        time.sleep(actual_sleep)
+                                                        delay_applied = True
+                                                    # else: delay too small
+
+                                                elif time_diff_seconds < 0:
+                                                    main_logger.warning(
+                                                        f"Timestamp backwards line {line_num}: {timestamp_for_this_line} vs {last_timestamp_for_delay}")
+                                                    # Apply minimal fixed delay for backward timestamps
+                                                    time.sleep(
+                                                        0.001 / replay_speed if replay_speed > 0 else 0.001)
+                                                    delay_applied = True
+                                                # else: time_diff_seconds == 0, no delay needed
+                                            except Exception as calc_err: # Catch errors during calculation/sleep
+                                                main_logger.error(f"Error during delay calculation/sleep line {line_num}: {calc_err}", exc_info=True)
+                                                # Fall through to fixed delay below
+
+                                    # else: Parsing failed for current or previous timestamp (already logged by helper)
+                                    # Fall through to fixed delay below
+
+                                # else: last_timestamp_for_delay is None (should only happen between first and second message)
+                                # Fall through to fixed delay (or maybe no delay?)
+                                
+                                # Fallback fixed delay if calculated delay wasn't applied OR parsing failed
+                                # Apply only if not the very first message where delay is skipped anyway
+                                if not delay_applied and first_message_processed:
+                                    # main_logger.debug(f"Line {line_num}: Using minimal fixed delay due to parsing issue or zero/neg delta.")
+                                    time.sleep(0.005 / replay_speed if replay_speed > 0 else 0.005)
+                                    delay_applied = True # We applied *a* delay
+
                                 # Update the timestamp used for the *next* delay calculation
                                 last_timestamp_for_delay = timestamp_for_this_line
                                 start_time_line = time.monotonic() # Reset line processing timer
+
+                            elif not delay_applied: # If we didn't apply delay for any reason (no timestamp, etc.)
+                                start_time_line = time.monotonic()
     
                         except json.JSONDecodeError as e:
                              lines_skipped += 1
@@ -1271,24 +1373,24 @@ def replay_from_file(data_file_path, replay_speed=1.0):
 	
 	        # --- Exception handling & cleanup ---
             except FileNotFoundError:
-	            main_logger.error(f"Replay file not found: {data_file_path}")
-	            with app_state.app_state_lock:
-	                app_state.app_status.update({"state": "Error", "connection": "Replay File Error"})
+                main_logger.error(f"Replay file not found: {data_file_path}")
+                with app_state.app_state_lock:
+                    app_state.app_status.update({"state": "Error", "connection": "Replay File Error"})
             except Exception as e:
-	            main_logger.error(f"Error during playback: {e}", exc_info=True)
-	            with app_state.app_state_lock:
-	                app_state.app_status.update({"state": "Error", "connection": "Replay Runtime Error"})
+                main_logger.error(f"Error during playback: {e}", exc_info=True)
+                with app_state.app_state_lock:
+                    app_state.app_status.update({"state": "Error", "connection": "Replay Runtime Error"})
             finally:
-	             main_logger.info("Replay thread cleanup...")
-	             close_live_file()
-	             with app_state.app_state_lock:
-	                 current_state = app_state.app_status["state"]
-	                 if current_state not in ["Error", "Stopped", "Playback Complete"]:
-	                     if stop_event.is_set():
-	                          app_state.app_status.update({"state": "Stopped", "connection": "Disconnected"})
-	                     else:
-	                          app_state.app_status.update({"state": "Error", "connection": "Thread End Unexpectedly"})
-	             main_logger.info("Replay thread cleanup finished.")
+                 main_logger.info("Replay thread cleanup...")
+                 close_live_file()
+                 with app_state.app_state_lock:
+                     current_state = app_state.app_status["state"]
+                     if current_state not in ["Error", "Stopped", "Playback Complete"]:
+                        if stop_event.is_set():
+                              app_state.app_status.update({"state": "Stopped", "connection": "Disconnected"})
+                        else:
+                              app_state.app_status.update({"state": "Error", "connection": "Thread End Unexpectedly"})
+                 main_logger.info("Replay thread cleanup finished.")
 	             
     globals()['replay_thread'] = threading.Thread(target=replay, name="ReplayThread", daemon=True)
     replay_thread.start()
