@@ -10,6 +10,7 @@ import urllib.parse
 import sys
 import os
 import queue
+import collections
 import requests
 import app_state
 import numpy as np
@@ -58,7 +59,7 @@ DEFAULT_REPLAY_FILENAME = "2023-yas-marina-quali.data.txt" # Default replay file
 
 # --- Logging Setup ---
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-log_level = logging.DEBUG # Change to logging.DEBUG for more detail if needed
+log_level = logging.INFO # Change to logging.DEBUG for more detail if needed
 
 # Main application logger
 main_logger = logging.getLogger("F1App")
@@ -86,6 +87,7 @@ data_store = {}
 timing_state = {} # Holds persistent timing state per driver
 track_status_data = {} # To store TrackStatus info (Status, Message)
 session_details = {} # To store SessionInfo/SessionData details
+race_control_log = collections.deque(maxlen=50)
 track_coordinates_cache = {'x': None, 'y': None, 'range_x': None, 'range_y': None, 'rotation': None, 'corner_x': None, 'corner_y': None, 'session_key': None} # Expanded cache
 db_lock = threading.Lock()
 
@@ -350,9 +352,9 @@ def parse_iso_timestamp_safe(timestamp_str, line_num_for_log="?"):
             # Reassemble the string with exactly 6 microsecond digits
             timestamp_to_parse = f"{integer_part}.{fractional_part_padded}{offset_part}"
             # Log only if modified significantly (e.g., truncated or padded)
-            if timestamp_to_parse != cleaned_ts:
-                main_logger.debug(
-                    f"Line {line_num_for_log}: Modified timestamp for parsing. Original='{timestamp_str}', ParsedAs='{timestamp_to_parse}'")
+            #if timestamp_to_parse != cleaned_ts:
+                # main_logger.debug(
+                    #f"Line {line_num_for_log}: Modified timestamp for parsing. Original='{timestamp_str}', ParsedAs='{timestamp_to_parse}'")
 
         # Attempt parsing the potentially modified string
         return datetime.datetime.fromisoformat(timestamp_to_parse)
@@ -367,6 +369,64 @@ def parse_iso_timestamp_safe(timestamp_str, line_num_for_log="?"):
             f"Unexpected error parsing timestamp line {line_num_for_log}: Original='{timestamp_str}'. Err: {e}", exc_info=True)
         return None
 
+# Replace the existing _process_race_control function
+
+# Replace _process_race_control again with this version
+
+def _process_race_control(data):
+    """ Helper function to process RaceControlMessages stream """
+    global race_control_log
+
+    messages_to_process = []
+    if isinstance(data, dict) and 'Messages' in data:
+        messages_payload = data.get('Messages')
+        if isinstance(messages_payload, list):
+             # main_logger.debug(f"RC Handler: Processing Messages as LIST (Count: {len(messages_payload)})")
+             messages_to_process = messages_payload
+        elif isinstance(messages_payload, dict):
+             # main_logger.debug(f"RC Handler: Processing Messages as DICT (Count: {len(messages_payload)})")
+             messages_to_process = messages_payload.values() # Get the values (message dicts)
+        else:
+             main_logger.warning(f"RaceControlMessages 'Messages' field was not a list or dict: {type(messages_payload)}")
+             return
+    elif data:
+         main_logger.warning(f"Unexpected RaceControlMessages format received: {type(data)}. Expected dict with 'Messages'.")
+         return
+    else: # No data or empty payload
+        return
+
+    new_messages_added = 0
+    for i, msg in enumerate(messages_to_process): # Add index for clarity
+        if isinstance(msg, dict):
+            try:
+                timestamp = msg.get('Utc', 'Timestamp?')
+                lap = msg.get('Lap', '-')
+                message_text = msg.get('Message', '')
+                # ... (extract other fields: category, flag etc.) ...
+
+                time_str = "Timestamp?"
+                if isinstance(timestamp, str) and 'T' in timestamp:
+                     try: time_str = timestamp.split('T')[1].split('.')[0]
+                     except: time_str = timestamp
+
+                log_entry = f"[{time_str} L{lap}]: {message_text}" # Simplified for logging clarity
+                # main_logger.debug(f"RC Handler: Formatted entry {i+1}: '{log_entry}'") # Log BEFORE append
+
+                # Prepend to the deque
+                race_control_log.appendleft(log_entry)
+                new_messages_added += 1
+                # Log AFTER successful append
+                # main_logger.debug(f"RC Handler: Appended entry {i+1}. Deque size now: {len(race_control_log)}")
+
+            except Exception as e:
+                main_logger.error(f"Error processing RC message item #{i+1}: {msg} - Error: {e}", exc_info=True)
+                # Continue to next message in list/dict even if one fails
+        else:
+             main_logger.warning(f"Unexpected item type #{i+1} in RaceControlMessages source: {type(msg)}")
+
+    # if new_messages_added > 0:
+    #    main_logger.info(f"Finished processing RC payload, added {new_messages_added} message(s).")
+
 def _process_weather_data(data):
     """ Helper function to process WeatherData stream """
     global data_store # Use data_store for less frequently updated info
@@ -376,7 +436,7 @@ def _process_weather_data(data):
         # No need to nest under ['data'] like we did for SessionData previously
         if 'WeatherData' not in data_store: data_store['WeatherData'] = {}
         data_store['WeatherData'].update(data) # Update with received keys/values
-        main_logger.info(f"Updated WeatherData: {data}")
+        # main_logger.debug(f"Updated WeatherData: {data}")
     else:
         main_logger.warning(f"Unexpected WeatherData format received: {type(data)}")
 
@@ -412,12 +472,12 @@ def _process_timing_app_data(data):
 
                              # Check for TotalLaps first
                              total_laps_value = latest_stint_info.get('TotalLaps')
-                             main_logger.debug(f"Driver {car_num_str}, Stint {latest_stint_key}: Checking 'TotalLaps'. Found: {total_laps_value} (Type: {type(total_laps_value)})")
+                             # main_logger.debug(f"Driver {car_num_str}, Stint {latest_stint_key}: Checking 'TotalLaps'. Found: {total_laps_value} (Type: {type(total_laps_value)})")
                              if total_laps_value is not None:
                                  try:
                                      # Attempt conversion just in case it's a string sometimes
                                      current_age = int(total_laps_value)
-                                     main_logger.debug(f"Driver {car_num_str}: Using age from TotalLaps: {current_age}")
+                                     # main_logger.debug(f"Driver {car_num_str}: Using age from TotalLaps: {current_age}")
                                      age_determined = True
                                  except (ValueError, TypeError):
                                       main_logger.warning(f"Driver {car_num_str}: Could not convert TotalLaps '{total_laps_value}' to int.")
@@ -427,7 +487,7 @@ def _process_timing_app_data(data):
                              if not age_determined:
                                  start_laps_value = latest_stint_info.get('StartLaps')
                                  num_laps_value = driver_current_state.get('NumberOfLaps') # Get completed laps from state
-                                 main_logger.debug(f"Driver {car_num_str}, Stint {latest_stint_key}: 'TotalLaps' not used. Checking 'StartLaps': {start_laps_value}, State 'NumberOfLaps': {num_laps_value}")
+                                 # main_logger.debug(f"Driver {car_num_str}, Stint {latest_stint_key}: 'TotalLaps' not used. Checking 'StartLaps': {start_laps_value}, State 'NumberOfLaps': {num_laps_value}")
 
                                  if start_laps_value is not None and num_laps_value is not None:
                                      try:
@@ -436,15 +496,15 @@ def _process_timing_app_data(data):
                                          # Age = laps completed *on this tyre set* + 1?
                                          age_calc = current_lap_completed - start_lap + 1
                                          current_age = age_calc if age_calc >= 0 else '?'
-                                         main_logger.debug(f"Driver {car_num_str}: Calculated age {current_age} (Completed={current_lap_completed}, Start={start_lap})")
+                                         # main_logger.debug(f"Driver {car_num_str}: Calculated age {current_age} (Completed={current_lap_completed}, Start={start_lap})")
                                          age_determined = True
                                      except (ValueError, TypeError) as e:
                                           main_logger.warning(f"Driver {car_num_str}: Error converting StartLaps/NumberOfLaps for age calculation: {e}")
                                           # Keep existing current_age
 
                              # If age still wasn't determined by TotalLaps or calculation
-                             if not age_determined:
-                                  main_logger.debug(f"Driver {car_num_str}: Could not determine age from Stint {latest_stint_key} info in this message. Keeping previous/default.")
+                             #if not age_determined:
+                                  # main_logger.debug(f"Driver {car_num_str}: Could not determine age from Stint {latest_stint_key} info in this message. Keeping previous/default.")
                                   # current_age retains its value from start of block (previous state or '?')
                              # --- End Age Processing ---
 
@@ -458,7 +518,7 @@ def _process_timing_app_data(data):
                  driver_current_state['TyreCompound'] = current_compound
                  driver_current_state['TyreAge'] = current_age
                  # Log final state for this driver after processing this specific message
-                 main_logger.debug(f"Driver {car_num_str} state post-TimingAppData: Compound='{current_compound}', Age='{current_age}'")
+                 # main_logger.debug(f"Driver {car_num_str} state post-TimingAppData: Compound='{current_compound}', Age='{current_age}'")
 
             elif not driver_current_state:
                  pass # Silently skip if driver not found
@@ -475,7 +535,11 @@ def _process_driver_list(data):
         processed_count = len(data)
         for driver_num_str, driver_info in data.items():
             if not isinstance(driver_info, dict):
-                main_logger.warning(f"Skipping invalid driver_info for {driver_num_str} in DriverList: {driver_info}")
+                if driver_num_str == "_kf":
+                    continue
+                else:
+                    main_logger.warning(f"Skipping invalid driver_info for {driver_num_str} in DriverList: {driver_info}")
+                
                 continue
 
             is_new_driver = driver_num_str not in timing_state
@@ -528,7 +592,7 @@ def _process_driver_list(data):
                     current_driver_state.setdefault(key, default_val)
                 updated_count += 1
 
-        main_logger.info(f"Processed DriverList message ({processed_count} entries). Added: {added_count}, Updated: {updated_count}. Total drivers now: {len(timing_state)}")
+        main_logger.debug(f"Processed DriverList message ({processed_count} entries). Added: {added_count}, Updated: {updated_count}. Total drivers now: {len(timing_state)}")
     else:
         main_logger.warning(f"Unexpected DriverList stream data format: {type(data)}. Cannot process.")
 
@@ -566,7 +630,7 @@ def _process_timing_data(data):
                          else:
                              sub_key = 'Value' if key == "IntervalToPositionAhead" else 'Time'
                              driver_current_state[key][sub_key] = incoming_value
-                             main_logger.debug(f"Stored non-dict {key} value '{incoming_value}' into ['{sub_key}'] for {car_num_str}")
+                             # main_logger.debug(f"Stored non-dict {key} value '{incoming_value}' into ['{sub_key}'] for {car_num_str}")
 
                  # Update Sectors
                  if "Sectors" in line_data and isinstance(line_data["Sectors"], dict):
@@ -580,7 +644,7 @@ def _process_timing_data(data):
                              driver_current_state["Sectors"][sector_idx].update(sector_data)
                          else:
                               driver_current_state["Sectors"][sector_idx]['Value'] = sector_data # Changed sub-key to 'Value' consistent with display logic
-                              main_logger.debug(f"Stored non-dict Sector {sector_idx} value '{sector_data}' into ['Value'] for {car_num_str}")
+                              # main_logger.debug(f"Stored non-dict Sector {sector_idx} value '{sector_data}' into ['Value'] for {car_num_str}")
 
                  # Update Speeds (Optional, add to table if needed)
                  if "Speeds" in line_data and isinstance(line_data["Speeds"], dict):
@@ -600,8 +664,8 @@ def _process_timing_data(data):
                       driver_current_state["Status"] = "On Track"
                  # else: keep existing status ("On Track" default from DriverList or previous)
 
-            elif not driver_current_state:
-                main_logger.debug(f"TimingData for driver {car_num_str} received, but driver not yet in timing_state. Data skipped.")
+        #    elif not driver_current_state:
+                # main_logger.debug(f"TimingData for driver {car_num_str} received, but driver not yet in timing_state. Data skipped.")
     elif data: # Log if TimingData is not the expected dict structure but not None/empty
          main_logger.warning(f"Unexpected TimingData format received: {type(data)}")
 
@@ -770,7 +834,7 @@ def _process_session_data(data):
         # e.g., AirTemp, TrackTemp, Humidity, Pressure, WindSpeed etc. might appear here sometimes
         # Example: session_details['AirTemp'] = data.get('AirTemp')
 
-        main_logger.debug(f"Processed SessionData. Current details: {session_details}")
+        # main_logger.debug(f"Processed SessionData. Current details: {session_details}")
 
     except Exception as e:
         main_logger.error(f"Error processing SessionData: {e}", exc_info=True)
@@ -832,7 +896,7 @@ def _process_session_info(data):
         circuit_key_log = session_details.get('CircuitKey', 'N/A')
         year_log = session_details.get('Year', 'N/A')
         main_logger.info(f"Processed SessionInfo: Y:{year_log} {meeting_name} - {session_name} (Circuit: {circuit_name_log}, Key: {circuit_key_log})")
-        main_logger.debug(f"Full SessionInfo details stored: {session_details}")
+        # main_logger.debug(f"Full SessionInfo details stored: {session_details}")
 
     except Exception as e:
         main_logger.error(f"Error processing SessionInfo data: {e}", exc_info=True)
@@ -896,6 +960,8 @@ def data_processing_loop():
                     # Add other handlers here (WeatherData, TimingStats, etc.)
                     elif stream_name == "WeatherData":
                          _process_weather_data(actual_data) # call the weather handler
+                    elif stream_name == "RaceControlMessages":
+                        _process_race_control(actual_data)
                     else:
                          # Optional: Log if you want to know about unhandled streams that made it this far
                         main_logger.debug(f"No specific handler for stream: {stream_name}") 
@@ -1143,7 +1209,7 @@ def replay_from_file(data_file_path, replay_speed=1.0):
     
                             # --- MODIFICATION START: Handle different message structures ---
                             if isinstance(raw_message, dict) and "R" in raw_message:
-                                main_logger.debug(f"Line {line_num}: Identified Snapshot (R) message. Calling handle_message directly.")
+                                # main_logger.debug(f"Line {line_num}: Identified Snapshot (R) message. Calling handle_message directly.")
                                 handle_message(raw_message) # handle_message unpacks and queues
                                 lines_processed += 1 # Count the snapshot block as one processed line for stats
                                 # DO NOT apply delay for the whole R block based on its internal timestamp here
@@ -1152,7 +1218,7 @@ def replay_from_file(data_file_path, replay_speed=1.0):
     
                             elif isinstance(raw_message, dict) and "M" in raw_message and isinstance(raw_message["M"], list):
                                  # Standard message block {"M": [...]}
-                                 main_logger.debug(f"Line {line_num}: Identified Standard (M) message block.")
+                                 # main_logger.debug(f"Line {line_num}: Identified Standard (M) message block.")
                                  messages_in_line = []
                                  for msg_container in raw_message["M"]:
                                       if isinstance(msg_container, dict) and msg_container.get("M") == "feed":
@@ -1190,7 +1256,7 @@ def replay_from_file(data_file_path, replay_speed=1.0):
     
                             elif isinstance(raw_message, list) and len(raw_message) >= 2:
                                  # Direct message list ["StreamName", {...}, "Timestamp"]
-                                 main_logger.debug(f"Line {line_num}: Identified Direct stream list message.")
+                                 # main_logger.debug(f"Line {line_num}: Identified Direct stream list message.")
                                  message_parts = raw_message # The whole list is the message parts
                                  if stop_event.is_set(): break
                                  stream_name_raw = message_parts[0]
@@ -1216,7 +1282,7 @@ def replay_from_file(data_file_path, replay_speed=1.0):
     
                             else: # Unrecognized JSON structure
                                 lines_skipped += 1
-                                if line_num > 3: main_logger.warning(f"Line {line_num}: Skipping unrecognized JSON top-level structure: {type(raw_message).__name__}")
+                                if line_num > 3: main_logger.debug(f"Line {line_num}: Skipping unrecognized JSON top-level structure: {type(raw_message).__name__}")
                                 continue # Skip delay logic
                             # --- MODIFICATION END ---
     
@@ -1250,7 +1316,7 @@ def replay_from_file(data_file_path, replay_speed=1.0):
                                                     time.sleep(actual_sleep)
                                                     delay_applied = True
                                             elif time_diff_seconds < 0:
-                                                 main_logger.warning(f"Timestamp (A[2]) backwards line {line_num}: {timestamp_to_use_for_current_block} vs {last_timestamp_for_delay}")
+                                                 main_logger.debug(f"Timestamp (A[2]) backwards line {line_num}: {timestamp_to_use_for_current_block} vs {last_timestamp_for_delay}")
                                                  time.sleep(0.001 / replay_speed if replay_speed > 0 else 0.001)
                                                  delay_applied = True
                                         except Exception as calc_err:
@@ -1382,6 +1448,25 @@ app.layout = dbc.Container([
         {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} = "-"'}, # Default/Unknown
             'backgroundColor': 'inherit', 'color': 'grey'}, # Grey out if unknown ('inherit' uses row bg)
 ], tooltip_duration=None)])], width=12)]),
+dbc.Row([
+        dbc.Col([
+            html.H4("Race Control Messages"),
+            dcc.Textarea(
+                id='race-control-log-display',
+                readOnly=True,
+                style={ # Style for dark theme
+                       'width': '100%', 'height': '200px', # Adjust height
+                       'fontFamily': 'monospace', 'fontSize': '12px',
+                       'backgroundColor': '#111', # Dark background
+                       'color': '#eee',           # Light text
+                       'border': '1px solid grey',
+                       'resize': 'none'           # Optional: disable resizing
+                       },
+                # Placeholder value while waiting
+                value="Waiting for Race Control messages..."
+            )
+        ], width=12) # Or maybe width=6 if you want another log next to it later
+    ], className="mt-3"), # Add margin-top
     # --- ADDED: Track Map Row ---
     dbc.Row([
         dbc.Col(dcc.Graph(id='track-map-graph', style={'height': '60vh'})) # Adjust height as needed
@@ -1526,7 +1611,7 @@ def update_output(n):
     try:
          # Log position of car '1' if it exists, just to see if it changes
          pos_x_final = timing_state.get('1', {}).get('PositionData', {}).get('X', 'N/A')
-         main_logger.debug(f"UpdateOutput Final Check: Car 1 X = {pos_x_final}")
+         # main_logger.debug(f"UpdateOutput Final Check: Car 1 X = {pos_x_final}")
     except Exception as log_ex:
          main_logger.error(f"Error during final log check: {log_ex}")
     # --- END Log ---
@@ -1541,6 +1626,42 @@ def update_button_states(n):
     is_idle = state in ["Idle", "Stopped", "Error", "Playback Complete"]; is_running = state in ["Connecting", "Live", "Replaying", "Initializing"]; is_stopping = state == "Stopping"
     start_disabled = is_running or is_stopping; replay_disabled = is_running or is_stopping; stop_disabled = is_idle; input_disabled = is_running or is_stopping
     return start_disabled, stop_disabled, replay_disabled, input_disabled, input_disabled
+
+@app.callback(
+        Output('race-control-log-display', 'value'), # Target 'value' for Textarea
+        Input('interval-component', 'n_intervals')
+)
+def update_race_control_log(n):
+        log_snapshot = []
+        try:
+            # Reading deque length and items should be relatively safe,
+            # but copy to list under lock if very concerned about modification during read
+            with app_state.app_state_lock: # Added lock for safety while reading length/items
+                 current_length = len(race_control_log)
+                 # Get a snapshot for reliable processing
+                 log_snapshot = list(race_control_log)
+
+            # --- ADD LOGGING ---
+            # main_logger.debug(f"Callback update_race_control_log (Tick {n}): Deque length = {current_length}")
+            # if log_snapshot: # Log first few items if not empty
+            #    main_logger.debug(f"Callback update_race_control_log: First item in deque (newest): '{log_snapshot[0]}'")
+             #   if len(log_snapshot) > 1:
+             #        main_logger.debug(f"Callback update_race_control_log: Last item in deque (oldest): '{log_snapshot[-1]}'")
+            # --- END LOGGING ---
+
+            # Join messages with newline, newest messages will be at the bottom of textarea
+            display_text = "\n".join(reversed(log_snapshot)) # Show oldest first
+
+            if not display_text and n > 0:
+                return "No messages received yet."
+            elif not display_text:
+                return "Waiting for Race Control messages..."
+
+            return display_text
+
+        except Exception as e:
+             main_logger.error(f"Error in update_race_control_log: {e}", exc_info=True)
+             return "Error updating Race Control log."
 
 @app.callback(
         Output('session-info-display', 'children'), # Target the specific Div for session info
@@ -1785,7 +1906,7 @@ def update_track_map(n):
             current_session_key = f"{year}_{circuit_key}"
         else:
             # Not enough info yet to load map data
-            main_logger.debug("Map update skipped: Year or CircuitKey missing from session_details.")
+            # main_logger.debug("Map update skipped: Year or CircuitKey missing from session_details.")
             current_session_key = None
 
         # 2. Check Cache / Fetch from API
@@ -1798,7 +1919,7 @@ def update_track_map(n):
             x_range = track_coordinates_cache.get('range_x')
             y_range = track_coordinates_cache.get('range_y')
             rotation_angle = track_coordinates_cache.get('rotation', 0)
-            main_logger.debug(f"Using cached track map for {current_session_key}")
+            # main_logger.debug(f"Using cached track map for {current_session_key}")
         elif current_session_key:
             # Cache miss or new session, try fetching from API
             api_url = f"https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
