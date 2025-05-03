@@ -16,6 +16,7 @@ import app_state
 import numpy as np
 import plotly.graph_objects as go # Make sure this is imported at the top
 import uuid
+import re
 
 # Import for F1 Schedule / Data
 try:
@@ -54,6 +55,9 @@ STREAMS_TO_SUBSCRIBE = ["Heartbeat", "CarData.z", "Position.z", "ExtrapolatedClo
     "SessionData", "DriverList", "RaceControlMessages", "SessionInfo"]
 DATA_FILENAME_TEMPLATE = "f1_signalr_data_{timestamp}.data.txt"
 DATABASE_FILENAME_TEMPLATE = "f1_signalr_data_{timestamp}.db"
+# --- Near top of f1_fast_f1_signalr_gui_v14.py ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) # Gets the directory of the script
+TARGET_SAVE_DIRECTORY = os.path.join(SCRIPT_DIR, "replays")
 DEFAULT_REPLAY_FILENAME = "2023-yas-marina-quali.data.txt" # Default replay file
 
 # --- Logging Setup ---
@@ -91,23 +95,82 @@ track_coordinates_cache = {'x': None, 'y': None, 'range_x': None, 'range_y': Non
 db_lock = threading.Lock()
 
 # --- F1 Helper Functions ---
-def get_latest_f1_session(session_type='Race'):
-    main_logger.info(f"Fetching latest F1 session info for type: {session_type}")
+# FILE: f1_fast_f1_signalr_gui_v14.py
+# (Make sure imports for logging, fastf1, pandas, datetime are present)
+
+def get_current_or_next_session_info():
+    """
+    Uses FastF1 to find the currently ongoing session (if started recently)
+    OR the next upcoming session.
+    Returns event_name, session_name or None, None.
+    """
+    main_logger = logging.getLogger("F1App")
+    if fastf1 is None or pd is None:
+        main_logger.error("FastF1 or Pandas not available for session info.")
+        return None, None
+
     try:
-        fastf1.Cache.enable_cache('fastf1_cache')
-        schedule = fastf1.get_event_schedule(datetime.datetime.now().year, include_testing=False)
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        past_events = schedule[schedule['EventDate'] <= now_utc]
-        if past_events.empty:
-            main_logger.warning("No past events found.")
-            return None
-        latest_event = past_events.iloc[-1]
-        session = latest_event.get_session(session_type)
-        main_logger.info(f"Latest session: {session.event['EventName']} - {session.name}")
-        return session
+        year = datetime.datetime.now().year
+        main_logger.debug(f"FastF1: Fetching schedule for {year} to find current/next session...")
+        schedule = fastf1.get_event_schedule(year, include_testing=False)
+        now = pd.Timestamp.now(tz='UTC') # Current time is tz-aware UTC
+        main_logger.debug(f"FastF1: Current UTC time: {now}")
+
+        # --- Initialize trackers ---
+        # Track the latest session that started *before* or *at* now
+        last_past_session = {'date': pd.Timestamp.min.tz_localize('UTC'), 'event_name': None, 'session_name': None}
+        # Track the earliest session that starts *after* now
+        next_future_session = {'date': pd.Timestamp.max.tz_localize('UTC'), 'event_name': None, 'session_name': None}
+
+        # --- Iterate through schedule ---
+        for index, event in schedule.iterrows():
+            for i in range(1, 6): # Check Session1 to Session5
+                session_date_col = f'Session{i}DateUtc'
+                session_name_col = f'Session{i}'
+
+                if session_date_col in event and pd.notna(event[session_date_col]) and isinstance(event[session_date_col], pd.Timestamp):
+                    session_date = event[session_date_col]
+
+                    # Defensive Check: Ensure tz-aware
+                    if session_date.tzinfo is None:
+                         main_logger.warning(f"FastF1 returned tz-naive date for {event.get('EventName','?')}-{session_name_col}. Localizing to UTC.")
+                         session_date = session_date.tz_localize('UTC')
+
+                    # --- Categorize session ---
+                    if session_date > now: # Future Session
+                        if session_date < next_future_session['date']:
+                            next_future_session['date'] = session_date
+                            next_future_session['event_name'] = event['EventName']
+                            next_future_session['session_name'] = event[session_name_col]
+                    elif session_date <= now: # Past or Current Session Start Time
+                        if session_date > last_past_session['date']:
+                            last_past_session['date'] = session_date
+                            last_past_session['event_name'] = event['EventName']
+                            last_past_session['session_name'] = event[session_name_col]
+
+        # --- Decision Logic ---
+        # Define a window to consider a past session "ongoing" (e.g., 3 hours)
+        ongoing_window = pd.Timedelta(hours=3)
+
+        # Check if a past session exists and started recently enough to likely be ongoing
+        if last_past_session['event_name'] and (now - last_past_session['date']) <= ongoing_window:
+            main_logger.info(f"FastF1: Using potentially ongoing session: {last_past_session['event_name']} - {last_past_session['session_name']} (started {last_past_session['date']})")
+            return last_past_session['event_name'], last_past_session['session_name']
+
+        # Otherwise, if no ongoing session detected, check if a future session was found
+        elif next_future_session['event_name']:
+             main_logger.info(f"FastF1: Using next future session: {next_future_session['event_name']} - {next_future_session['session_name']} starting at {next_future_session['date']}")
+             return next_future_session['event_name'], next_future_session['session_name']
+
+        # Otherwise, no relevant session found
+        else:
+            main_logger.warning("FastF1: Could not determine current or next session (maybe end of season?).")
+            return None, None
+
     except Exception as e:
-        main_logger.error(f"Error fetching F1 session: {e}", exc_info=True)
-        return None
+        main_logger.error(f"FastF1 Error getting current/next session: {e}", exc_info=True)
+        return None, None # Return None on error to allow fallback
+
 
 # --- Data Handling ---
 # Replace your _decode_and_decompress function
@@ -1141,30 +1204,74 @@ def handle_error(error): # Was on_error
         stop_event.set()
 
 def init_live_file():
-      global db_conn, db_cursor, db_filename
-      # ... (logic to set filename, open file, store in app_state.live_data_file) ...
-      # Return True on success, False on failure
-      try:
-          timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-          data_filename = f"f1_live_data_{timestamp_str}.data.txt" # Adjusted name
-          filepath = os.path.join(os.getcwd(), data_filename) # Or specific folder path
-          main_logger.info(f"Initializing live data file: {filepath}")
-          with app_state.app_state_lock:
-              # Close previous file if open
-              if app_state.live_data_file and not app_state.live_data_file.closed:
-                   try: app_state.live_data_file.close()
-                   except: pass
-              # Open new file (ensure 'app_state.live_data_file' is the correct variable)
-              app_state.live_data_file = open(filepath, "w", buffering=1, encoding='utf-8') # Use 'w' for new file
-              app_state.is_saving_active = True # Assume saving starts with live connection
-          main_logger.info(f"Live data file initialized: {filepath}")
-          return True
-      except IOError as e:
-         main_logger.error(f"Live file open error: {e}", exc_info=True)
-         with app_state.app_state_lock:
-             app_state.live_data_file = None
-             app_state.is_saving_active = False
-         return False
+    """
+    Initializes the live data file, attempting to name it using
+    FastF1 info, falling back to a default name.
+    Returns True on success, False on failure.
+    """
+    global main_logger # Assuming main_logger is defined globally
+    # Note: db_conn, db_cursor, db_filename seem unrelated to the live .data.txt file
+    # based on the original function content, they might be for a separate DB?
+    # Removing them from global declaration here unless they are truly needed for this file.
+
+    filepath = None # Define for use in exception logging
+    try:
+        # --- Get session info using FastF1 ---
+        main_logger.info("Attempting to get next session info via FastF1 for filename...")
+        event_name, session_name = get_current_or_next_session_info() # Call helper function
+
+        # Use FastF1 info if available, otherwise fallback
+        if event_name and session_name:
+             event_part = sanitize_filename(event_name)
+             session_part = sanitize_filename(session_name)
+             filename_prefix = f"{event_part}_{session_part}"
+             main_logger.info(f"Using filename prefix from FastF1: {filename_prefix}")
+        else:
+             main_logger.warning("Using fallback filename prefix 'f1_live_data'.")
+             filename_prefix = "f1_live_data" # Fallback name
+        # --- End FastF1 part ---
+
+        # Ensure the target save directory exists
+        os.makedirs(TARGET_SAVE_DIRECTORY, exist_ok=True)
+        main_logger.debug(f"Ensured save directory exists: {TARGET_SAVE_DIRECTORY}")
+
+        # Generate the final filename using the determined prefix and timestamp
+        timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        data_filename = f"{filename_prefix}_{timestamp_str}.data.txt" # Use prefix
+        filepath = os.path.join(TARGET_SAVE_DIRECTORY, data_filename) # Use os.path.join
+
+        main_logger.info(f"Initializing live data file: {filepath}")
+        # Use app_state lock for thread safety when modifying shared state
+        with app_state.app_state_lock:
+            # Close previous file if open
+            if app_state.live_data_file and not app_state.live_data_file.closed:
+                 main_logger.warning("Closing previously open live data file in init_live_file.")
+                 try:
+                     app_state.live_data_file.close()
+                 except Exception as close_err:
+                     main_logger.error(f"Error closing previous live file: {close_err}")
+                 app_state.live_data_file = None # Ensure it's None after closing attempt
+
+            # Open new file (ensure 'app_state.live_data_file' is the correct global variable)
+            # buffering=1 means line buffered
+            app_state.live_data_file = open(filepath, "w", buffering=1, encoding='utf-8')
+            app_state.is_saving_active = True # Set saving flag
+
+        main_logger.info(f"Live data file initialized: {filepath}")
+        return True # Indicate success
+
+    except IOError as e: # Catch file system errors specifically
+       main_logger.error(f"IOError initializing live file '{filepath}': {e}", exc_info=True)
+       with app_state.app_state_lock:
+           app_state.live_data_file = None
+           app_state.is_saving_active = False
+       return False # Indicate failure
+    except Exception as e: # Catch other potential errors (e.g., during FastF1 call if not handled internally)
+       main_logger.error(f"Unexpected error during init_live_file (path='{filepath}'): {e}", exc_info=True)
+       with app_state.app_state_lock:
+           app_state.live_data_file = None
+           app_state.is_saving_active = False
+       return False # Indicate failure
 
 def close_live_file():
     # ... (logic to close file stored in app_state.live_data_file) ...

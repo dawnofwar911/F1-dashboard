@@ -186,6 +186,9 @@ class BaseHubConnection(object):
         for message_item in messages:
             try:
                 # --- Invocation Messages (Server calling client method) ---
+                if not hasattr(message_item, 'type'):
+                    self.logger.warning(f"Dispatch: Skipping message item without 'type' attribute: type={type(message_item)}, value={message_item!r}")
+                    continue
                 if message_item.type == MessageType.invocation:
                     target = getattr(message_item, 'target', 'UNKNOWN_TARGET')
                     inv_id = getattr(message_item, 'invocation_id', 'N/A')
