@@ -15,6 +15,7 @@ import requests
 import app_state
 import numpy as np
 import plotly.graph_objects as go # Make sure this is imported at the top
+import uuid
 
 # Import for F1 Schedule / Data
 try:
@@ -48,18 +49,16 @@ except ImportError:
 NEGOTIATE_URL_BASE = "https://livetiming.formula1.com/signalr"
 WEBSOCKET_URL_BASE = "wss://livetiming.formula1.com/signalr"
 HUB_NAME = "Streaming"
-STREAMS_TO_SUBSCRIBE = [
-    "Heartbeat", "CarData.z", "Position.z", "ExtrapolatedClock",
+STREAMS_TO_SUBSCRIBE = ["Heartbeat", "CarData.z", "Position.z", "ExtrapolatedClock",
     "TimingAppData", "TimingData", "TimingStats", "TrackStatus",
-    "SessionData", "DriverList", "RaceControlMessages", "SessionInfo"
-]
+    "SessionData", "DriverList", "RaceControlMessages", "SessionInfo"]
 DATA_FILENAME_TEMPLATE = "f1_signalr_data_{timestamp}.data.txt"
 DATABASE_FILENAME_TEMPLATE = "f1_signalr_data_{timestamp}.db"
 DEFAULT_REPLAY_FILENAME = "2023-yas-marina-quali.data.txt" # Default replay file
 
 # --- Logging Setup ---
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-log_level = logging.INFO # Change to logging.DEBUG for more detail if needed
+log_level = logging.DEBUG # Change to logging.DEBUG for more detail if needed
 
 # Main application logger
 main_logger = logging.getLogger("F1App")
@@ -153,7 +152,7 @@ def run_connection_manual_neg(target_url, headers_for_ws):
                 "skip_negotiation": True   # MUST skip internal negotiation
                 })
             .with_hub_protocol(JsonHubProtocol()) # Keep explicit protocol
-            .configure_logging(logging.INFO) # Use logger defined elsewhere
+            .configure_logging(logging.DEBUG) # Use logger defined elsewhere
             # Add reconnect logic here if/when needed
             .build()
         )
@@ -175,11 +174,12 @@ def run_connection_manual_neg(target_url, headers_for_ws):
         hub_connection.on_close(handle_disconnect) # Use your close handler name
         hub_connection.on_error(handle_error) # Use your error handler name
 
-        # Register message handlers (assuming functions exist)
-        HUB_NAME = "Streaming" # Make sure HUB_NAME is defined globally or locally
-        hub_connection.on(HUB_NAME, on_message) # on_message handles parsing msg structure
-        main_logger.info(f"Connection thread: Generic handler 'on_message' registered for hub '{HUB_NAME}'.")
-    # --- >>> END ADDITION <<< ---
+        FEED_TARGET_NAME = "feed"
+        hub_connection.on(FEED_TARGET_NAME, on_message)
+        main_logger.info(f"Connection thread: Handler 'on_message' registered for target '{FEED_TARGET_NAME}'.")
+        # Log the final list of handlers stored on the connection object
+        app_handlers = getattr(hub_connection, 'handlers', [])
+        main_logger.info(f"Connection thread: Handlers successfully registered: {app_handlers!r}")
 
         # Update app state before starting
         with app_state.app_state_lock:
@@ -221,41 +221,84 @@ def run_connection_manual_neg(target_url, headers_for_ws):
         globals()['hub_connection'] = None # Clear global reference
         main_logger.info("Conn thread cleanup finished (manual neg).")
 
-def on_message(msg):
-    global data_queue
+def on_message(args):
+    """Handles 'feed' targeted messages received from the SignalR hub connection."""
+    global data_queue, main_logger # Ensure needed globals are declared
+
+    # Changed initial log to DEBUG level as it can be very frequent
+    main_logger.debug(f"APP HANDLER (on_message) called with args type: {type(args)}") # Corrected logging
+
     try:
-        if isinstance(msg, dict) and isinstance(msg.get('M'), list):
-            # ... (logic to loop through M, call _decode_and_decompress, queue dict) ...
-            messages_queued_count = 0
-            timestamp_from_outer_T = msg.get("T")
-            for msg_container in msg["M"]:
-                if isinstance(msg_container, dict) and msg_container.get("M") == "feed":
-                    msg_args = msg_container.get("A")
-                    if isinstance(msg_args, list) and len(msg_args) >= 2:
-                        stream_name_raw=msg_args[0]; data_content=msg_args[1]
-                        timestamp_for_queue = msg_args[2] if len(msg_args) > 2 else timestamp_from_outer_T
-                        if timestamp_for_queue is None: timestamp_for_queue = datetime.datetime.now(timezone.utc).isoformat() + 'Z'
-                        stream_name = stream_name_raw; actual_data = data_content
-                        if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
-                            stream_name = stream_name_raw[:-2]
-                            actual_data = _decode_and_decompress(data_content) # Assumes helper exists
-                            if actual_data is None: continue
-                        if actual_data is not None:
-                            data_queue.put({"stream": stream_name, "data": actual_data, "timestamp": timestamp_for_queue})
-                            messages_queued_count += 1
-        elif isinstance(msg, dict) and "R" in msg:
-             handle_message(msg) # Assumes handle_message exists and handles R
-        elif isinstance(msg, list) and len(msg) >= 2:
-             handle_message(msg) # Assumes handle_message exists and handles lists
-        elif isinstance(msg, dict) and not msg: # Check for empty dict {}
-             handle_message(msg) # Assumes handle_message exists and handles heartbeats
-        elif isinstance(msg, dict) and "C" in msg:
-             pass # Ignore Control messages
+        # --- Start of CORRECTED logic ---
+        # Library passes message.arguments directly, which should be a list for 'feed'.
+        if not isinstance(args, list):
+            main_logger.warning(f"  APP HANDLER received unexpected args format (not a list): {type(args)} - Content: {args!r}")
+            return # Cannot process non-list arguments for 'feed'
+
+        # Process the arguments list directly (no loop needed here)
+        if len(args) >= 2:
+            stream_name_raw = args[0]
+            data_content = args[1]
+            # Extract optional timestamp if present (assuming it's the 3rd arg)
+            timestamp_for_queue = args[2] if len(args) > 2 else None
+            if timestamp_for_queue is None:
+                # Fallback timestamp if not provided in message arguments
+                timestamp_for_queue = datetime.datetime.now(timezone.utc).isoformat() + 'Z'
+                main_logger.debug(f"  Using fallback timestamp for stream '{stream_name_raw}'")
+
+            stream_name = stream_name_raw
+            actual_data = data_content
+
+            # Check for compressed data indicated by '.z' suffix
+            if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
+                stream_name = stream_name_raw[:-2] # Remove suffix
+                actual_data = _decode_and_decompress(data_content) # Call helper function
+                if actual_data is None:
+                    # Log warning, data will be skipped below
+                    main_logger.warning(f"    Failed to decode/decompress data for stream '{stream_name_raw}'. Skipping queue put.")
+                # else: # Optional success log
+                #    main_logger.debug(f"    Successfully decoded/decompressed '{stream_name_raw}'")
+
+
+            # Ensure we have data (might be None if decompression failed) and queue exists before putting
+            if actual_data is not None:
+                try:
+                    # Ensure data_queue is accessible (check global scope, initialization)
+                    if 'data_queue' not in globals():
+                         main_logger.error("    FATAL: data_queue is not defined in global scope for on_message!")
+                         return # Exit if queue doesn't exist
+
+                    queue_item = {"stream": stream_name, "data": actual_data, "timestamp": timestamp_for_queue}
+                    # Use non-blocking put with timeout to prevent handler blocking if queue is full
+                    try:
+                        data_queue.put(queue_item, block=True, timeout=0.1) # Timeout after 100ms
+                    except queue.Full:
+                         main_logger.warning(f"    Data queue full! Discarding '{stream_name}' message after timeout.")
+                         return # Exit this handler call if queue is full
+
+                    # Log after successful put
+                    try: data_size = len(str(actual_data))
+                    except: data_size = "N/A" # Handle potential errors converting complex data to string
+                    main_logger.debug(f"    Put '{stream_name}' onto data_queue (approx size: {data_size}).")
+
+                # Catch potential errors during the queue put operation itself (less likely with timeout)
+                except Exception as queue_ex:
+                    main_logger.error(f"    Error putting message onto data_queue: {queue_ex}", exc_info=True)
+            else:
+                # This case handles when actual_data is None (e.g., decompression failed)
+                # Changed to debug level as it might happen often for non-data messages if helper isn't robust
+                main_logger.debug(f"    Skipping queue put for stream '{stream_name}' due to None data.")
+
         else:
-             main_logger.warning(f"Live on_message received unhandled structure: {type(msg)} - {str(msg)[:200]}")
+            # Log if the 'feed' target doesn't have the expected number of arguments
+            main_logger.warning(f"  Invocation target 'feed' received with unexpected arguments structure (expected >= 2): {args!r}")
+        # --- End of CORRECTED logic ---
+
     except Exception as e:
-         main_logger.error(f"Error processing live message in on_message: {e}", exc_info=True)
-         # ... (log problematic message) ...
+        # Catch errors during the processing of the args list itself
+        main_logger.error(f"APP HANDLER (on_message) outer error processing arguments: {e}", exc_info=True)
+
+
 
 def handle_message(message_data):
     """
@@ -915,12 +958,21 @@ def data_processing_loop():
     global data_store, db_cursor, timing_state # No fastf1 map needed
     # processed_count = 0
     # max_process = 100
+    loop_counter = 0 # Add counter
 
     while not stop_event.is_set():
+            loop_counter += 1
+            if loop_counter % 50 == 0: # Log every 50 iterations (approx 10 seconds)
+                 main_logger.debug(f"Data processing loop is running (Iteration {loop_counter})...")
+            # --- >>> END ADDED LOG <<< ---
         # processed_count += 1
             item = None # Initialize item to None for this iteration
             try:
                 item = data_queue.get(block=True, timeout=0.2)
+                
+                # --- START ADDED LOGGING ---
+                main_logger.debug(f"Processing Queue Item: {item.get('stream', 'UnknownStream')}")
+                # --- END ADDED LOGGING ---
                 # --- Expect item = {"stream": stream_name, "data": data, "timestamp": timestamp} ---
                 if not isinstance(item, dict) or 'stream' not in item or 'data' not in item:
                     main_logger.warning(f"Skipping queue item with unexpected structure: {type(item)}")
@@ -934,38 +986,46 @@ def data_processing_loop():
                 # --- Process individual streams (Update state) ---
                 with app_state.app_state_lock: # Lock for timing_state and data_store updates
                     data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
+                    
+                    main_logger.debug(f"  Calling processor for: {stream_name}")
+                
     
                     # Specific stream handlers
-                    if stream_name == "Heartbeat":
-                       app_state.app_status["last_heartbeat"] = timestamp
-                    elif stream_name == "DriverList":
-                        _process_driver_list(actual_data) # Existing handler
-                    elif stream_name == "TimingData":
-                        _process_timing_data(actual_data) # Existing handler
-                    elif stream_name == "SessionInfo":
-                        _process_session_info(actual_data) # Existing handler
-                    # --- ADDED Stream Handlers ---
-                    elif stream_name == "SessionData":
-                         _process_session_data(actual_data) # Call the new handler
-                    # --- END ADDED ---
-                    elif stream_name == "TimingAppData":
-                        _process_timing_app_data(actual_data) # Updates timing_state with tyre info
-                    elif stream_name == "TrackStatus":
-                        _process_track_status(actual_data) # Call new handler
-                    elif stream_name == "CarData":
-                        _process_car_data(actual_data) # Call new handler
-                    elif stream_name == "Position":
-                        _process_position_data(actual_data) # Call the position handler
-                    # --- END ADDED Stream Handlers ---
-                    # Add other handlers here (WeatherData, TimingStats, etc.)
-                    elif stream_name == "WeatherData":
-                         _process_weather_data(actual_data) # call the weather handler
-                    elif stream_name == "RaceControlMessages":
-                        _process_race_control(actual_data)
-                    else:
-                         # Optional: Log if you want to know about unhandled streams that made it this far
-                        main_logger.debug(f"No specific handler for stream: {stream_name}") 
-                        pass
+                    try:
+                        if stream_name == "Heartbeat":
+                           app_state.app_status["last_heartbeat"] = timestamp
+                        elif stream_name == "DriverList":
+                            _process_driver_list(actual_data) # Existing handler
+                        elif stream_name == "TimingData":
+                            _process_timing_data(actual_data) # Existing handler
+                        elif stream_name == "SessionInfo":
+                            _process_session_info(actual_data) # Existing handler
+                        # --- ADDED Stream Handlers ---
+                        elif stream_name == "SessionData":
+                             _process_session_data(actual_data) # Call the new handler
+                        # --- END ADDED ---
+                        elif stream_name == "TimingAppData":
+                            _process_timing_app_data(actual_data) # Updates timing_state with tyre info
+                        elif stream_name == "TrackStatus":
+                            _process_track_status(actual_data) # Call new handler
+                        elif stream_name == "CarData":
+                            _process_car_data(actual_data) # Call new handler
+                        elif stream_name == "Position":
+                            _process_position_data(actual_data) # Call the position handler
+                        # --- END ADDED Stream Handlers ---
+                        # Add other handlers here (WeatherData, TimingStats, etc.)
+                        elif stream_name == "WeatherData":
+                             _process_weather_data(actual_data) # call the weather handler
+                        elif stream_name == "RaceControlMessages":
+                            _process_race_control(actual_data)
+                        else:
+                             # Optional: Log if you want to know about unhandled streams that made it this far
+                            main_logger.debug(f"No specific handler for stream: {stream_name}") 
+                    except Exception as proc_ex:
+                        # --- START ADDED LOGGING ---
+                        # Log errors specific to the processing function
+                        main_logger.error(f"  ERROR processing stream '{stream_name}': {proc_ex}", exc_info=True)
+                        # --- END ADDED LOGGING ---
     
                 data_queue.task_done() # Mark the original queue item as done
     
@@ -1005,55 +1065,57 @@ def build_connection_url(negotiate_url, hub_name):
         main_logger.error(f"Negotiation error: {e}", exc_info=True)
     return None
 
-def handle_connect(): # Was on_open
-    global hub_connection # Access the global connection object
-    conn_id = "N/A"
-    temp_hub = hub_connection # Use local variable
+def handle_connect():
+    """Callback executed when the hub connection is successfully opened."""
+    global hub_connection, streams_to_subscribe # Make sure these are accessible
 
-    # Safely access transport and connection_id
-    if temp_hub and temp_hub.transport:
-         conn_id = getattr(temp_hub.transport, 'connection_id', 'N/A')
+    connection_id = "N/A" # SignalR Core doesn't expose easily like older versions
+    main_logger.info(f"****** Connection Opened! ****** Connection ID: {connection_id}")
 
-    main_logger.info(f"****** Connection Opened! ****** Connection ID: {conn_id}")
-
-    # Update state FIRST
     with app_state.app_state_lock:
-         if app_state.app_status["state"] == "Connecting":
-             app_state.app_status.update({"connection": "Connected, Subscribing", "state": "Live"})
-         else:
-             # This case might happen if connection drops and reconnects automatically later
-             main_logger.warning(f"handle_connect called but unexpected state: {app_state.app_status['state']}. Proceeding with subscribe.")
-             app_state.app_status["connection"] = "Reconnected? Subscribing"
-             # Don't change state if it was Error/Stopping etc.
+        # Check if we are already Live to prevent issues if handle_connect is called unexpectedly
+        if app_state.app_status["state"] == "Live":
+             main_logger.warning("handle_connect called but unexpected state: Live. Proceeding with subscribe.")
+             # Consider just returning if this state shouldn't happen
+             # return
 
-    # --- USE .send() HERE ---
-    if temp_hub:
-        # --- Optional: Add the dir() check again here if you're still unsure ---
-        # main_logger.info(f"Attributes in handle_connect: {dir(temp_hub)}")
-        # ---
+        app_state.app_status.update({"state": "Live", "connection": "Socket Connected - Subscribing"})
+
+    if hub_connection:
         try:
-            if hasattr(temp_hub, 'send'): # Check if send exists before calling
-                main_logger.info(f"Attempting to subscribe using .send(): {STREAMS_TO_SUBSCRIBE}")
-                temp_hub.send("Subscribe", [STREAMS_TO_SUBSCRIBE]) # Use .send()
-                main_logger.info("Subscription request sent via .send().")
-                with app_state.app_state_lock: # Update status after successful send
-                    if app_state.app_status["state"] == "Live": # Check state again
-                         app_state.app_status["connection"] = "Live / Subscribed"
-            else:
-                # This case should ideally not happen if the builder check passed
-                main_logger.error(".send() method not found on hub object in handle_connect!")
-                raise AttributeError("Object missing '.send()' method")
+            main_logger.info(f"Attempting to subscribe using **RAW JSON**: {STREAMS_TO_SUBSCRIBE}")
+
+            # --- START REPLACEMENT for subscription ---
+            # invocation_id = hub_connection.send("Subscribe", [streams_to_subscribe]) # OLD WAY
+            # main_logger.info(f"Subscription request sent via .send(). Invocation ID: {invocation_id}") # OLD WAY
+
+            # Construct the old-style JSON message
+            # Generate a simple invocation ID (e.g., incrementing integer or random)
+            invocation_counter = str(uuid.uuid4())[:8] # Example: use part of a UUID
+            subscribe_message = {
+                "H": "Streaming", # Hub name
+                "M": "Subscribe", # Method name
+                "A": [STREAMS_TO_SUBSCRIBE], # Arguments: Must be List[List[str]]
+                "I": invocation_counter # Invocation ID (client-generated counter)
+            }
+            json_string = json.dumps(subscribe_message)
+
+            # Send using the new raw method
+            hub_connection.send_raw_json(json_string)
+            main_logger.info(f"Subscription request sent via **send_raw_json()**. Invocation ID ('I'): {invocation_counter}")
+            # --- END REPLACEMENT ---
 
         except Exception as e:
-            main_logger.error(f"Error sending subscribe via .send(): {e}", exc_info=True)
+            main_logger.error(f"Error sending subscription in handle_connect: {e}", exc_info=True)
+            # Update state or handle error appropriately
             with app_state.app_state_lock:
-                  app_state.app_status.update({"state": "Error", "connection": "Subscribe Send Error"})
-            if not stop_event.is_set(): stop_event.set() # Trigger shutdown on error
+                app_state.app_status.update({"state": "Error", "connection": f"Subscription Send Error: {type(e).__name__}"})
+            # Consider stopping connection here?
+            # stop_connection()
     else:
-        main_logger.error("Cannot subscribe: hub_connection is None in handle_connect.")
+        main_logger.error("handle_connect called but hub_connection is None!")
         with app_state.app_state_lock:
-             app_state.app_status.update({"state": "Error", "connection": "Hub None Error"})
-        if not stop_event.is_set(): stop_event.set()
+            app_state.app_status.update({"state": "Error", "connection": "Hub object missing"})
 
 def handle_disconnect(): # Was on_close
     main_logger.warning("Connection closed.")

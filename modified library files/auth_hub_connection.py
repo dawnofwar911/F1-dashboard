@@ -1,6 +1,7 @@
 from .base_hub_connection import BaseHubConnection
 from ..helpers import Helpers
 import logging
+import threading
 
 class AuthHubConnection(BaseHubConnection):
     def __init__(self, auth_function, headers=None, **kwargs):
@@ -14,6 +15,8 @@ class AuthHubConnection(BaseHubConnection):
     def start(self):
         # Use self.logger if available, otherwise fallback
         logger = getattr(self, 'logger', logging.getLogger(__name__))
+        #logger.debug(f"THREAD {threading.get_ident()}: ENTERING AuthHubConnection.start")
+   
         try:
             # --- Check and handle auth function ---
             if self.auth_function and callable(self.auth_function):

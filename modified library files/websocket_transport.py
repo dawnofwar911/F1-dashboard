@@ -26,6 +26,10 @@ from .reconnection import ConnectionStateChecker
 from .connection import ConnectionState
 from ...messages.ping_message import PingMessage
 from ...hub.errors import HubError, HubConnectionError, UnAuthorizedHubError
+# Near top of websocket_transport.py
+from ...messages.message_type import MessageType
+from ...messages.invocation_message import InvocationMessage
+from ...messages.ping_message import PingMessage
 # Import protocols only if needed for type checking, not usually directly used here
 # from ...protocol.messagepack_protocol import MessagePackHubProtocol
 # --- PATCH START ---
@@ -232,12 +236,13 @@ class WebsocketTransport(BaseTransport):
         """Callback when websocket-client connection opens."""
         self.logger.debug("-- web socket open --")
         # Set state early to allow sending handshake
-        self.state = ConnectionState.connected
+        # self.state = ConnectionState.connected
         self.logger.debug(f"Transport state set to: {self.state} (in on_open)")
         if self.protocol is None: self.logger.error("Cannot send handshake, protocol not set."); return
         msg = self.protocol.handshake_message(); self.send(msg) # Sends client handshake
         # Trigger hub's handler AFTER sending client handshake
-        if callable(self._internal_on_open_handler): self.logger.debug("Calling hub's on_open_handler from transport.on_open"); self._internal_on_open_handler()
+        if callable(self._internal_on_open_handler): self.logger.debug("Calling hub's on_open_handler from transport.on_open"); 
+        # self._internal_on_open_handler()
         else: self.logger.warning("Transport could not call hub's on_open_handler.")
 
     # on_close (from response #79)
@@ -256,6 +261,54 @@ class WebsocketTransport(BaseTransport):
         if callable(self._internal_on_error_handler): self.logger.debug("Calling hub's on_error_handler"); self._internal_on_error_handler(error)
         if previous_state != ConnectionState.disconnected and callable(self._internal_on_close_handler): self.logger.debug("Calling hub's on_close_handler after socket error"); self._internal_on_close_handler()
 
+    def send_raw(self, raw_data):
+        """Sends raw string or bytes data directly over the websocket."""
+        self.logger.debug(f"Entering send_raw. Current state: {self.state}")
+        available_attrs = list(getattr(self, '__dict__', {}).keys())
+        self.logger.debug(f"send_raw: Available attributes: {available_attrs}") # Keep this for now
+    
+        if self.state != ConnectionState.connected:
+            self.logger.warning(f"Attempted send_raw while not connected! State: {self.state}")
+            raise HubConnectionError(f"Transport not connected: {self.state}")
+    
+        # --- START FIX ---
+        # Attempt to get the underlying websocket instance using the CORRECT name '_ws'
+        socket_instance = getattr(self, '_ws', None)
+        # --- END FIX ---
+    
+        # Check if we successfully retrieved the websocket instance
+        if not socket_instance:
+            # --- START FIX ---
+            # Update error message to reflect checking for '_ws'
+            self.logger.error("Cannot send raw data: WebSocket instance attribute ('_ws') not found. getattr returned None.")
+            raise HubConnectionError("WebSocket application instance ('_ws') not available.")
+            # --- END FIX ---
+    
+        # Now, try to send the data using the retrieved socket instance
+        try:
+            # --- START FIX ---
+            # Update log message
+            self.logger.debug(f"Transport attempting to send raw data via self._ws: {raw_data!r}")
+            # Call send on the correct instance
+            socket_instance.send(raw_data)
+            # Update log message
+            self.logger.debug(f"Transport successfully sent raw data via self._ws.")
+            # --- END FIX ---
+
+        except websocket.WebSocketConnectionClosedException as ws_closed:
+            self.logger.error(f"Failed to send raw data: WebSocket closed. {ws_closed}", exc_info=True)
+            self._on_close()
+            raise HubConnectionError("WebSocket closed") from ws_closed
+        except Exception as ex:
+            # --- START FIX ---
+            # Update log message
+            self.logger.error(f"Failed to send raw data using self._ws: {ex}", exc_info=True)
+            # --- END FIX ---
+            if callable(self._internal_on_error_handler):
+                self._internal_on_error_handler(ex)
+            raise HubError(f"Error sending raw data: {ex}") from ex
+    # --- End Method ---
+    
     # on_message (Patched Version from Response #79 - Calls hub handler AFTER handshake)
     def on_message(self, wsapp, message):
         """Callback for websocket-client receiving messages."""
@@ -296,9 +349,9 @@ class WebsocketTransport(BaseTransport):
         # --- END ADDED SAVE LOGIC ---
         
         # --- ADDED Raw Log Line ---
-        self.logger.debug(f"SYNC Raw message received by transport: {message!r}")
+        #self.logger.debug(f"SYNC Raw message received by transport: {message!r}")
         # --- END Added Line ---
-        self.logger.debug("Message received{0}".format(message)) # Original debug
+        #self.logger.debug("Message received{0}".format(message)) # Original debug
         self.connection_checker.last_message = time.time(); parsed_messages = []
         if not self.handshake_received:
             try:
@@ -324,7 +377,46 @@ class WebsocketTransport(BaseTransport):
                  if callable(self._internal_on_error_handler): self._internal_on_error_handler(parse_ex)
                  return
         # Pass successfully parsed messages up to the HubConnection (_on_message)
-        if parsed_messages and callable(self._on_message): self._on_message(parsed_messages)
+        if parsed_messages:
+            hub_conn_ref = getattr(self, '_hub_connection', None)
+            if not hub_conn_ref:
+                 self.logger.error("Transport: Cannot dispatch message - self._hub_connection reference is missing!")
+                 return # Exit if no hub connection reference
+
+            # Log BEFORE attempting standard dispatch
+            # Added Hub Ref log to confirm we have the object
+            self.logger.debug(f"Transport: Dispatching {len(parsed_messages)} parsed messages via standard _dispatch_message. Hub Ref: {hub_conn_ref!r}")
+
+            # --- ADDED try...except block around the STANDARD dispatch call ---
+            try:
+                # Log IMMEDIATELY BEFORE the standard call
+                self.logger.debug("  Transport: >>> Calling _hub_connection._dispatch_message...")
+
+                # === THE STANDARD CALL ===
+                # Call the dispatch method on the hub connection object, passing the list
+                hub_conn_ref._dispatch_message(parsed_messages)
+                # ========================
+
+                # Log IMMEDIATELY AFTER the standard call returns (if it does)
+                self.logger.debug("  Transport: <<< Returned from _hub_connection._dispatch_message.")
+
+            except Exception as dispatch_ex:
+                # Log ANY exception occurring during the standard dispatch call
+                self.logger.error(f"  Transport: !!! EXCEPTION during _hub_connection._dispatch_message: {dispatch_ex}", exc_info=True)
+                # Depending on the error, you might want to trigger the main error handler
+                # self._trigger_on_error_handler(dispatch_ex) # Consider if needed
+            # --- END ADDED try...except block ---
+
+        elif not parsed_messages and message != self.protocol.record_separator:
+            # Optional: Refine logging for empty parses vs pings
+            if message != "{}\x1e": # Don't log standard pings excessively
+                 self.logger.debug(f"Transport: Parser returned empty list for non-separator/ping message: {message!r}")
+            # else: # Optionally log pings at a lower level if needed
+            #    self.logger.trace("Transport: Parser returned empty list (likely Ping message)") # Assuming TRACE level exists
+
+        
+       
+        
 
     # send (from response #81 - allows sending when connecting for handshake)
     def send(self, message):
