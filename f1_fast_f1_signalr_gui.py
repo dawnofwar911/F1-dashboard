@@ -1103,7 +1103,7 @@ def data_processing_loop():
                 item = data_queue.get(block=True, timeout=0.2)
                 
                 # --- START ADDED LOGGING ---
-                main_logger.debug(f"Processing Queue Item: {item.get('stream', 'UnknownStream')}")
+                #main_logger.debug(f"Processing Queue Item: {item.get('stream', 'UnknownStream')}")
                 # --- END ADDED LOGGING ---
                 # --- Expect item = {"stream": stream_name, "data": data, "timestamp": timestamp} ---
                 if not isinstance(item, dict) or 'stream' not in item or 'data' not in item:
@@ -1119,7 +1119,7 @@ def data_processing_loop():
                 with app_state.app_state_lock: # Lock for timing_state and data_store updates
                     data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
                     
-                    main_logger.debug(f"  Calling processor for: {stream_name}")
+                    #main_logger.debug(f"  Calling processor for: {stream_name}")
                 
     
                     # Specific stream handlers
@@ -1168,7 +1168,7 @@ def data_processing_loop():
                 main_logger.error(f"!!! Unhandled exception in data_processing_loop !!! Error: {e}", exc_info=True)
                 if item is not None:
                     try:
-                        app_state.data_queue.task_done()
+                        data_queue.task_done()
                     except: pass # Ignore errors during error cleanup
                 time.sleep(0.5) # Avoid busy-looping on continuous errors
 
@@ -1520,7 +1520,7 @@ def replay_from_file(data_file_path, replay_speed=1.0):
     
                             else: # Unrecognized JSON structure
                                 lines_skipped += 1
-                                if line_num > 3: main_logger.debug(f"Line {line_num}: Skipping unrecognized JSON top-level structure: {type(raw_message).__name__}")
+                                #if line_num > 3: main_logger.debug(f"Line {line_num}: Skipping unrecognized JSON top-level structure: {type(raw_message).__name__}")
                                 continue # Skip delay logic
                             # --- MODIFICATION END ---
     
@@ -1554,7 +1554,7 @@ def replay_from_file(data_file_path, replay_speed=1.0):
                                                     time.sleep(actual_sleep)
                                                     delay_applied = True
                                             elif time_diff_seconds < 0:
-                                                 main_logger.debug(f"Timestamp (A[2]) backwards line {line_num}: {timestamp_to_use_for_current_block} vs {last_timestamp_for_delay}")
+                                                 #main_logger.debug(f"Timestamp (A[2]) backwards line {line_num}: {timestamp_to_use_for_current_block} vs {last_timestamp_for_delay}")
                                                  time.sleep(0.001 / replay_speed if replay_speed > 0 else 0.001)
                                                  delay_applied = True
                                         except Exception as calc_err:
