@@ -1749,6 +1749,18 @@ app.layout = dbc.Container([
         {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} = "-"'}, # Default/Unknown
             'backgroundColor': 'inherit', 'color': 'grey'}, # Grey out if unknown ('inherit' uses row bg)
 ], tooltip_duration=None)])], width=12)]),
+    dbc.Row([
+        dbc.Col([
+            html.H3("Race Control Messages"),
+            dcc.Textarea(
+                id='race-control-log-display',
+                value='Waiting for Race Control messages...',
+                style={'width': '100%', 'height': '200px', 'backgroundColor': '#333', 'color': '#DDD', 'border': '1px solid grey', 'fontFamily': 'monospace'},
+                readOnly=True,
+                # rows=10 # Alternative height control
+            )
+        ], width=12)
+    ], className="mb-3"), # Add margin-bottom
     # --- ADDED: Track Map Row ---
     dbc.Row([
         dbc.Col(dcc.Graph(id='track-map-graph', style={'height': '60vh'})) # Adjust height as needed
@@ -1778,83 +1790,66 @@ def update_output(n):
     table_data = []
     timing_timestamp_text = "Waiting for TimingData..."
 
-    with app_state.app_state_lock:
-        # Update status and heartbeat displays
+    with app_state.app_state_lock: # <<< Move lock acquisition earlier
+        # Status, Heartbeat, Track Status (already implicitly covered)
         status_text = f"State: {app_state.app_status['state']} | Conn: {app_state.app_status['connection']}"
         heartbeat_text = f"Last HB: {app_state.app_status['last_heartbeat'] or 'N/A'}"
-        
-        # --- ADDED: Get and Format Track Status --
         track_status_code = track_status_data.get('Status', '0')
-        track_status_map = {
-                '1': "Track Clear", '2': "Yellow Flag", '3': "Flag",
-                '4': "SC Deployed", '5': "Red Flag", '6': "VSC Deployed", '7': "VSC Ending"
+        track_status_map = { # Define map inside or outside callback
+             '1': "Track Clear", '2': "Yellow Flag", '3': "Flag",
+             '4': "SC Deployed", '5': "Red Flag", '6': "VSC Deployed", '7': "VSC Ending"
         }
         track_display_text = f"Track: {track_status_map.get(track_status_code, f'Unknown ({track_status_code})')}"
 
-        # Display other stream data (collapsed by default except SessionInfo)
-        sorted_streams = sorted([s for s in data_store.keys() if s not in ['TimingData', 'DriverList', 'Position.z', 'CarData.z']]) # Exclude high-frequency streams
+        # Other Data Display (Reads data_store)
+        sorted_streams = sorted([s for s in data_store.keys() if s not in ['TimingData', 'DriverList', 'Position.z', 'CarData.z']])
         for stream in sorted_streams:
-             value = data_store[stream]
-             # Limit displayed data size for performance
-             data_str = json.dumps(value.get('data', 'N/A'), indent=2)
-             timestamp_str = value.get('timestamp', 'N/A')
-             if len(data_str) > 500: # Limit display size
-                 data_str = data_str[:500] + "\n... (data truncated)"
-             other_data_display.append(html.Details([
-                 html.Summary(f"{stream} ({timestamp_str})"),
-                 html.Pre(data_str, style={'marginLeft': '15px', 'maxHeight': '200px', 'overflowY': 'auto'})
-             ], style={'marginBottom': '5px'}, open=(stream=="SessionInfo"))) # Open SessionInfo by default
+            value = data_store.get(stream, {}) # Use .get for safety
+            data_str = json.dumps(value.get('data', 'N/A'), indent=2)
+            timestamp_str = value.get('timestamp', 'N/A')
+            if len(data_str) > 500:
+                data_str = data_str[:500] + "\n... (data truncated)"
+            other_data_display.append(html.Details([
+                html.Summary(f"{stream} ({timestamp_str})"),
+                html.Pre(data_str, style={'marginLeft': '15px', 'maxHeight': '200px', 'overflowY': 'auto'})
+            ], style={'marginBottom': '5px'}, open=(stream=="SessionInfo")))
 
-        # Update timing table timestamp
+        # Timing Table Timestamp (Reads data_store)
         if 'TimingData' in data_store:
             timing_timestamp_text = f"Timing Timestamp: {data_store['TimingData'].get('timestamp', 'N/A')}"
-        elif not timing_state:
-             timing_timestamp_text = "Waiting for DriverList..."
+        elif not timing_state: # Read timing_state existence check inside lock
+            timing_timestamp_text = "Waiting for DriverList..."
 
-        # --- Generate Timing Table Data ---
+        # Generate Timing Table Data (Reads timing_state) <<< Now inside lock
         if timing_state:
             processed_table_data = []
-            # Sort drivers by car number initially for consistent order before position sort
             sorted_driver_numbers = sorted(timing_state.keys(), key=lambda x: int(x) if x.isdigit() else float('inf'))
 
-            # Inside update_output function, within the loop:
+            # Define helper functions locally if needed, or move outside if complex
+            def get_nested_state(d, *keys, default=None):
+                # ... (implementation as before) ...
+                val = d
+                for key in keys:
+                    if isinstance(val, dict): val = val.get(key)
+                    else: return default
+                return val if val is not None else default
 
             for car_num in sorted_driver_numbers:
-                driver_state = timing_state[car_num]
-                
-                tyre_compound = driver_state.get('TyreCompound', '-') # Default '-'
-                tyre_age = driver_state.get('TyreAge', '?') # Default '?'
-                
+                # Safely get driver state, might be modified by other thread
+                driver_state = timing_state.get(car_num)
+                if not driver_state: continue # Skip if driver was removed mid-read
+
+                tyre_compound = driver_state.get('TyreCompound', '-')
+                tyre_age = driver_state.get('TyreAge', '?')
                 tyre_display = f"{tyre_compound} ({tyre_age}L)" if tyre_compound != '-' else '-'
+                tla = driver_state.get("Tla")
+                car_display_value = tla if tla and tla != "N/A" else car_num
+                car_data = driver_state.get('CarData', {})
 
-                # Helper function to safely get nested dictionary values (remains the same)
-                def get_nested_state(d, *keys, default=None):
-                     val = d
-                     for key in keys:
-                         if isinstance(val, dict):
-                             val = val.get(key)
-                         else:
-                             return default
-                     return val if val is not None else default
-
-                # --- MODIFICATION START ---
-                # Logic to determine what to display in the 'Car' column
-                tla = driver_state.get("Tla") # Get the stored TLA value (might be "N/A" or None)
-                car_display_value = car_num   # Default to the car number string
-
-                # Use the TLA *only if* it exists and is not the string "N/A"
-                if tla and tla != "N/A":
-                    car_display_value = tla
-                    
-                # --- ADDED: Get CarData ---
-                car_data = driver_state.get('CarData', {}) # Get sub-dict, default to {}
-                # --- END ADDED ---
-
-                # Create the table row data
                 row = {
-                    'Car': car_display_value, # Use the determined display value
+                    'Car': car_display_value,
                     'Pos': driver_state.get('Position', '-'),
-                    "Tyre": tyre_display, # Use the formatted tyre string
+                    "Tyre": tyre_display,
                     'Time': driver_state.get('Time', '-'),
                     'Gap': driver_state.get('GapToLeader', '-'),
                     'Interval': get_nested_state(driver_state, 'IntervalToPositionAhead', 'Value', default='-'),
@@ -1864,43 +1859,30 @@ def update_output(n):
                     'S2': get_nested_state(driver_state, 'Sectors', '1', 'Value', default='-'),
                     'S3': get_nested_state(driver_state, 'Sectors', '2', 'Value', default='-'),
                     'Status': driver_state.get('Status', 'N/A'),
-                # --- ADDED: CarData values to row ---
                     'Speed': car_data.get('Speed', '-'),
                     'Gear': car_data.get('Gear', '-'),
                     'RPM': car_data.get('RPM', '-'),
-                    'DRS': {8: "Eligible",10: "On",12: "On", 14: "ON"}.get(car_data.get('DRS'), 'Off'), # Expanded DRS map slightly, adjust as needed
-                    # --- END ADDED ---
-                # --- END UPDATED DRS Mapping ---
+                    'DRS': {8: "Eligible",10: "On",12: "On", 14: "ON"}.get(car_data.get('DRS'), 'Off'),
                 }
-                # --- MODIFICATION END ---
                 processed_table_data.append(row)
 
-            # Sort final table data by position (handle non-numeric positions)
+            # Sort final table data by position
             def pos_sort_key(item):
-                pos_str = item.get('Pos', '999') # Default to 999 if missing
-                if isinstance(pos_str, (int, float)):
-                    return pos_str # Already numeric
-                if isinstance(pos_str, str) and pos_str.isdigit():
-                     try:
-                         return int(pos_str)
-                     except ValueError:
-                          return 999 # Should not happen if isdigit() is true, but safety
-                return 999 # Place non-numeric positions (OUT, "", etc.) at the end
+                # ... (implementation as before) ...
+                 pos_str = item.get('Pos', '999')
+                 if isinstance(pos_str, (int, float)): return pos_str
+                 if isinstance(pos_str, str) and pos_str.isdigit():
+                     try: return int(pos_str)
+                     except ValueError: return 999
+                 return 999
 
             processed_table_data.sort(key=pos_sort_key)
             table_data = processed_table_data
-        # --- End Timing Table Data ---
-    try:
-         # Log position of car '1' if it exists, just to see if it changes
-         pos_x_final = timing_state.get('1', {}).get('PositionData', {}).get('X', 'N/A')
-         # main_logger.debug(f"UpdateOutput Final Check: Car 1 X = {pos_x_final}")
-    except Exception as log_ex:
-         main_logger.error(f"Error during final log check: {log_ex}")
-    # --- END Log ---
+        # --- End Timing Table Data Processing (inside lock) ---
 
-    # --- Return all outputs in correct order ---
+    # Return all outputs
     return (status_text, heartbeat_text, track_display_text,
-    other_data_display, table_data, timing_timestamp_text)
+            other_data_display, table_data, timing_timestamp_text)
 
 @app.callback( Output('start-button', 'disabled'), Output('stop-button', 'disabled'), Output('replay-button', 'disabled'), Output('replay-file-input', 'disabled'), Output('replay-speed-input', 'disabled'), Input('interval-component', 'n_intervals'))
 def update_button_states(n):
@@ -1922,40 +1904,26 @@ def refresh_replay_files(n_clicks):
     return dash.no_update
 
 @app.callback(
-        Output('race-control-log-display', 'value'), # Target 'value' for Textarea
-        Input('interval-component', 'n_intervals')
+    Output('race-control-log-display', 'value'),
+    Input('interval-component', 'n_intervals')
 )
 def update_race_control_log(n):
-        log_snapshot = []
-        try:
-            # Reading deque length and items should be relatively safe,
-            # but copy to list under lock if very concerned about modification during read
-            with app_state.app_state_lock: # Added lock for safety while reading length/items
-                 current_length = len(race_control_log)
-                 # Get a snapshot for reliable processing
-                 log_snapshot = list(race_control_log)
+    log_snapshot = []
+    try:
+        # Acquire lock when reading the deque
+        with app_state.app_state_lock: # <<< Add lock here
+            log_snapshot = list(race_control_log) # Create snapshot inside lock
 
-            # --- ADD LOGGING ---
-            # main_logger.debug(f"Callback update_race_control_log (Tick {n}): Deque length = {current_length}")
-            # if log_snapshot: # Log first few items if not empty
-            #    main_logger.debug(f"Callback update_race_control_log: First item in deque (newest): '{log_snapshot[0]}'")
-             #   if len(log_snapshot) > 1:
-             #        main_logger.debug(f"Callback update_race_control_log: Last item in deque (oldest): '{log_snapshot[-1]}'")
-            # --- END LOGGING ---
+        # Process the snapshot outside the lock
+        display_text = "\n".join(reversed(log_snapshot))
 
-            # Join messages with newline, newest messages will be at the bottom of textarea
-            display_text = "\n".join(reversed(log_snapshot)) # Show oldest first
+        if not display_text and n > 0: return "No messages received yet."
+        elif not display_text: return "Waiting for Race Control messages..."
+        return display_text
 
-            if not display_text and n > 0:
-                return "No messages received yet."
-            elif not display_text:
-                return "Waiting for Race Control messages..."
-
-            return display_text
-
-        except Exception as e:
-             main_logger.error(f"Error in update_race_control_log: {e}", exc_info=True)
-             return "Error updating Race Control log."
+    except Exception as e:
+        main_logger.error(f"Error in update_race_control_log: {e}", exc_info=True)
+        return "Error updating Race Control log."
 
 @app.callback(
         Output('session-info-display', 'children'), # Target the specific Div for session info
@@ -2194,205 +2162,168 @@ def handle_replay_button(n_clicks, selected_file, speed_val):
     Input('interval-component', 'n_intervals')
 )
 def update_track_map(n):
-    global timing_state, session_details, track_coordinates_cache
+    global timing_state, session_details, track_coordinates_cache # Keep necessary globals
 
-    figure_data = []
-    drivers_x_raw = []
-    drivers_y_raw = []
-    drivers_text = []
-    drivers_color = []
-    drivers_opacity = [] # <<< ADDED list for opacity
-
-    track_x, track_y = None, None
-    corner_x, corner_y = None, None
-    x_range, y_range = None, None
-    rotation_angle = 0
+    # --- Step 1: Determine Session Key and Check Cache Match (Read-only, lock optional but safer) ---
     current_session_key = None
-
-    # --- Load track data: Check cache or fetch from API ---
+    needs_api_fetch = False
     with app_state.app_state_lock:
-        # 1. Identify Current Session Year and Circuit Key
         year = session_details.get('Year')
         circuit_key = session_details.get('CircuitKey')
+        current_session_key = f"{year}_{circuit_key}" if year and circuit_key else None
+        cached_session_key = track_coordinates_cache.get('session_key')
 
-        if year and circuit_key:
-            current_session_key = f"{year}_{circuit_key}"
-        else:
-            # Not enough info yet to load map data
-            # main_logger.debug("Map update skipped: Year or CircuitKey missing from session_details.")
-            current_session_key = None
+    if current_session_key and cached_session_key != current_session_key:
+        needs_api_fetch = True
+        main_logger.debug(f"Map Check: Cache miss/new session. Need API fetch for {current_session_key}.")
+    elif not current_session_key:
+        main_logger.debug("Map Check: No session key.")
+        # Clear cache if session becomes invalid later? (Handled in Step 3)
+    else:
+        main_logger.debug(f"Map Check: Cache hit for {current_session_key}.")
 
-        # 2. Check Cache / Fetch from API
-        if current_session_key and track_coordinates_cache.get('session_key') == current_session_key:
-            # Use cached data
-            track_x = track_coordinates_cache.get('x')
-            track_y = track_coordinates_cache.get('y')
-            corner_x = track_coordinates_cache.get('corner_x')
-            corner_y = track_coordinates_cache.get('corner_y')
-            x_range = track_coordinates_cache.get('range_x')
-            y_range = track_coordinates_cache.get('range_y')
-            rotation_angle = track_coordinates_cache.get('rotation', 0)
-            # main_logger.debug(f"Using cached track map for {current_session_key}")
-        elif current_session_key:
-            # Cache miss or new session, try fetching from API
-            api_url = f"https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
-            main_logger.info(f"Attempting to fetch track map from API: {api_url}")
-            try:
-                # --- ADD User-Agent Header ---
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                }
-                response = requests.get(api_url, headers=headers, timeout=10) # Add headers=headers
-                # --- End Add Header ---
-                response.raise_for_status() # Check for 4xx/5xx errors AFTER getting response
-                map_api_data = response.json()
 
-                                # --- CORRECTED Data Extraction ---
-                temp_track_x = map_api_data.get('x') # Get list from 'x' key
-                temp_track_y = map_api_data.get('y') # Get list from 'y' key
+    # --- Step 2: Fetch API data if needed (OUTSIDE lock) ---
+    api_data = None # Holds extracted data from API if successful
+    if needs_api_fetch:
+        api_url = f"https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
+        main_logger.info(f"Attempting API fetch: {api_url}")
+        try:
+            headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+            response = requests.get(api_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            map_api_data = response.json()
 
-                if isinstance(temp_track_x, list) and isinstance(temp_track_y, list) and len(temp_track_x) == len(temp_track_y):
-                    # Convert to numbers (API might return strings sometimes)
-                    try:
-                        track_x = [float(p) for p in temp_track_x]
-                        track_y = [float(p) for p in temp_track_y]
-                    except (ValueError, TypeError) as conv_err:
-                         main_logger.error(f"Could not convert track coordinates to float: {conv_err}")
-                         track_x, track_y = None, None # Reset on error
-                else:
-                    main_logger.warning("Could not extract valid 'x' and 'y' lists from API response.")
-                    track_x, track_y = None, None
+            # Extract data into a temporary dictionary on success
+            extracted_data = {}
+            temp_track_x = map_api_data.get('x'); temp_track_y = map_api_data.get('y')
+            if isinstance(temp_track_x, list) and isinstance(temp_track_y, list):
+                 extracted_data['x'] = [float(p) for p in temp_track_x]
+                 extracted_data['y'] = [float(p) for p in temp_track_y]
+            # Extract corners (add robustness)
+            corners_raw = map_api_data.get('corners')
+            if isinstance(corners_raw, list):
+                 corner_x_temp, corner_y_temp = [], []
+                 for corner in corners_raw:
+                      if isinstance(corner, dict):
+                           pos = corner.get('trackPosition', {})
+                           cx, cy = pos.get('x'), pos.get('y')
+                           if cx is not None and cy is not None:
+                                try:
+                                     corner_x_temp.append(float(cx)); corner_y_temp.append(float(cy))
+                                except (ValueError, TypeError): pass # Ignore bad corner coords
+                 if corner_x_temp:
+                      extracted_data['corner_x'] = corner_x_temp; extracted_data['corner_y'] = corner_y_temp
+            # Extract rotation
+            try: extracted_data['rotation'] = float(map_api_data.get('rotation', 0.0))
+            except (ValueError, TypeError): extracted_data['rotation'] = 0.0
 
-                # Extract corner coordinates (seems OK based on API response)
-                corners_raw = map_api_data.get('corners')
-                if isinstance(corners_raw, list):
-                    corner_x_temp, corner_y_temp = [], []
-                    for corner in corners_raw:
-                        if isinstance(corner, dict):
-                             pos = corner.get('trackPosition', {})
-                             cx = pos.get('x')
-                             cy = pos.get('y')
-                             if cx is not None and cy is not None:
-                                 try:
-                                     corner_x_temp.append(float(cx))
-                                     corner_y_temp.append(float(cy))
-                                 except (ValueError, TypeError):
-                                     pass # Ignore corners if conversion fails
-                    if corner_x_temp:
-                        corner_x = corner_x_temp
-                        corner_y = corner_y_temp
-                else: main_logger.warning("Could not extract 'corners' data from API response.")
+            # Calculate ranges only if coordinates are valid
+            local_x_range, local_y_range = None, None
+            if 'x' in extracted_data and 'y' in extracted_data:
+                try:
+                    x_min, x_max = np.min(extracted_data['x']), np.max(extracted_data['x'])
+                    y_min, y_max = np.min(extracted_data['y']), np.max(extracted_data['y'])
+                    padding_x = (x_max - x_min) * 0.05; padding_y = (y_max - y_min) * 0.05
+                    local_x_range = [x_min - padding_x, x_max + padding_x]
+                    local_y_range = [y_min - padding_y, y_max + padding_y]
+                except Exception as range_err: main_logger.error(f"Error calculating range: {range_err}")
+            extracted_data['range_x'] = local_x_range; extracted_data['range_y'] = local_y_range
 
-                # Extract rotation (seems OK)
-                rotation_angle = float(map_api_data.get('rotation', 0.0))
+            api_data = extracted_data # Assign successful extraction to api_data
+            main_logger.info(f"API fetch SUCCESS for {current_session_key}")
 
-                # --- CORRECTED Range Calculation (from extracted track_x/y) ---
-                if track_x and track_y: # Calculate only if we got valid track coordinates
-                    try:
-                        x_min, x_max = np.min(track_x), np.max(track_x)
-                        y_min, y_max = np.min(track_y), np.max(track_y)
-                        padding_x = (x_max - x_min) * 0.05
-                        padding_y = (y_max - y_min) * 0.05
-                        x_range = [x_min - padding_x, x_max + padding_x]
-                        y_range = [y_min - padding_y, y_max + padding_y]
-                    except Exception as range_err:
-                         main_logger.error(f"Error calculating ranges from track data: {range_err}")
-                         x_range, y_range = None, None # Reset on error
-                else:
-                     main_logger.warning("Cannot calculate ranges because track_x or track_y is missing/invalid.")
-                     x_range, y_range = None, None
-                # --- END CORRECTED Range Calculation ---
+        except Exception as e:
+            main_logger.error(f"API fetch FAILED for {current_session_key}: {e}", exc_info=False)
+            api_data = None # Ensure it's None on failure
 
-                # Store successfully extracted/calculated data in cache
+    # --- Step 3: Acquire lock ONCE to update cache & read ALL data for plot ---
+    track_x, track_y, x_range, y_range = None, None, None, None
+    drivers_x_raw, drivers_y_raw, drivers_text, drivers_color, drivers_opacity = [], [], [], [], []
+    plot_session_key = None # Store the key used for this plot's data
+
+    with app_state.app_state_lock:
+        # A. Update cache if fetch was attempted
+        if needs_api_fetch:
+            if api_data: # API call succeeded and data extracted
+                track_coordinates_cache = {**api_data, 'session_key': current_session_key} # Combine extracted data and key
+                main_logger.debug("Cache updated with NEW API data.")
+            else: # API call failed or extraction failed
+                # Update key but clear coordinates/ranges to prevent using stale data
                 track_coordinates_cache = {
-                    'x': track_x, 'y': track_y,
-                    'corner_x': corner_x, 'corner_y': corner_y,
-                    'range_x': x_range, 'range_y': y_range,
-                    'rotation': rotation_angle,
+                    'x': None, 'y': None, 'corner_x': None, 'corner_y': None,
+                    'range_x': None, 'range_y': None, 'rotation': 0,
                     'session_key': current_session_key
                 }
-                main_logger.info(f"Successfully processed and cached track map for {current_session_key}")
+                main_logger.debug("Cache updated for FAILED API fetch (cleared coords).")
 
-            except requests.exceptions.RequestException as e:
-                main_logger.error(f"API request failed for {api_url}: {e}")
-                track_coordinates_cache = {'session_key': None} # Clear cache on error
-            except json.JSONDecodeError as e:
-                 main_logger.error(f"Failed to parse JSON response from {api_url}: {e}")
-                 track_coordinates_cache = {'session_key': None}
-            except Exception as e:
-                main_logger.error(f"Error processing API data for {api_url}: {e}", exc_info=True)
-                track_coordinates_cache = {'session_key': None}
+        # B. Read data for plotting from current state (cache and timing_state)
+        plot_session_key = track_coordinates_cache.get('session_key') # Use the key actually in cache now
+        if plot_session_key == current_session_key: # Check key match again *after* potential update
+            track_x = track_coordinates_cache.get('x')
+            track_y = track_coordinates_cache.get('y')
+            x_range = track_coordinates_cache.get('range_x')
+            y_range = track_coordinates_cache.get('range_y')
+            # rotation_angle = track_coordinates_cache.get('rotation', 0) # Read if needed
 
-        else:
-             # No session key yet, or attempt failed, keep cache cleared
-             if track_coordinates_cache.get('session_key') is not None:
-                   main_logger.info("Clearing track map cache.")
-                   track_coordinates_cache = {'session_key': None}
-
-        # 3. Get RAW Car Positions (No rotation yet) - (Keep existing logic)
+        # Read car positions (always read latest state)
         for car_num, driver_state in timing_state.items():
-             # ... (extract raw x, y, text, color) ...
-             pos_data = driver_state.get('PositionData')
-             status_string = driver_state.get('Status', '').lower(); is_off_main_track = ('pit' in status_string or 'retired' in status_string or 'out' in status_string)
-             if pos_data and 'X' in pos_data and 'Y' in pos_data:
-                  drivers_x_raw.append(pos_data['X'])
-                  drivers_y_raw.append(pos_data['Y'])
-                  if is_off_main_track:
-                       drivers_text.append("") # Append empty string if in pit
-                  else:
-                       drivers_text.append(driver_state.get('Tla', car_num)) # Append TLA otherwise
-                  team_color = driver_state.get('TeamColour', 'FFFFFF')
-                  drivers_color.append(f'#{team_color}')
-                  # --- Set Opacity based on Status ---
-                  drivers_opacity.append(0.0 if is_off_main_track else 1.0) # <<< Make pitting cars semi-transparent
-                  # ---
+            pos_data = driver_state.get('PositionData')
+            status_string = driver_state.get('Status', '').lower()
+            is_off_main_track = ('pit' in status_string or 'retired' in status_string or 'out' in status_string)
+            if pos_data and 'X' in pos_data and 'Y' in pos_data:
+                 try: # Add try-except for coordinate conversion
+                     x_coord = float(pos_data['X'])
+                     y_coord = float(pos_data['Y'])
+                     drivers_x_raw.append(x_coord)
+                     drivers_y_raw.append(y_coord)
+                     drivers_text.append("" if is_off_main_track else driver_state.get('Tla', car_num))
+                     drivers_color.append(f"#{driver_state.get('TeamColour', 'FFFFFF')}")
+                     drivers_opacity.append(0.15 if is_off_main_track else 1.0) # Keep dim opacity for now
+                 except (ValueError, TypeError) as coord_err:
+                      main_logger.warning(f"Could not convert position data for car {car_num}: X={pos_data['X']}, Y={pos_data['Y']} - Error: {coord_err}")
 
+    # --- Step 4: Create Plotly Figure (Outside lock) ---
+    figure_data = []
+    main_logger.debug(f"Plotting: Key='{plot_session_key}', Has track={track_x is not None}, Has cars={len(drivers_x_raw)>0}, x_range={x_range is not None}")
 
-    # --- Create Plotly Figure (Outside Lock) ---
-    # 4. Add Track Outline Trace (if available)
-    if track_x is not None and track_y is not None:
-        figure_data.append(go.Scatter(
-            x=track_x, y=track_y, mode='lines', # Use the extracted x, y lists
-            line=dict(color='grey', width=2),
-            name='Track', showlegend=False, hoverinfo='none'
-        ))
-    # Optional: Add corner plotting logic here if needed, using corner_x, corner_y
+    try:
+        # Add Track Outline Trace
+        if track_x is not None and track_y is not None:
+            figure_data.append(go.Scatter(x=track_x, y=track_y, mode='lines', line=dict(color='grey', width=2), name='Track', showlegend=False, hoverinfo='none'))
 
-    # 5. Rotate Live Car Positions and Add Trace
-    if drivers_x_raw:
-         # Ensure raw coords are numbers before rotating
-    
-         try:
-                  figure_data.append(go.Scatter(
-                  x=drivers_x_raw, y=drivers_y_raw, # Use rotated coordinates
-              mode='markers+text',
-              marker=dict(size=10, color=drivers_color, line=dict(width=1, color='Black'),opacity=drivers_opacity),
-              text=drivers_text, textposition='middle right',
-              name='Cars', hoverinfo='text', showlegend=False,
-              textfont=dict(size=9, color='White')
-              ))
-         except Exception as plot_err:
-              main_logger.error(f"Error plotting cars: {plot_err}", exc_info=True)
+        # Add Car Trace
+        if drivers_x_raw: # Check if we actually have car data to plot
+             figure_data.append(go.Scatter(
+                 x=drivers_x_raw, y=drivers_y_raw, mode='markers+text',
+                 marker=dict(size=10, color=drivers_color, line=dict(width=1, color='Black'), opacity=drivers_opacity),
+                 text=drivers_text, textposition='middle right', name='Cars', hoverinfo='text', showlegend=False,
+                 textfont=dict(size=9, color='White')
+             ))
 
+        # Define Layout
+        layout = go.Layout(
+            xaxis=dict(range=x_range, showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(range=y_range, showgrid=False, zeroline=False, showticklabels=False, scaleanchor="x", scaleratio=1),
+            showlegend=False, margin=dict(l=5, r=5, t=5, b=5),
+            uirevision=plot_session_key, # Use the key consistent with the data being plotted
+            plot_bgcolor='rgb(50,50,50)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white')
+        )
 
-    # 6. Define Layout (Use calculated ranges)
-    layout = go.Layout(
-        xaxis=dict(range=x_range, showgrid=False, zeroline=False, showticklabels=False), # Use calculated range
-        yaxis=dict(range=y_range, showgrid=False, zeroline=False, showticklabels=False, scaleanchor="x", scaleratio=1), # Use calculated range
-        showlegend=False,
-        margin=dict(l=5, r=5, t=5, b=5),
-        uirevision=current_session_key or n,
-        plot_bgcolor='rgb(50,50,50)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='white')
-    )
+        # Create Final Figure
+        if not figure_data and not (track_x is not None and track_y is not None): # Check if we have neither track nor cars
+             empty_title = "Waiting for Session Info..." if not current_session_key else "Fetching/Waiting for Track Data..."
+             final_figure = go.Figure(data=[], layout=go.Layout(title=empty_title, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='white')))
+        else: # We have at least track data or car data (or both)
+             final_figure = go.Figure(data=figure_data, layout=layout)
 
-    # Handle empty figure case
-    if not figure_data:
-         empty_title = "Waiting for Session Info..." if not current_session_key else "Waiting for Track/Position Data..."
-         return go.Figure(data=[], layout=go.Layout(title=empty_title, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='white')))
-    else:
-         return go.Figure(data=figure_data, layout=layout)
+    except Exception as fig_err:
+         main_logger.error(f"!!! Error creating Plotly figure: {fig_err}", exc_info=True)
+         error_layout = go.Layout(title=f"Error creating map: {fig_err}", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='red'))
+         final_figure = go.Figure(data=[], layout=error_layout)
+
+    main_logger.debug(f"--- update_track_map Tick {n} End ---")
+    return final_figure
 
 # --- Main Execution Logic ---
 if __name__ == '__main__':
