@@ -32,8 +32,6 @@ from signalrcore.transport.websockets.connection import ConnectionState # Assumi
 from signalrcore.hub.errors import HubConnectionError, HubError, UnAuthorizedHubError
 from signalrcore.hub.base_hub_connection import BaseHubConnection
 from signalrcore.protocol.json_hub_protocol import JsonHubProtocol
-from signalrcore.hub_connection_builder import HubConnectionBuilder
-from signalrcore.hub.base_hub_connection import BaseHubConnection # For type check maybe
 
 # Added for Dash GUI
 try:
@@ -93,7 +91,6 @@ track_status_data = {} # To store TrackStatus info (Status, Message)
 session_details = {} # To store SessionInfo/SessionData details
 race_control_log = collections.deque(maxlen=50)
 track_coordinates_cache = {'x': None, 'y': None, 'range_x': None, 'range_y': None, 'rotation': None, 'corner_x': None, 'corner_y': None, 'session_key': None} # Expanded cache
-db_lock = threading.Lock()
 
 # --- F1 Helper Functions ---
 # FILE: f1_fast_f1_signalr_gui_v14.py
@@ -198,6 +195,28 @@ def ensure_replay_dir_exists():
         except OSError as e:
             main_logger.error(f"Failed to create replay directory '{REPLAY_DIR}': {e}")
 
+def get_nested_state(d, *keys, default=None):
+    """Safely accesses nested dictionary keys."""
+    val = d
+    for key in keys:
+        if isinstance(val, dict):
+            val = val.get(key)
+        else:
+            return default
+    return val if val is not None else default
+    
+def pos_sort_key(item):
+    """Sort key function for DataTable position column."""
+    pos_str = item.get('Pos', '999') # Default to large number if missing
+    if isinstance(pos_str, (int, float)):
+        return pos_str
+    if isinstance(pos_str, str) and pos_str.isdigit():
+        try:
+            return int(pos_str)
+        except ValueError:
+            return 999 # Should not happen if isdigit() is true
+    return 999 # Place non-numeric positions (OUT, "", etc.) at the end
+
 def get_replay_files(directory):
     """
     Scans the specified directory for files suitable for replay
@@ -253,7 +272,6 @@ def _decode_and_decompress(encoded_data):
 
 def run_connection_manual_neg(target_url, headers_for_ws):
     """Target function for connection thread using pre-negotiated URL."""
-    global db_conn, db_cursor, db_filename
     global hub_connection # Allow modification of the global reference
 
     hub_connection = None # Ensure clean slate
@@ -900,10 +918,7 @@ def _process_car_data(data):
     if 'timing_state' not in globals():
          main_logger.error("Global 'timing_state' not found for CarData processing.")
          return
-    
-    # --- Define Channel Mapping for THIS data source ---
-    # Based on observation of 2023 Yas Marina replay data (Nov 25th 2023)
-    # !!! This map might need changing for LIVE feeds or other replays !!!
+         
     channel_map = {
         '0': 'RPM',       # Channel 0 seems to be RPM here
         '2': 'Speed',     # Channel 2 seems to be Speed (km/h) here
@@ -912,11 +927,6 @@ def _process_car_data(data):
         '5': 'Brake',     # Channel 5 is Brake (binary?)
         '45': 'DRS'       # Channel 45 is DRS status
     }
-    # --- You might need a different map for live data, e.g.: ---
-    # channel_map_live = {
-    #     '0': 'Speed', '2': 'RPM', '3': 'Gear', '4': 'Throttle', '5': 'Brake', '45': 'DRS'
-    # }
-    # ---
     
     # Expected structure from _decode_and_decompress:
     # {'Entries': [ {'Utc': 'timestamp', 'Cars': {'<CarNum>': {'Channels': { '0': Speed, ...}}}} ]}
@@ -1060,16 +1070,6 @@ def _process_session_info(data):
 
     except Exception as e:
         main_logger.error(f"Error processing SessionInfo data: {e}", exc_info=True)
-
-# Helper function for rotation (define globally or ensure accessible)
-def rotate_coords(x, y, angle_deg):
-    """Rotates points (x, y) by angle_deg degrees."""
-    angle_rad = np.radians(angle_deg)
-    x = np.array(x)
-    y = np.array(y)
-    x_rotated = x * np.cos(angle_rad) - y * np.sin(angle_rad)
-    y_rotated = x * np.sin(angle_rad) + y * np.cos(angle_rad)
-    return x_rotated, y_rotated
 
 def data_processing_loop():
     global data_store, db_cursor, timing_state # No fastf1 map needed
@@ -1401,7 +1401,7 @@ def stop_connection():
     main_logger.info("Stop connection sequence complete.")
 
 def replay_from_file(data_file_path, replay_speed=1.0):
-    global replay_thread, db_conn, db_cursor, stop_event, timing_state
+    global replay_thread, stop_event, timing_state
     if replay_thread and replay_thread.is_alive():
         main_logger.warning("Replay thread running.")
         return
@@ -1825,15 +1825,6 @@ def update_output(n):
             processed_table_data = []
             sorted_driver_numbers = sorted(timing_state.keys(), key=lambda x: int(x) if x.isdigit() else float('inf'))
 
-            # Define helper functions locally if needed, or move outside if complex
-            def get_nested_state(d, *keys, default=None):
-                # ... (implementation as before) ...
-                val = d
-                for key in keys:
-                    if isinstance(val, dict): val = val.get(key)
-                    else: return default
-                return val if val is not None else default
-
             for car_num in sorted_driver_numbers:
                 # Safely get driver state, might be modified by other thread
                 driver_state = timing_state.get(car_num)
@@ -1865,17 +1856,6 @@ def update_output(n):
                     'DRS': {8: "Eligible",10: "On",12: "On", 14: "ON"}.get(car_data.get('DRS'), 'Off'),
                 }
                 processed_table_data.append(row)
-
-            # Sort final table data by position
-            def pos_sort_key(item):
-                # ... (implementation as before) ...
-                 pos_str = item.get('Pos', '999')
-                 if isinstance(pos_str, (int, float)): return pos_str
-                 if isinstance(pos_str, str) and pos_str.isdigit():
-                     try: return int(pos_str)
-                     except ValueError: return 999
-                 return 999
-
             processed_table_data.sort(key=pos_sort_key)
             table_data = processed_table_data
         # --- End Timing Table Data Processing (inside lock) ---
