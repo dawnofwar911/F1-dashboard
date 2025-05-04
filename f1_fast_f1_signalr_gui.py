@@ -55,6 +55,7 @@ STREAMS_TO_SUBSCRIBE = ["Heartbeat", "CarData.z", "Position.z", "ExtrapolatedClo
     "SessionData", "DriverList", "RaceControlMessages", "SessionInfo"]
 DATA_FILENAME_TEMPLATE = "f1_signalr_data_{timestamp}.data.txt"
 DATABASE_FILENAME_TEMPLATE = "f1_signalr_data_{timestamp}.db"
+REPLAY_DIR = "replays" # <-- Define the directory for replay files
 # --- Near top of f1_fast_f1_signalr_gui_v14.py ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) # Gets the directory of the script
 TARGET_SAVE_DIRECTORY = os.path.join(SCRIPT_DIR, "replays")
@@ -171,10 +172,63 @@ def get_current_or_next_session_info():
         main_logger.error(f"FastF1 Error getting current/next session: {e}", exc_info=True)
         return None, None # Return None on error to allow fallback
 
-
+def sanitize_filename(name):
+    """Removes/replaces characters unsuitable for filenames."""
+    if not name: return "Unknown"
+    name = str(name).strip()
+    # Replace spaces and various invalid characters with underscores
+    name = re.sub(r'[\\/:*?"<>|\s\-\:\.,\(\)]+', '_', name)
+    # Remove any remaining non-alphanumeric or non-underscore characters
+    name = re.sub(r'[^\w_]+', '', name)
+    # Consolidate multiple underscores
+    name = re.sub(r'_+', '_', name)
+    # Remove leading/trailing underscores
+    name = name.strip('_')
+    return name if name else "InvalidName"
+# --- END HELPER FUNCTIONS ---
 # --- Data Handling ---
-# Replace your _decode_and_decompress function
 
+def ensure_replay_dir_exists():
+    """Creates the replay directory if it doesn't exist."""
+    # Use the REPLAY_DIR constant defined above
+    if not os.path.exists(REPLAY_DIR):
+        try:
+            os.makedirs(REPLAY_DIR)
+            main_logger.info(f"Created replay directory: {REPLAY_DIR}")
+        except OSError as e:
+            main_logger.error(f"Failed to create replay directory '{REPLAY_DIR}': {e}")
+
+def get_replay_files(directory):
+    """
+    Scans the specified directory for files suitable for replay
+    (e.g., ending in .data.txt or .session.jsonl).
+
+    Args:
+        directory (str): The path to the directory to scan.
+
+    Returns:
+        list: A list of dictionaries suitable for dcc.Dropdown options
+              (e.g., [{'label': 'file1.txt', 'value': 'file1.txt'}, ...]).
+              Returns an empty list if the directory doesn't exist or is empty.
+    """
+    if not os.path.isdir(directory):
+        main_logger.warning(f"Replay directory '{directory}' not found or is not a directory.")
+        return []
+
+    files = []
+    try:
+        for filename in os.listdir(directory):
+            # Adjust the condition based on expected replay file extensions
+            if filename.endswith((".data.txt", ".session.jsonl")) and \
+               os.path.isfile(os.path.join(directory, filename)):
+                files.append({'label': filename, 'value': filename})
+        main_logger.info(f"Found {len(files)} replay files in '{directory}'.")
+    except OSError as e:
+        main_logger.error(f"Error scanning replay directory '{directory}': {e}")
+        return [] # Return empty list on error
+    return files
+
+# Replace your _decode_and_decompress function
 def _decode_and_decompress(encoded_data):
     """Decodes base64 encoded and zlib decompressed data (message payload)."""
     if encoded_data and isinstance(encoded_data, str):
@@ -1019,7 +1073,10 @@ def rotate_coords(x, y, angle_deg):
 
 def data_processing_loop():
     global data_store, db_cursor, timing_state # No fastf1 map needed
-    # processed_count = 0
+    processed_count = 0
+    last_log_time = time.monotonic() # Track time for periodic logging
+    log_interval_seconds = 15 # How often (in seconds) to log queue size
+    log_interval_items = 500  # How many items between logging queue size
     # max_process = 100
     loop_counter = 0 # Add counter
 
@@ -1028,6 +1085,18 @@ def data_processing_loop():
             if loop_counter % 50 == 0: # Log every 50 iterations (approx 10 seconds)
                  main_logger.debug(f"Data processing loop is running (Iteration {loop_counter})...")
             # --- >>> END ADDED LOG <<< ---
+            current_time = time.monotonic()
+            # Log based on time interval OR item count interval
+            # Note: qsize() has some overhead, so don't call it extremely frequently in a tight loop
+            if (current_time - last_log_time > log_interval_seconds) or \
+               (processed_count > 0 and processed_count % log_interval_items == 0):
+                 try:
+                     qsize = data_queue.qsize() # Get current queue size
+                     main_logger.debug(f"Data processing loop status: Processed={processed_count}, Queue Size={qsize}")
+                     last_log_time = current_time # Reset timer after logging based on time
+                 except Exception as q_err:
+                     # Handle potential errors getting qsize (less likely but possible)
+                     main_logger.warning(f"Could not get queue size: {q_err}")
         # processed_count += 1
             item = None # Initialize item to None for this iteration
             try:
@@ -1566,6 +1635,9 @@ def stop_replay():
     main_logger.info("Stop replay sequence complete.")
 
 
+ensure_replay_dir_exists()
+
+replay_file_options = get_replay_files(REPLAY_DIR)
 # --- Dash GUI Setup ---
 app = Dash(__name__, external_stylesheets=[dbc.themes.SLATE], suppress_callback_exceptions=True)
 timing_table_columns = [
@@ -1596,14 +1668,74 @@ app.layout = dbc.Container([
         dbc.Col(html.Div(id='session-info-display'), width=12) # Display across full width initially
     ], className="mb-3", id='session-details-row'), # Give the row an ID too if needed
     # --- END ADDED ---
-    
     dbc.Row([
     dbc.Col(html.Div(id='status-display'), width="auto"), 
     dbc.Col(html.Div(id='heartbeat-display'), width="auto", style={'marginLeft': '20px'}),
     dbc.Col(html.Div(id='track-status-display', children="Track: Unknown"), width="auto", style={'marginLeft': '20px'}),
     # --- END ADDED ---
     ], className="mb-3"),
-    dbc.Row([dbc.Col(dbc.Button("Start Live Feed", id="start-button", color="success", className="me-1"), width="auto"), dbc.Col(dbc.Button("Stop Feed / Replay", id="stop-button", color="danger", className="me-1"), width="auto"), dbc.Col(dbc.Input(id="replay-file-input", placeholder="Enter .data file path or blank", type="text", value=DEFAULT_REPLAY_FILENAME, debounce=True), width=4), dbc.Col(dbc.Input(id="replay-speed-input", placeholder="Speed", type="number", min=0, step=0.1, value=1.0, debounce=True), width="auto"), dbc.Col(dbc.Button("Start Replay", id="replay-button", color="primary", className="me-1"), width="auto")], className="mb-3 align-items-center"),
+    dbc.Row([
+    # Start/Stop Buttons remain in their own columns
+    dbc.Col(dbc.Button("Start Live Feed", id="start-button", color="success", className="me-1"), width="auto"),
+    dbc.Col(dbc.Button("Stop Feed / Replay", id="stop-button", color="danger", className="me-1"), width="auto"),
+
+    # --- Replay Controls Column (consolidated) ---
+    dbc.Col([
+        # This Div now allows wrapping
+        html.Div([
+            dcc.Dropdown(
+                id='replay-file-dropdown',
+                options=replay_file_options,
+                placeholder="Select replay file...",
+                style={
+                    'minWidth': '300px',
+                    'flexGrow': '1',
+                    'color': '#333'
+                    # Consider adding a bottom margin for when it wraps
+                    # 'marginBottom': '5px'
+                },
+                className="me-2"
+            ),
+            html.Button(
+                'Refresh List',
+                id='refresh-replay-list-button',
+                n_clicks=0,
+                style={
+                    'height': '38px',
+                    'minWidth': '110px'
+                    # Consider adding a bottom margin for when it wraps
+                    # 'marginBottom': '5px'
+                },
+                className="me-2"
+            ),
+            dbc.Input(
+                id="replay-speed-input", placeholder="Speed", type="number",
+                min=0.1, step=0.1, value=1.0, debounce=True,
+                style={
+                    'width': '90px'
+                    # Consider adding a bottom margin for when it wraps
+                    # 'marginBottom': '5px'
+                },
+                className="me-2"
+            ),
+            dbc.Button(
+                "Start Replay",
+                id="replay-button",
+                color="primary",
+                className="me-1"
+                 # Consider adding a bottom margin for when it wraps
+                 # style={'marginBottom': '5px'}
+            ),
+        ], style={
+            'display': 'flex',
+            'alignItems': 'center',
+            'width': '100%',
+            'flexWrap': 'wrap' # <<< ADDED THIS LINE TO ALLOW WRAPPING
+            })
+    ], width=True)
+    # --- End Replay Controls Column ---
+
+], className="mb-3 align-items-center"),
     dbc.Row([dbc.Col([html.H3("Latest Data (Non-Timing)"), html.Div(id='live-data-display', style={'maxHeight': '300px', 'overflowY': 'auto', 'border': '1px solid grey', 'padding': '10px', 'marginBottom': '10px'}), html.H3("Timing Data Details"), html.Div(id='timing-data-table', children=[html.P(id='timing-data-timestamp', children="Waiting for data..."), dash_table.DataTable(id='timing-data-actual-table', columns=timing_table_columns, data=[], fixed_rows={'headers': True}, style_table={'height': '400px', 'overflowY': 'auto', 'overflowX': 'auto'}, style_cell={'minWidth': '50px', 'width': '80px', 'maxWidth': '120px','overflow': 'hidden','textOverflow': 'ellipsis','textAlign': 'left','padding': '5px','backgroundColor': 'rgb(50, 50, 50)','color': 'white'}, style_header={'backgroundColor': 'rgb(30, 30, 30)','fontWeight': 'bold','border': '1px solid grey'}, style_data={'borderBottom': '1px solid grey'}, style_data_conditional=[{'if': {'row_index': 'odd'},'backgroundColor': 'rgb(60, 60, 60)'},{'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "SOFT"'},
             'backgroundColor': '#FF3333', 'color': 'black', 'fontWeight': 'bold'}, # Red for Soft
         {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "MEDIUM"'},
@@ -1617,31 +1749,12 @@ app.layout = dbc.Container([
         {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} = "-"'}, # Default/Unknown
             'backgroundColor': 'inherit', 'color': 'grey'}, # Grey out if unknown ('inherit' uses row bg)
 ], tooltip_duration=None)])], width=12)]),
-dbc.Row([
-        dbc.Col([
-            html.H4("Race Control Messages"),
-            dcc.Textarea(
-                id='race-control-log-display',
-                readOnly=True,
-                style={ # Style for dark theme
-                       'width': '100%', 'height': '200px', # Adjust height
-                       'fontFamily': 'monospace', 'fontSize': '12px',
-                       'backgroundColor': '#111', # Dark background
-                       'color': '#eee',           # Light text
-                       'border': '1px solid grey',
-                       'resize': 'none'           # Optional: disable resizing
-                       },
-                # Placeholder value while waiting
-                value="Waiting for Race Control messages..."
-            )
-        ], width=12) # Or maybe width=6 if you want another log next to it later
-    ], className="mt-3"), # Add margin-top
     # --- ADDED: Track Map Row ---
     dbc.Row([
         dbc.Col(dcc.Graph(id='track-map-graph', style={'height': '60vh'})) # Adjust height as needed
     ], className="mt-3"), # Add margin-top
     # --- END ADDED ---
-    dcc.Interval(id='interval-component', interval=200, n_intervals=0),
+    dcc.Interval(id='interval-component', interval=500, n_intervals=0),
 ], fluid=True)
 
 # --- Dash Callbacks ---
@@ -1795,6 +1908,18 @@ def update_button_states(n):
     is_idle = state in ["Idle", "Stopped", "Error", "Playback Complete"]; is_running = state in ["Connecting", "Live", "Replaying", "Initializing"]; is_stopping = state == "Stopping"
     start_disabled = is_running or is_stopping; replay_disabled = is_running or is_stopping; stop_disabled = is_idle; input_disabled = is_running or is_stopping
     return start_disabled, stop_disabled, replay_disabled, input_disabled, input_disabled
+
+@app.callback(
+    Output('replay-file-dropdown', 'options'),
+    Input('refresh-replay-list-button', 'n_clicks'),
+    prevent_initial_call=True
+)
+def refresh_replay_files(n_clicks):
+    if n_clicks > 0:
+        main_logger.info("Refreshing replay file list...")
+        new_options = get_replay_files(REPLAY_DIR)
+        return new_options
+    return dash.no_update
 
 @app.callback(
         Output('race-control-log-display', 'value'), # Target 'value' for Textarea
@@ -2033,17 +2158,36 @@ def handle_stop_button(n_clicks):
     if triggered_stop: return f"Stop req from '{current_state_on_click}'. New: {new_state} | {new_conn}"
     else: return f"Stop ignored ('{current_state_on_click}'). Current: {new_state} | {new_conn}"
 
-@app.callback(Output('status-display', 'children', allow_duplicate=True), Input('replay-button', 'n_clicks'), State('replay-file-input', 'value'), State('replay-speed-input', 'value'), prevent_initial_call=True)
-def handle_replay_button(n_clicks, file_path, speed_val):
+@app.callback(Output('status-display', 'children', allow_duplicate=True), Input('replay-button', 'n_clicks'), State('replay-file-dropdown', 'value'), State('replay-speed-input', 'value'), prevent_initial_call=True)
+def handle_replay_button(n_clicks, selected_file, speed_val):
     if n_clicks is None or n_clicks == 0: return dash.no_update
-    main_logger.info(f"Replay clicked (n={n_clicks}).");
+    if not selected_file:
+        main_logger.warning("Replay button clicked but no file selected from dropdown.")
+        # Optionally provide user feedback via another output or return existing status
+        with app_state.app_state_lock:
+             # Return current status without attempting replay
+             return f"State: {app_state.app_status['state']} | Conn: {app_state.app_status['connection']} (No replay file selected)"
+        # return dash.no_update # Alternative: do nothing visibly
+
+    main_logger.info(f"Replay clicked (n={n_clicks}) for file: {selected_file}.")
     try: speed = float(speed_val) if speed_val is not None else 1.0; speed = max(0, speed)
     except: main_logger.warning(f"Invalid speed '{speed_val}', default 1.0"); speed = 1.0
-    file_path_cleaned = file_path.strip() if isinstance(file_path, str) else DEFAULT_REPLAY_FILENAME
-    file_path_to_use = file_path_cleaned if file_path_cleaned else DEFAULT_REPLAY_FILENAME
-    main_logger.info(f"Replay file: {file_path_to_use}, speed: {speed}")
-    replay_from_file(file_path_to_use, speed)
-    with app_state.app_state_lock: return f"State: {app_state.app_status['state']} | Conn: {app_state.app_status['connection']}"
+    replay_file_path = os.path.join(REPLAY_DIR, selected_file)
+    main_logger.info(f"Attempting replay for: {replay_file_path}, speed: {speed}")
+
+    if not os.path.exists(replay_file_path):
+        main_logger.error(f"Replay file not found: {replay_file_path}")
+        with app_state.app_state_lock:
+            # Update status display to show the error
+            app_state.app_status.update({"state": "Error", "connection": f"File Not Found"})
+            return f"State: Error | Conn: File Not Found: {selected_file}"
+
+    # --- Call replay function (Keep existing logic, but use constructed path) ---
+    replay_from_file(replay_file_path, speed) # Use the constructed full path
+
+    # --- Return updated status (Keep existing logic) ---
+    with app_state.app_state_lock:
+        return f"State: {app_state.app_status['state']} | Conn: {app_state.app_status['connection']}"
     
 @app.callback(
     Output('track-map-graph', 'figure'),
