@@ -44,6 +44,7 @@ track_coordinates_cache = { # Holds track layout from API
 live_data_file = None       # File handle for live recording
 is_saving_active = False    # Flag indicating if recording is enabled and file is open
 record_live_data = False # Default
+current_recording_filename = None
 
 # --- Note ---
 # Thread objects (connection_thread, replay_thread, processing_thread, dash_thread) and

@@ -4,6 +4,7 @@ Configuration constants for the F1 Telemetry Dashboard application.
 """
 
 import os
+from pathlib import Path
 
 # --- SignalR Connection ---
 NEGOTIATE_URL_BASE = "https://livetiming.formula1.com/signalr"
@@ -16,9 +17,10 @@ STREAMS_TO_SUBSCRIBE = ["Heartbeat", "CarData.z", "Position.z", "ExtrapolatedClo
 
 # --- File Paths ---
 # Consider making REPLAY_DIR absolute or relative to main script location
-# SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) # This gives config.py's dir
+_SCRIPT_DIR = Path(__file__).parent.resolve()
 # Instead, get script dir in main.py and pass it or define paths relative to expected run location
-REPLAY_DIR = "replays" # Directory for replay files (relative to where main.py runs)
+REPLAY_DIR_NAME = "replays"
+REPLAY_DIR = _SCRIPT_DIR / REPLAY_DIR_NAME
 # TARGET_SAVE_DIRECTORY could be the same as REPLAY_DIR or different if needed
 TARGET_SAVE_DIRECTORY = REPLAY_DIR # Directory for saving live data files
 DEFAULT_REPLAY_FILENAME = "2023-yas-marina-quali.data.txt" # Default replay file suggestion
