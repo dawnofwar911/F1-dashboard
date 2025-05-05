@@ -1676,7 +1676,18 @@ app.layout = dbc.Container([
     ], className="mb-3"),
     dbc.Row([
     # Start/Stop Buttons remain in their own columns
-    dbc.Col(dbc.Button("Start Live Feed", id="start-button", color="success", className="me-1"), width="auto"),
+    dbc.Col([
+        html.Div([ # Use flex display for horizontal alignment
+            dbc.Button("Start Live Feed", id="start-button", color="success", className="me-2"), # Added margin-end
+            dbc.Checkbox(
+                id='record-data-checkbox',
+                label="Record Live Data",
+                value=app_state.record_live_data, # Use initial value from app_state
+                className="form-check-inline", # Bootstrap class for inline alignment
+                inputStyle={"marginRight": "5px"} # Style checkbox input itself
+            ),
+        ], style={'display': 'flex', 'alignItems': 'center'})
+    ], width="auto"),
     dbc.Col(dbc.Button("Stop Feed / Replay", id="stop-button", color="danger", className="me-1"), width="auto"),
 
     # --- Replay Controls Column (consolidated) ---
@@ -1863,6 +1874,37 @@ def update_output(n):
     # Return all outputs
     return (status_text, heartbeat_text, track_display_text,
             other_data_display, table_data, timing_timestamp_text)
+            
+@app.callback(
+    Output('record-data-checkbox', 'value'), # Keep checkbox state consistent
+    Input('record-data-checkbox', 'value'),
+    prevent_initial_call=True
+)
+def record_checkbox_callback(checked_value):
+    # Need to import app_state in this file if not already done
+    # import app_state
+
+    if checked_value is None: # Prevent errors on initial load if value is None
+        return app_state.record_live_data # Return current state
+
+    with app_state.app_state_lock:
+        new_state = bool(checked_value)
+        app_state.record_live_data = new_state
+        main_logger.info(f"Record Live Data set to: {new_state}")
+
+        # Optional: If live and recording toggled OFF, close file?
+        # If toggled ON while live, should we open file? (start_live_callback handles opening)
+        current_app_state = app_state.app_status["state"]
+        is_file_open = app_state.live_data_file and not app_state.live_data_file.closed
+
+        if current_app_state == "Live" and not new_state and is_file_open:
+            main_logger.info("Recording toggled off during live session, closing file.")
+            # Need to import close_live_file from replay.py (or wherever it ends up)
+            # from replay import close_live_file # Example import
+            close_live_file() # Call the function to close it
+
+    return new_state # Return the input value to confirm the checkbox state
+
 
 @app.callback( Output('start-button', 'disabled'), Output('stop-button', 'disabled'), Output('replay-button', 'disabled'), Output('replay-file-input', 'disabled'), Output('replay-speed-input', 'disabled'), Input('interval-component', 'n_intervals'))
 def update_button_states(n):
@@ -1990,11 +2032,13 @@ def start_live_callback(n_clicks):
 
     # Check if already running
     with app_state.app_state_lock:
-         current_state = app_state.app_status["state"]
-         if current_state in ["Connecting", "Live", "Replaying"]:
-             main_logger.warning(f"Start Live clicked but already active (State: {current_state}).")
-             # Return current status without starting again
-             return f"Status: {current_state}", app_state.app_status.get("connection", "N/A")
+        current_state = app_state.app_status["state"]
+        # <<< ADD CHECK FOR RECORDING FLAG >>>
+        should_record = app_state.record_live_data
+        # <<< END CHECK >>>
+        if current_state in ["Connecting", "Live", "Replaying"]:
+            # ... (warning log) ...
+            return f"Status: {current_state}", app_state.app_status.get("connection", "N/A") # Return tuple for outputs
 
     main_logger.info(f"Start Live clicked (n={n_clicks}). Initiating connection sequence...")
 
@@ -2067,12 +2111,19 @@ def start_live_callback(n_clicks):
 
     # --- Start Connection Thread (Only if Negotiation Succeeded) ---
     if websocket_url and ws_headers:
-        # Initialize DB/File
-        # Ensure these functions correctly update app_state.db_conn / app_state.live_data_file
-        if not init_live_file(): # Assuming uses app_state.data_filename or similar
-             # ... error handling ...
-             close_live_file()
-             return "Status: Error", "File Error!"
+        # <<< MODIFY FILE INIT >>>
+        file_opened_successfully = True # Assume success unless proven otherwise
+        if should_record: # <<< Check the flag >>>
+            main_logger.info("Recording enabled, attempting to initialize live file...")
+            if not init_live_file(): # Call function from replay.py or similar
+                main_logger.error("Failed to initialize live data file. Proceeding without recording.")
+                # Optionally, update status or prevent connection? For now, just log it.
+                file_opened_successfully = False # Flag failure but continue connection attempt
+                # If file MUST be opened, you could return error status here:
+                # with app_state.app_state_lock: app_state.app_status.update(...)
+                # return "Status: Error", "File Error!"
+        else:
+            main_logger.info("Recording disabled, skipping file initialization.")
 
         # Start the thread
         main_logger.info("Starting connection thread (manual neg)...")

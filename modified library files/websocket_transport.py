@@ -317,35 +317,44 @@ class WebsocketTransport(BaseTransport):
         # IMPORTANT: This assumes these variables are accessible globally from your main script.
         # Modifying library files like this has risks and couples the library to your app.
         #global live_data_file, app_status, app_state_lock, record_live_data
+        should_record_now = False
+        file_handle_now = None
         save_file_object = None
         is_saving_active = False
-        if app_state and hasattr(app_state, 'is_saving_active') and hasattr(app_state, 'live_data_file'):
+        if app_state:
             try:
-                # Access shared state via app_state (assuming these exist)
-                is_saving_active = app_state.record_live_data
-                save_file_object = app_state.live_data_file
-            except AttributeError:
-                # Handle cases where attributes might not be initialized yet
-                pass
-        if is_saving_active and save_file_object is not None:
+                # <<< Use the lock to read shared state safely >>>
+                with app_state.app_state_lock:
+                    should_record_now = app_state.record_live_data
+                    file_handle_now = app_state.live_data_file
+                    # You could also check app_state.is_saving_active here if needed
+            except AttributeError as attr_err:
+                self.logger.warning(f"app_state missing required attribute for recording check: {attr_err}")
+                should_record_now = False # Default to false if state is missing attribute
+            except Exception as state_err:
+                 self.logger.error(f"Error reading app_state for recording check: {state_err}")
+                 should_record_now = False # Default to false on other errors
+        if should_record_now and file_handle_now is not None:
             try:
-                # Ensure the message is a string (it usually is raw from websocket)
+                # Ensure message is a string
                 if isinstance(message, bytes):
-                    message_str = message.decode('utf-8') # Decode if necessary
+                    message_str = message.decode('utf-8')
                 else:
-                    message_str = str(message)
+                    message_str = str(message) # Assume text mode websocket
 
-                # Write the raw message string followed by a newline
-                save_file_object.write(message_str + "\n")
-                # Optional: Flush occasionally if buffering is an issue,
-                # but standard line buffering might be sufficient.
-                # save_file_object.flush()
-            except IOError as e:
-                # Log error, maybe disable saving?
-                self.logger.error(f"Error writing to live data file: {e}")
-                # Consider adding logic to set app_state.is_saving_active = False here
-            except Exception as e:
-                self.logger.error(f"Unexpected error during message saving: {e}", exc_info=True)
+                # Write raw message string + newline
+                file_handle_now.write(message_str + "\n")
+                # file_handle_now.flush() # Optional
+
+            except IOError as write_io_err:
+                self.logger.error(f"IOError writing raw message in transport: {write_io_err}")
+                # Consider disabling recording flag in app_state here upon persistent error?
+                # try:
+                #    with app_state.app_state_lock: app_state.record_live_data = False
+                # except Exception: pass
+            except Exception as write_err:
+                self.logger.error(f"Unexpected error writing raw message in transport: {write_err}", exc_info=True)
+
         # --- END ADDED SAVE LOGIC ---
         
         # --- ADDED Raw Log Line ---
