@@ -38,7 +38,7 @@ def setup_logging():
     """Configures logging for the application."""
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     # Use config level? Or keep fixed? Let's use fixed INFO for main, DEBUG set earlier.
-    log_level_main = logging.INFO # Default level for console
+    log_level_main = logging.INFO  # Default level for console
     log_level_signalr = logging.DEBUG # Need DEBUG for raw messages if using logging method
 
     # Main application logger
@@ -187,9 +187,9 @@ if __name__ == '__main__':
             logger.info("Cleanup: Waiting for Data Processing thread..."); processing_thread.join(timeout=5.0)
             if processing_thread.is_alive(): logger.warning("Data Processing thread did not exit cleanly.")
             else: logger.info("Data Processing thread joined.")
-        if dash_thread and dash_thread.is_alive():
-             logger.info("Cleanup: Waiting for Dash thread (short)..."); dash_thread.join(timeout=5.0)
-             if dash_thread.is_alive(): logger.warning("Dash thread did not exit cleanly.")
+        #if dash_thread and dash_thread.is_alive():
+#             logger.info("Cleanup: Waiting for Dash thread (short)..."); dash_thread.join(timeout=5.0)
+#             if dash_thread.is_alive(): logger.warning("Dash thread did not exit cleanly.")
 
         logger.info("Shutdown complete."); print("\n --- App Exited --- \n")
 

@@ -232,7 +232,7 @@ def update_replay_speed_state(new_speed):
     if new_speed is None:
         return no_update # Should not happen unless slider is cleared?
 
-    logger.debug(f"Replay speed slider changed to: {new_speed}")
+    logger.info(f"Replay speed slider changed to: {new_speed}")
     try:
         speed_float = float(new_speed)
         with app_state.app_state_lock:
@@ -489,7 +489,28 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
                     y_data_raw = lap_data.get(channel, [])
                     # Filter Y data using only valid indices, propagating None gaps
                     y_data_plot = [(y_data_raw[idx] if idx < len(y_data_raw) else None) for idx in valid_indices]
-                    fig.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel, connectgaps=False), row=i+1, col=1)
+                    
+                    if channel == 'DRS':
+                        # Convert DRS states (e.g., 10, 12, 14 = ON=1, others=OFF=0)
+                        drs_plot_values = []
+                        for val in y_data_plot:
+                            if val in [10, 12, 14]: # DRS flap open state values
+                                drs_plot_values.append(1)
+                            # elif val == 8: # Optionally show 'Eligible' state
+                            #    drs_plot_values.append(0.5)
+                            else: # Off, Ineligible, Error, None
+                                drs_plot_values.append(0)
+                        y_data_plot = drs_plot_values # Use the converted values
+
+                        fig.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel,
+                                                   line_shape='hv', # Use step shape for on/off
+                                                   connectgaps=False), row=i+1, col=1)
+                        # Customize Y axis ticks for DRS
+                        fig.update_yaxes(tickvals=[0, 1], ticktext=['Off', 'On'], range=[-0.1, 1.1], row=i+1, col=1)
+                    # --- >>> End DRS Handling <<< ---
+                    else: # Plot other channels normally
+                         fig.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel, connectgaps=False), row=i+1, col=1)
+                         
                     # Potentially add axis title to yaxis
                     fig.update_yaxes(title_text=channel, row=i+1, col=1)
 
