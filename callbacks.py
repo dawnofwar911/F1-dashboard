@@ -161,55 +161,110 @@ def update_session_info_display(n):
     Output('other-data-display', 'children'),
     Output('timing-data-actual-table', 'data'),
     Output('timing-data-timestamp', 'children'),
-    Input('interval-component-medium', 'n_intervals')
+    Input('interval-component-fast', 'n_intervals')
 )
 def update_main_data_displays(n):
-    """Updates the timing table and the 'other data' display area."""
-    # (Logic combined and adapted from user's update_output in Response 24)
-    other_elements = []; table_data = []; timestamp_text = "Waiting..."
+    """Updates the timing table and the 'other data' display area (Optimized)."""
+    other_elements = []
+    table_data = []
+    timestamp_text = "Waiting..."
+    start_time = time.monotonic()  # Time the callback
+
     try:
         with app_state.app_state_lock:
+            # Copy only needed states under lock
             timing_state_copy = app_state.timing_state.copy()
-            data_store_copy = app_state.data_store.copy()
+            # No need to copy if only reading specific keys
+            data_store_copy = app_state.data_store
 
-        # Other Data
-        excluded = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position', 'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat']
-        streams = sorted([s for s in data_store_copy.keys() if s not in excluded])
-        for s_name in streams:
-            val = data_store_copy.get(s_name, {}); data=val.get('data','N/A'); ts=val.get('timestamp','N/A')
-            try: d_str = json.dumps(data, indent=2)
-            except TypeError: d_str = str(data)
-            if len(d_str) > 500: d_str = d_str[:500] + "\n...(truncated)"
-            other_elements.append(html.Details([html.Summary(f"{s_name} ({ts})"), html.Pre(d_str, style={'marginLeft':'15px','maxHeight':'200px','overflowY':'auto'})], open=(s_name=='LapCount'))) # Example open
+        # --- Other Data Display (Keep previous logic) ---
+        excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
+                            'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat']
+        sorted_streams = sorted(
+            [s for s in data_store_copy.keys() if s not in excluded_streams])
+        for stream in sorted_streams:
+            value = data_store_copy.get(stream, {})
+            data_payload = value.get('data', 'N/A')
+            timestamp_str = value.get('timestamp', 'N/A')
+            try:
+                data_str = json.dumps(data_payload, indent=2)
+            except TypeError:
+                data_str = str(data_payload)
+            if len(data_str) > 500:
+                data_str = data_str[:500] + "\n...(truncated)"
+            other_elements.append(html.Details([html.Summary(f"{stream} ({timestamp_str})"), html.Pre(data_str, style={
+                                  'marginLeft': '15px', 'maxHeight': '200px', 'overflowY': 'auto'})], open=(stream == "LapCount")))
 
-        # Timing Table
-        timing_entry = data_store_copy.get('TimingData', {})
-        timestamp_text = f"Timing TS: {timing_entry.get('timestamp', 'N/A')}" if timing_entry else "Waiting..."
-        if timing_state_copy:
-            t_data = []
-            drivers = sorted(timing_state_copy.keys(), key=lambda x: int(x) if x.isdigit() else float('inf'))
-            for num in drivers:
-                state = timing_state_copy.get(num);
-                if not state: continue
-                tyre = f"{state.get('TyreCompound', '-')}({state.get('TyreAge', '?')}L)" if state.get('TyreCompound', '-') != '-' else '-'
-                tla = state.get("Tla", num)
-                c_data = state.get('CarData', {}); drs_val = c_data.get('DRS'); drs_map = {8:"E",10:"On",12:"On",14:"ON"}; drs = drs_map.get(drs_val, 'Off') if drs_val is not None else 'Off'
-                row = {'Car':tla, 'Pos':state.get('Position', '-'), 'Tyre':tyre, 'Time':state.get('Time', '-'), 'Gap':state.get('GapToLeader', '-'),
-                       'Interval':utils.get_nested_state(state,'IntervalToPositionAhead','Value',default='-'), 'Last Lap':utils.get_nested_state(state,'LastLapTime','Value',default='-'),
-                       'Best Lap':utils.get_nested_state(state,'BestLapTime','Value',default='-'), 'S1':utils.get_nested_state(state,'Sectors','0','Value',default='-'),
-                       'S2':utils.get_nested_state(state,'Sectors','1','Value',default='-'), 'S3':utils.get_nested_state(state,'Sectors','2','Value',default='-'),
-                       'Status':state.get('Status','N/A'), 'Speed':c_data.get('Speed','-'), 'Gear':c_data.get('Gear','-'), 'RPM':c_data.get('RPM','-'), 'DRS':drs}
-                t_data.append(row)
-            t_data.sort(key=utils.pos_sort_key); table_data = t_data
-        else: timestamp_text = "Waiting for DriverList..."
+        # --- Timing Table Timestamp ---
+        timing_data_entry = data_store_copy.get(
+            'TimingData', {})  # Read from non-copied dict
+        timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else "Waiting..."
+
+        # --- Generate Timing Table Data (Optimized Loop) ---
+        if timing_state_copy:  # Process the copied timing state
+            processed_table_data = []
+            # No need to sort keys here if sorting the final list later
+            for car_num, driver_state in timing_state_copy.items():
+                # Use .get() with defaults directly where possible
+                # Use car_num as fallback for Car column
+                tla = driver_state.get("Tla", car_num)
+                pos = driver_state.get('Position', '-')
+                compound = driver_state.get('TyreCompound', '-')
+                age = driver_state.get('TyreAge', '?')
+                tyre = f"{compound}({age}L)" if compound != '-' else '-'
+                time_val = driver_state.get('Time', '-')
+                gap = driver_state.get('GapToLeader', '-')
+                interval = utils.get_nested_state(
+                    driver_state, 'IntervalToPositionAhead', 'Value', default='-')
+                last_lap = utils.get_nested_state(
+                    driver_state, 'LastLapTime', 'Value', default='-')
+                best_lap = utils.get_nested_state(
+                    driver_state, 'BestLapTime', 'Value', default='-')
+                s1 = utils.get_nested_state(
+                    driver_state, 'Sectors', '0', 'Value', default='-')
+                s2 = utils.get_nested_state(
+                    driver_state, 'Sectors', '1', 'Value', default='-')
+                s3 = utils.get_nested_state(
+                    driver_state, 'Sectors', '2', 'Value', default='-')
+                status = driver_state.get('Status', 'N/A')
+                # Access CarData sub-dict, default to empty dict if not present
+                car_data = driver_state.get('CarData', {})
+                speed = car_data.get('Speed', '-')
+                gear = car_data.get('Gear', '-')
+                rpm = car_data.get('RPM', '-')
+                drs_val = car_data.get('DRS')
+                drs_map = {8: "E", 10: "On", 12: "On", 14: "ON"}
+                drs = drs_map.get(
+                    drs_val, 'Off') if drs_val is not None else 'Off'
+
+                row = {'Car': tla, 'Pos': pos, 'Tyre': tyre, 'Time': time_val, 'Gap': gap,
+                       'Interval': interval, 'Last Lap': last_lap, 'Best Lap': best_lap,
+                       'S1': s1, 'S2': s2, 'S3': s3, 'Status': status,
+                       'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs}
+                processed_table_data.append(row)
+
+            # Sort the final list once
+            processed_table_data.sort(key=utils.pos_sort_key)
+            table_data = processed_table_data
+        else:
+            timestamp_text = "Waiting for DriverList..."
+
+        end_time = time.monotonic()
+        # Log execution time
+        logger.debug(
+            f"update_main_data_displays took {end_time - start_time:.4f}s")
 
         return other_elements, table_data, timestamp_text
-    except Exception as e: logger.error(f"Error updating main data: {e}", exc_info=True); return no_update, no_update, no_update
+
+    except Exception as e_update:
+        logger.error(
+            f"Error in update_main_data_displays callback: {e_update}", exc_info=True)
+        return no_update, no_update, no_update
 
 
 @app.callback(
     Output('race-control-log-display', 'value'),
-    Input('interval-component-medium', 'n_intervals')
+    Input('interval-component-slow', 'n_intervals')
 )
 def update_race_control_log(n):
     # (Logic from Response 22/24)
@@ -413,7 +468,9 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
     lap_options = []
     lap_value = None
     lap_disabled = True
-    telemetry_figure = go.Figure(layout={'template': 'plotly_dark', 'height': 400, 'margin': dict(t=20, b=30, l=40, r=10), 'title_text': "Select Driver/Lap for Telemetry"})  # Empty placeholder
+    telemetry_layout_uirevision = f"{selected_driver_number or 'none'}_{selected_lap or 'none'}"
+    telemetry_figure = go.Figure(layout={'template': 'plotly_dark', 'height': 400, 'margin': dict(
+        t=20, b=30, l=40, r=10), 'title_text': "Select Driver/Lap for Telemetry", 'uirevision': telemetry_layout_uirevision})  # Empty placeholder
 
     if not selected_driver_number:
         return details_children, lap_options, lap_value, lap_disabled, telemetry_figure
@@ -483,7 +540,7 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
                 # Define channels and create subplots
                 channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
                 fig = make_subplots(rows=len(channels), cols=1, shared_xaxes=True, subplot_titles=channels, vertical_spacing=0.02)
-                fig.update_layout(template='plotly_dark', height=100*len(channels), hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10))
+                fig.update_layout(template='plotly_dark', height=100*len(channels), hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10), uirevision=telemetry_layout_uirevision)
 
                 for i, channel in enumerate(channels):
                     y_data_raw = lap_data.get(channel, [])
@@ -534,7 +591,7 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
 # --- Track Map Callback ---
 @app.callback(
     Output('track-map-graph', 'figure'),
-    Input('interval-component-medium', 'n_intervals')
+    Input('interval-component-fast', 'n_intervals')
 )
 def update_track_map(n):
     """Updates the track map using fetched track layout and live car positions."""
