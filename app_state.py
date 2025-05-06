@@ -30,6 +30,14 @@ data_store = {}
 # Holds the consolidated, persistent state per driver (Timing, Tyres, Telemetry, Position)
 # Keyed by driver number (string)
 timing_state = {}
+# Example structure for timing_state[driver_num_str]:
+# {
+#     "RacingNumber": "1", "Tla": "VER", ...,
+#     "PositionData": {"X": ..., "Y": ..., "Status": ..., "Timestamp": "..."},
+#     "PreviousPositionData": {"X": ..., "Y": ..., "Timestamp": "..."}, # <<< NEW FIELD
+#     "CarData": {"RPM": ..., "Speed": ..., "Utc": "..."}
+#     # Other timing info (laps, sectors, etc.)
+# }
 
 # Specific state stores easily accessible by callbacks
 track_status_data = {} # Holds latest TrackStatus (Status, Message)
