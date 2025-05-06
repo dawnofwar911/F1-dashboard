@@ -225,52 +225,55 @@ def _process_track_status(data):
         main_logger.info(f"Track Status Update: Status={new_status}, Message='{new_message}'")
 
 def _process_position_data(data):
-    """Handles Position data. MUST be called within app_state.app_state_lock."""
-    # global timing_state # Removed global
-
+    """
+    Handles Position data. Updates current and previous position data in app_state.
+    MUST be called within app_state.app_state_lock.
+    """
     # Use app_state.timing_state
-    if 'timing_state' not in app_state.__dict__: # Check if loaded in app_state
-         main_logger.error("Global 'timing_state' not found in app_state for Position processing.")
-         return
+    if not app_state.timing_state:
+        # logger.debug("Position data received, but timing_state not yet initialized.")
+        return # Cannot process without driver entries in timing_state
 
-    if not isinstance(data, dict) or 'Position' not in data: # Check data format
-         main_logger.warning(f"Position handler received unexpected format: {data}")
-         return
-
-    position_entries = data.get('Position', [])
-    if not isinstance(position_entries, list):
-        main_logger.warning(f"Position data 'Position' key is not a list: {position_entries}")
+    if not isinstance(data, dict) or 'Position' not in data:
+        logger.warning(f"Position handler received unexpected format: {type(data)}")
         return
 
-    for entry_group in position_entries:
+    position_entries_list = data.get('Position', [])
+    if not isinstance(position_entries_list, list):
+        logger.warning(f"Position data 'Position' key is not a list: {type(position_entries_list)}")
+        return
+
+    for entry_group in position_entries_list:
         if not isinstance(entry_group, dict): continue
-        timestamp = entry_group.get('Timestamp')
-        entries = entry_group.get('Entries', {})
-        if not isinstance(entries, dict): continue
+        timestamp_str = entry_group.get('Timestamp') # Timestamp for this batch of positions
+        if not timestamp_str: continue # Need a timestamp
 
-        for car_number_str, pos_info in entries.items():
-            # Use app_state.timing_state
+        entries_dict = entry_group.get('Entries', {})
+        if not isinstance(entries_dict, dict): continue
+
+        for car_number_str, new_pos_info in entries_dict.items():
             if car_number_str not in app_state.timing_state:
-                continue # Skip if driver isn't known
+                # logger.debug(f"Position data for unknown driver {car_number_str}")
+                continue # Skip if driver isn't known (e.g., not in DriverList yet)
 
-            if isinstance(pos_info, dict):
-                x_pos = pos_info.get('X'); y_pos = pos_info.get('Y'); status = pos_info.get('Status')
+            if isinstance(new_pos_info, dict):
+                current_driver_state = app_state.timing_state[car_number_str]
 
-                # Ensure 'PositionData' sub-dictionary exists in app_state entry
-                if 'PositionData' not in app_state.timing_state[car_number_str]:
-                    app_state.timing_state[car_number_str]['PositionData'] = {}
+                # --- Shift current to previous ---
+                if 'PositionData' in current_driver_state and current_driver_state['PositionData']:
+                    # Only copy if PositionData actually existed and had content
+                    current_driver_state['PreviousPositionData'] = current_driver_state['PositionData'].copy()
+                # else: # First position update for this driver, no previous to set
+                #    current_driver_state['PreviousPositionData'] = None # Or empty dict
 
-                # Store the latest position data in app_state entry
-                pos_data_dict = app_state.timing_state[car_number_str]['PositionData']
-                if x_pos is not None: pos_data_dict['X'] = x_pos
-                if y_pos is not None: pos_data_dict['Y'] = y_pos
-                if status is not None: pos_data_dict['Status'] = status
-                if timestamp is not None: pos_data_dict['Timestamp'] = timestamp
-
-                # Optional logging
-                # if car_number_str == '63':
-                #    main_logger.debug(f"Updating PositionData for 63: X={x_pos}, Y={y_pos}, Status={status}")
-
+                # --- Store new current position data ---
+                current_driver_state['PositionData'] = {
+                    'X': new_pos_info.get('X'),
+                    'Y': new_pos_info.get('Y'),
+                    'Status': new_pos_info.get('Status'), # e.g., "OnTrack"
+                    'Timestamp': timestamp_str # Timestamp for this specific update
+                }
+                # logger.debug(f"Updated Position for {car_number_str}: New X={new_pos_info.get('X')}, Prev X={current_driver_state.get('PreviousPositionData',{}).get('X')}")
 
 def _process_car_data(data):
     """Handles CarData. MUST be called within app_state.app_state_lock."""
