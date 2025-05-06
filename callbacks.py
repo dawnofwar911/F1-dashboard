@@ -413,7 +413,7 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
     lap_options = []
     lap_value = None
     lap_disabled = True
-    telemetry_figure = go.Figure(layout={'template': 'plotly_dark', 'height': 400, 'margin': dict(t=20, b=30, l=40, r=10)}) # Empty placeholder
+    telemetry_figure = go.Figure(layout={'template': 'plotly_dark', 'height': 400, 'margin': dict(t=20, b=30, l=40, r=10), 'title_text': "Select Driver/Lap for Telemetry"})  # Empty placeholder
 
     if not selected_driver_number:
         return details_children, lap_options, lap_value, lap_disabled, telemetry_figure
@@ -483,7 +483,7 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
                 # Define channels and create subplots
                 channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
                 fig = make_subplots(rows=len(channels), cols=1, shared_xaxes=True, subplot_titles=channels, vertical_spacing=0.02)
-                fig.update_layout(template='plotly_dark', height=200*len(channels), hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10))
+                fig.update_layout(template='plotly_dark', height=100*len(channels), hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10))
 
                 for i, channel in enumerate(channels):
                     y_data_raw = lap_data.get(channel, [])
