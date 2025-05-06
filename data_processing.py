@@ -315,6 +315,43 @@ def _process_car_data(data):
                  if channel_num_str in channels: car_data_dict[data_key] = channels[channel_num_str]
 
              car_data_dict['Utc'] = utc_time
+             
+             if car_number_str in app_state.timing_state:
+                driver_timing_state = app_state.timing_state[car_number_str]
+
+                # Determine Current Lap Number
+                completed_laps = driver_timing_state.get('NumberOfLaps', -1)
+                try:
+                    current_lap = int(completed_laps) + 1
+                    if current_lap <= 0: current_lap = 1 # Default to lap 1 if unknown/invalid
+                except (ValueError, TypeError):
+                    main_logger.warning(f"Cannot determine lap for Driver {car_number_str}, LapInfo='{completed_laps}'. Skip history append.")
+                    continue # Cannot store history without lap
+
+                # Ensure structure exists in app_state.telemetry_data
+                # { driver_num: { lap_num: { channel: [], Timestamps: [] } } }
+                if car_number_str not in app_state.telemetry_data:
+                    app_state.telemetry_data[car_number_str] = {}
+                if current_lap not in app_state.telemetry_data[car_number_str]:
+                    app_state.telemetry_data[car_number_str][current_lap] = {
+                        'Timestamps': [], **{key: [] for key in channel_map.values()} # Initialize lists for all mapped channels
+                    }
+                    main_logger.debug(f"Initialized telemetry storage for Driver {car_number_str}, Lap {current_lap}")
+
+                lap_telemetry_history = app_state.telemetry_data[car_number_str][current_lap]
+
+                # Append Timestamp
+                lap_telemetry_history['Timestamps'].append(utc_time)
+
+                # Append Channel Data (get from 'channels' dict)
+                for channel_num_str, data_key in channel_map.items():
+                    value = channels.get(channel_num_str)
+                    # Convert relevant values to numeric types if possible
+                    if data_key in ['RPM', 'Speed', 'Gear', 'Throttle', 'Brake', 'DRS']:
+                        try: value = int(value) if value is not None else None
+                        except (ValueError, TypeError): value = None
+                    lap_telemetry_history[data_key].append(value) # Append value or None
+
 
 
 def _process_session_data(data):

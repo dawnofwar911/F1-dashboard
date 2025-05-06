@@ -39,6 +39,9 @@ track_coordinates_cache = { # Holds track layout from API
     'x': None, 'y': None, 'range_x': None, 'range_y': None,
     'rotation': None, 'corner_x': None, 'corner_y': None, 'session_key': None
 }
+# Historical Telemetry Storage
+# Structure: { driver_num: { lap_num: {'Timestamps': [], 'RPM': [], 'Speed': [], ...} } }
+telemetry_data = {}
 
 # --- Live Recording State ---
 live_data_file = None       # File handle for live recording
