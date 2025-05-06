@@ -238,6 +238,43 @@ def pos_sort_key(item):
         try: return int(pos_str)
         except ValueError: return 999
     return 999 # Place non-numeric (OUT, "", etc.) at the end
+    
+def generate_driver_options(timing_state_dict): # Changed argument name for clarity
+    """Generates list of options for driver dropdowns from timing_state."""
+    options = []
+    logger.debug(f"Generating driver options from timing_state keys: {list(timing_state_dict.keys())}")
+
+    if not timing_state_dict or not isinstance(timing_state_dict, dict):
+        logger.warning("generate_driver_options received empty or invalid timing_state.")
+        return [{'label': 'No drivers available', 'value': '', 'disabled': True}]
+
+    driver_list_for_sorting = []
+    # Extract necessary info for sorting and display first
+    for driver_num, driver_data in timing_state_dict.items():
+        if isinstance(driver_data, dict): # Basic check
+             driver_list_for_sorting.append({
+                 'value': driver_num, # The key is the value for the dropdown
+                 'number': driver_data.get('RacingNumber', 'N/A'),
+                 'tla': driver_data.get('Tla', '???'),
+                 'name': driver_data.get('FullName', 'Unknown Driver')
+             })
+
+    # Sort by racing number numerically
+    def sort_key(item):
+        try: return int(item.get('number', 999))
+        except (ValueError, TypeError): return 999
+
+    sorted_drivers = sorted(driver_list_for_sorting, key=sort_key)
+
+    # Create options list
+    for driver in sorted_drivers:
+        label = f"{driver['tla']} (#{driver['number']}) - {driver['name']}"
+        options.append({'label': label, 'value': driver['value']})
+
+    if not options: # Handle case where processing failed or no valid drivers found
+         return [{'label': 'No drivers processed', 'value': '', 'disabled': True}]
+
+    return options
 
 
 # --- Logging Filter ---
