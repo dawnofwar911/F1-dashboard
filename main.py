@@ -188,7 +188,7 @@ if __name__ == '__main__':
             if processing_thread.is_alive(): logger.warning("Data Processing thread did not exit cleanly.")
             else: logger.info("Data Processing thread joined.")
         if dash_thread and dash_thread.is_alive():
-             logger.info("Cleanup: Waiting for Dash thread (short)..."); dash_thread.join(timeout=2.0)
+             logger.info("Cleanup: Waiting for Dash thread (short)..."); dash_thread.join(timeout=5.0)
              if dash_thread.is_alive(): logger.warning("Dash thread did not exit cleanly.")
 
         logger.info("Shutdown complete."); print("\n --- App Exited --- \n")

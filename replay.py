@@ -392,32 +392,67 @@ def _replay_thread_target(filename, initial_speed=1.0): # Renamed arg for clarit
 
 
 # *** MODIFIED replay_from_file to accept and pass speed ***
-def replay_from_file(filename, speed=1.0): # Added speed argument with default
-    """Starts the replay process in a background thread with a given speed."""
+def replay_from_file(data_file_path, replay_speed=1.0):
+    """Starts the replay thread, returning True on success, False on failure."""
     global replay_thread
+
+    # --- Pre-checks ---
     if replay_thread and replay_thread.is_alive():
         logger.warning("Replay already in progress. Please stop the current replay first.")
-        return
+        # --- Add Log ---
+        logger.debug("replay_from_file returning False (already running)")
+        return False
 
-    if app_state.stop_event.is_set():
-         logger.warning("Stop event was set before starting replay, clearing it.")
-         app_state.stop_event.clear()
+    replay_file_path_obj = Path(data_file_path)
+    if not replay_file_path_obj.is_file():
+        logger.error(f"Replay file not found or not a file: {replay_file_path_obj}")
+        with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": f"File Not Found"})
+        # --- Add Log ---
+        logger.debug("replay_from_file returning False (file not found)")
+        return False
 
-    logger.info(f"Starting replay for file: {filename} at speed {speed}x")
+    # --- Prepare State ---
+    # ... (state clearing logic remains the same) ...
+    app_state.stop_event.clear(); logger.debug("Stop event cleared (replay).")
     with app_state.app_state_lock:
-        app_state.app_status.update({
-            "state": "Replaying",
-            "connection": f"Replaying: {filename} ({speed}x)", # Include speed in status
-            "current_replay_file": filename
-        })
-        # Clear previous data stores if needed (uncomment if desired)
-        # logger.info("Clearing previous session data for replay...")
-        # app_state.data_store.clear(); app_state.timing_state.clear(); app_state.track_status_data.clear()
-        # app_state.session_details.clear(); app_state.race_control_log.clear()
+        logger.info("Replay mode: Clearing previous state...")
+        app_state.app_status.update({"state": "Initializing", "connection": f"Preparing: {replay_file_path_obj.name}", "current_replay_file": replay_file_path_obj.name})
+        app_state.data_store.clear(); app_state.timing_state.clear(); app_state.track_status_data.clear()
+        app_state.session_details.clear(); app_state.race_control_log.clear(); app_state.track_coordinates_cache = {'session_key': None}
+        while not app_state.data_queue.empty():
+             try: app_state.data_queue.get_nowait()
+             except queue.Empty: break
+    logger.info("Replay mode: Previous state cleared.")
 
-    # Create and start the replay thread, passing filename AND speed
-    replay_thread = threading.Thread(target=_replay_thread_target, args=(filename, speed), name="ReplayThread", daemon=True)
-    replay_thread.start()
+
+    # --- Start Thread with Error Handling ---
+    try:
+        logger.info(f"Starting replay thread for file: {replay_file_path_obj.name} at speed {replay_speed}x")
+        replay_thread = threading.Thread(
+            target=_replay_thread_target,
+            args=(str(replay_file_path_obj), replay_speed),
+            name="ReplayThread", daemon=True)
+        replay_thread.start()
+        logger.info(f"Replay thread initiated successfully for {replay_file_path_obj.name}")
+        
+        with app_state.app_state_lock:
+            app_state.app_status.update({"state": "Replaying", "connection": f"File: {replay_file_path_obj.name}"})
+            # --- >>> ADD THIS LOG <<< ---
+            logger.debug(f"State set to 'Replaying' in replay_from_file. Current app_status: {app_state.app_status}")
+            # --- >>> END ADDED LOG <<< ---
+        # --- Add Log ---
+        logger.debug("replay_from_file returning True")
+        return True # Explicitly return True on success
+
+    except Exception as e:
+        logger.error(f"Failed to create or start replay thread: {e}", exc_info=True)
+        with app_state.app_state_lock:
+            app_state.app_status.update({"state": "Error", "connection": "Replay Thread Failed Start"})
+            app_state.app_status['current_replay_file'] = None
+        # --- Add Log ---
+        logger.debug("replay_from_file returning False (exception)")
+        return False # Explicitly return False on error
+
 
 def stop_replay():
     """Stops the currently running replay thread. (Implementation from Response #19)"""

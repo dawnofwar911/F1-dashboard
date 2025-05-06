@@ -47,27 +47,56 @@ logger = logging.getLogger("F1App.Callbacks") # Use consistent logger name
 )
 def update_connection_status(n):
     """Updates the connection status indicator."""
-    with app_state.app_state_lock:
-        status = app_state.app_status.get("connection", "Unknown")
-        state = app_state.app_status.get("state", "Idle")
-        is_rec = app_state.is_saving_active
-        rec_file = app_state.current_recording_filename
-        rep_file = app_state.app_status.get("current_replay_file")
+    # --- >>> ADD DEBUG LOGGING <<< ---
+    logger.debug(f"Running update_connection_status (Interval {n})")
+    # --- >>> END DEBUG LOGGING <<< ---
 
-    status_text = f"State: {state} | Conn: {status}"
-    color = 'grey'
-    if state == "Live": color = 'green'
-    elif state in ["Connecting", "Initializing"]: color = 'orange'
-    elif state in ["Stopped", "Idle"]: color = 'grey'
-    elif state == "Error": color = 'purple'
-    elif state == "Replaying": color = 'blue'
-    elif state == "Playback Complete": color = 'lightblue'
-    elif state == "Stopping": color = 'lightcoral'
+    # Initialize defaults
+    status_text = "State: ? | Conn: ?"
+    status_style = {'color': 'grey', 'fontWeight': 'bold'} # Default style
 
-    if is_rec and rec_file: status_text += f" (REC: {Path(rec_file).name})"
-    elif state == "Replaying" and rep_file: status_text += f" (Replay: {rep_file})"
+    try: # Add try-except around state access and logic
+        with app_state.app_state_lock:
+            status = app_state.app_status.get("connection", "Unknown")
+            state = app_state.app_status.get("state", "Idle")
+            is_rec = app_state.is_saving_active
+            rec_file = app_state.current_recording_filename
+            rep_file = app_state.app_status.get("current_replay_file")
 
-    return status_text, {'color': color, 'fontWeight': 'bold'}
+            # --- >>> ADD DEBUG LOGGING <<< ---
+            logger.debug(f"Read State: {state}, Conn: {status}, Recording: {is_rec}, RecFile: {rec_file}, RepFile: {rep_file}")
+            # --- >>> END DEBUG LOGGING <<< ---
+
+        status_text = f"State: {state} | Conn: {status}"
+        color = 'grey' # Default color
+
+        # Determine color based on state
+        if state == "Live": color = 'lime' # Brighter green
+        elif state in ["Connecting", "Initializing"]: color = 'orange'
+        elif state in ["Stopped", "Idle"]: color = 'grey'
+        elif state == "Error": color = 'red' # Changed Error color
+        elif state == "Replaying": color = 'dodgerblue' # Changed Replay color
+        elif state == "Playback Complete": color = 'lightblue'
+        elif state == "Stopping": color = 'lightcoral'
+
+        # Append Recording/Replay info
+        if is_rec and rec_file and isinstance(rec_file, (str, Path)): # Check type before using Path
+             try: status_text += f" (REC: {Path(rec_file).name})"
+             except Exception as path_e: logger.warning(f"Could not get filename from rec_file '{rec_file}': {path_e}") # Log path error
+        elif state == "Replaying" and rep_file:
+             try: status_text += f" (Replay: {Path(rep_file).name})" # Use Path here too for consistency
+             except Exception as path_e: logger.warning(f"Could not get filename from rep_file '{rep_file}': {path_e}")
+
+        status_style = {'color': color, 'fontWeight': 'bold'}
+
+    except Exception as e:
+        logger.error(f"Error in update_connection_status: {e}", exc_info=True)
+        # Return a visible error state in the UI
+        status_text = "Error updating status!"
+        status_style = {'color': 'red', 'fontWeight': 'bold'}
+
+    # logger.debug(f"Updating connection status display: '{status_text}', Style: {status_style}") # Optional: Log output
+    return status_text, status_style
 
 @app.callback(
     Output('track-status-display', 'children'),
@@ -228,10 +257,7 @@ def handle_control_clicks(connect_clicks, disconnect_clicks,
                           replay_clicks, stop_replay_clicks,
                           selected_replay_file, replay_speed,
                           record_checkbox_value):
-    # (Combined Logic from Response 33)
-    
-    print(f"DEBUG: handle_control_clicks entered!", flush=True)
-    
+    # (Combined Logic from Response 33)    
     ctx = dash.callback_context; button_id = ctx.triggered_id
     if not button_id: return no_update
     logger.info(f"Control button clicked: {button_id}")
@@ -305,19 +331,36 @@ def handle_control_clicks(connect_clicks, disconnect_clicks,
         if selected_replay_file:
             with app_state.app_state_lock: state = app_state.app_status["state"]
             if state in ["Live", "Connecting"]: logger.info("Stopping live feed before replay."); signalr_client.stop_connection(); time.sleep(0.5)
-            with app_state.app_state_lock: current_state_after_stop = app_state.app_status["state"] # Re-check state
+            with app_state.app_state_lock: current_state_after_stop = app_state.app_status["state"]
             if current_state_after_stop != "Replaying":
-                # --- >>> Set initial speed in app_state <<< ---
                 try:
-                    speed_float = float(app_state.initial_replay_speed)
-                    with app_state.app_state_lock:
-                         app_state.replay_speed = speed_float
-                    logger.info(f"Attempting replay: {selected_replay_file}, Initial Speed: {speed_float}")
-                    # Pass initial speed for logging, but thread will read app_state
-                    if not replay.replay_from_file(selected_replay_file, speed_float):
-                         logger.error("Replay start failed.")
+                    speed_float = float(replay_speed); speed_float = max(0.1, speed_float)
+                    full_replay_path = config.REPLAY_DIR / selected_replay_file
+                    logger.info(f"Attempting replay: {full_replay_path}, Initial Speed: {speed_float}")
+                    with app_state.app_state_lock: app_state.replay_speed = speed_float
+
+                    replay_started_ok = replay.replay_from_file(full_replay_path, speed_float)
+                    logger.debug(f"replay.replay_from_file returned: {replay_started_ok}") # Keep debug log
+
+                    if replay_started_ok:
+                        # Read state immediately after successful start attempt
+                        with app_state.app_state_lock: current_state = app_state.app_status["state"]; current_conn = app_state.app_status["connection"]
+                        status_text_update = f"State: {current_state} | Conn: {current_conn}" # Should be Initializing or Replaying
+                        status_style_update = {'color': 'blue', 'fontWeight': 'bold'} # Style for replaying
+                    else:
+                        logger.error("replay.replay_from_file reported failure.")
+                        # Update UI to reflect failure (likely already set to Error in replay_from_file)
+                        with app_state.app_state_lock: current_state = app_state.app_status["state"]; current_conn = app_state.app_status["connection"]
+                        status_text_update = f"State: {current_state} | Conn: {current_conn}"
+                        status_style_update = {'color': 'purple', 'fontWeight': 'bold'}
+
                 except (ValueError, TypeError):
-                     logger.error(f"Invalid initial replay speed: {initial_replay_speed}. Cannot start replay.")
+                     logger.error(f"Invalid initial replay speed value from slider: '{replay_speed}'. Cannot start replay.")
+                     with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Invalid Replay Speed"})
+                     status_text_update = "State: Error | Conn: Invalid Replay Speed"
+                     status_style_update = {'color': 'purple', 'fontWeight': 'bold'}
+            else: logger.warning("Replay already in progress."); status_text_update = no_update; status_style_update = no_update
+        else: logger.warning("Replay clicked, but no file selected."); status_text_update = no_update; status_style_update = no_update
     elif button_id == 'stop-replay-button': logger.info("Stop Replay button clicked"); replay.stop_replay()
     return no_update
 
