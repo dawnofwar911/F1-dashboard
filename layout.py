@@ -71,7 +71,7 @@ def create_layout():
             dbc.Col(dbc.Button("Disconnect", id="disconnect-button", color="warning"), width="auto", className="mb-1 me-3"), # Added margin bottom/end
             dbc.Col(dbc.Checkbox(id='record-data-checkbox', label="Record Live Data", value=False, className="form-check-inline"), width="auto", className="mb-1 align-self-center"), # Align checkbox
             dbc.Col(dcc.Dropdown(id='replay-file-selector', options=replay_file_options, placeholder="Select replay file...", style={'minWidth': '200px', 'color': '#333'}), width=True, className="mb-1"), # Let dropdown take available width
-            dbc.Col(dcc.Slider(id='replay-speed-slider', min=0.1, max=10, step=0.1, value=1.0, marks={1:'1x', 5:'5x', 10:'10x'}), width=2, className="mb-1 align-self-center", style={'minWidth':'150px'}), # Give slider some minimum width
+            dbc.Col(dcc.Slider(id='replay-speed-slider', min=0.0, max=10, step=0.5, value=1.0, marks={1:'1x', 5:'5x', 10:'10x'}), width=2, className="mb-1 align-self-center", style={'minWidth':'150px'}), # Give slider some minimum width
             dbc.Col(dbc.Button("Replay", id="replay-button", color="primary"), width="auto", className="mb-1"),
             dbc.Col(dbc.Button("Stop Replay", id="stop-replay-button", color="danger"), width="auto", className="mb-1"),
         ], className="mb-3 align-items-center g-1"), # Use g-1 for smaller gutters between columns
