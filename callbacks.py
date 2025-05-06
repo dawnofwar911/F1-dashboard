@@ -591,7 +591,7 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
 # --- Track Map Callback ---
 @app.callback(
     Output('track-map-graph', 'figure'),
-    Input('interval-component-fast', 'n_intervals')
+    Input('interval-component-medium', 'n_intervals')
 )
 def update_track_map(n):
     """Updates the track map using fetched track layout and live car positions."""
