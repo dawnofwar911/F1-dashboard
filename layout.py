@@ -76,8 +76,6 @@ def create_layout():
             dbc.Col(dbc.Button("Stop Replay", id="stop-replay-button", color="danger"), width="auto", className="mb-1"),
         ], className="mb-3 align-items-center g-1"), # Use g-1 for smaller gutters between columns
         
-
-
         # --- >>> RESTRUCTURED DATA AREA <<< ---
         dbc.Row([
             # --- Left Column ---
@@ -99,7 +97,11 @@ def create_layout():
                 html.Hr(),
                 html.H4("Other Data Streams"),
                 # Use other-data-display ID from callbacks
-                html.Div(id='other-data-display', style={'maxHeight': '20vh', 'overflowY': 'auto', 'border': '1px solid grey', 'padding': '10px', 'fontSize': 'small'}) # Adjusted height
+                html.Div(id='other-data-display', style={'maxHeight': '20vh', 'overflowY': 'auto', 'border': '1px solid grey', 'padding': '10px', 'fontSize': 'small'}), # Adjusted height
+                html.H4("Race Control Messages"),
+                # Use race-control-log-display ID from callbacks
+                dcc.Textarea(id='race-control-log-display', value='Waiting...', style={
+                             'width': '100%', 'height': '15vh', 'backgroundColor': '#333', 'color': '#DDD', 'border': '1px solid grey', 'fontFamily': 'monospace'}, readOnly=True)
             ], md=7), # 7 columns for timing/other
 
             # --- Right Column ---
@@ -129,12 +131,7 @@ def create_layout():
                 dcc.Graph(id='telemetry-graph', style={'height': '25vh'}), # <<< TELEMETRY GRAPH AREA
                 # --- >>> END ADDED <<< ---
                 html.Div(id='driver-details-output', style={'maxHeight': '15vh', 'overflowY': 'auto', 'border': '1px solid #444', 'padding': '5px', 'fontSize': 'small', 'marginTop':'10px'}), # Area for other details
-
-                html.Hr(),
-                html.H4("Race Control Messages"),
-                # Use race-control-log-display ID from callbacks
-                dcc.Textarea(id='race-control-log-display', value='Waiting...', style={'width': '100%', 'height': '15vh', 'backgroundColor': '#333', 'color': '#DDD', 'border': '1px solid grey', 'fontFamily': 'monospace'}, readOnly=True)
-
+                html.Hr()
             ], md=5) # 5 columns for map/details/rc
         ])
         # --- >>> END RESTRUCTURED DATA AREA <<< ---
