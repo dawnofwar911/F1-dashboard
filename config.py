@@ -24,6 +24,9 @@ REPLAY_DIR = _SCRIPT_DIR / REPLAY_DIR_NAME
 # TARGET_SAVE_DIRECTORY could be the same as REPLAY_DIR or different if needed
 TARGET_SAVE_DIRECTORY = REPLAY_DIR # Directory for saving live data files
 DEFAULT_REPLAY_FILENAME = "2023-yas-marina-quali.data.txt" # Default replay file suggestion
+DASH_DEBUG_MODE = False
+DASH_HOST = "0.0.0.0"
+DASH_PORT = 8050
 
 # --- Filename Templates ---
 DATA_FILENAME_TEMPLATE = "f1_signalr_data_{timestamp}.data.txt" # Template for live data logs (Not currently used?)

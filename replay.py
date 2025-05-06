@@ -52,7 +52,7 @@ def get_replay_files(directory):
     if dir_path.exists() and dir_path.is_dir():
         try:
             files = sorted([f.name for f in dir_path.glob('*.data.txt') if f.is_file()])
-            logger.info(f"Found replay files in {directory}: {files}")
+            logger.debug(f"Found replay files in {directory}: {files}")
         except Exception as e:
             logger.error(f"Error scanning directory '{directory}' for replay files: {e}")
     else:
@@ -202,281 +202,257 @@ def close_live_file(acquire_lock=True):
 # _queue_message_from_replay(), _replay_thread_target(), replay_from_file(), stop_replay()
 # should remain the same as in Response #19.
 
-def _queue_message_from_replay(line_content):
+def _queue_message_from_replay(message_data): # Argument is now the parsed message (dict/list)
     """
-    Parses the line_content (expected JSON string) and queues messages
-    in the standard dictionary format {"stream":..., "data":..., "timestamp":...}.
-    It determines the timestamp based on embedded data if possible.
-    Returns the number of messages successfully queued from this line.
+    Helper for replay loop: Processes parsed message data (dict/list)
+    and queues structured items.
     """
-    queued_count = 0
+    put_count = 0
     try:
-        # Decode the JSON from the raw line content
-        message_data = json.loads(line_content)
-        default_timestamp = datetime.datetime.now(timezone.utc).isoformat() + 'Z' # Fallback
+        # --- REMOVED redundant json.loads(line_content) ---
 
-        # Handle {"M": [...]} blocks
-        if isinstance(message_data, dict) and 'M' in message_data and isinstance(message_data['M'], list):
-            for msg_container in message_data['M']:
-                if isinstance(msg_container, dict) and msg_container.get("M") == "feed":
-                    msg_args = msg_container.get("A")
-                    if isinstance(msg_args, list) and len(msg_args) >= 2:
-                        stream_name_raw = msg_args[0]
-                        data_content = msg_args[1]
-                        embedded_ts_str = msg_args[2] if len(msg_args) > 2 else None
-                        # Use embedded timestamp for the item, or fallback
-                        final_timestamp = embedded_ts_str if embedded_ts_str else default_timestamp
-
-                        stream_name = stream_name_raw
-                        actual_data = data_content
-                        # Decompress if needed
-                        if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
-                            stream_name = stream_name_raw[:-2]
-                            actual_data = utils._decode_and_decompress(data_content) # Use utils
-                            if actual_data is None: logger.warning(f"Decode fail M block: {stream_name_raw}"); continue # Skip this message
-
-                        # Queue the dictionary
-                        if actual_data is not None:
-                            item_to_queue = {"timestamp": final_timestamp, "stream": stream_name, "data": actual_data}
-                            # Debug log can be verbose, consider commenting out when working
-                            # logger.debug(f"REPLAY QUEUE PUT (from M): Type={type(item_to_queue)}, Keys={' '.join(item_to_queue.keys())}, Stream={stream_name}")
-                            app_state.data_queue.put(item_to_queue)
-                            queued_count += 1
-                    else: logger.warning(f"Malformed 'feed' args in M block: {msg_args}")
-                # else: Skip non-"feed" messages within "M" block silently
-
-        # Handle {"R": {...}} blocks (Snapshots)
-        elif isinstance(message_data, dict) and "R" in message_data:
+        # Now directly check the type of the passed message_data
+        if isinstance(message_data, dict) and "R" in message_data:
+            # Logic to handle R block (Snapshot)
             snapshot_data = message_data.get("R", {})
             if isinstance(snapshot_data, dict):
-                # Use Heartbeat timestamp as the single timestamp for all items in snapshot, or fallback
-                snapshot_ts = snapshot_data.get("Heartbeat", {}).get("Utc") or default_timestamp
+                snapshot_ts = snapshot_data.get("Heartbeat", {}).get("Utc") or (datetime.datetime.now(timezone.utc).isoformat() + 'Z')
                 for stream_name_raw, stream_data in snapshot_data.items():
                     stream_name = stream_name_raw; actual_data = stream_data
                     if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
                         stream_name = stream_name_raw[:-2]
-                        actual_data = utils._decode_and_decompress(stream_data) # Use utils
-                        if actual_data is None: logger.warning(f"Decode fail R block: {stream_name_raw}"); continue
-                    # Queue individual items from the snapshot
+                        actual_data = utils._decode_and_decompress(stream_data)
+                        if actual_data is None: logger.warning(f"Failed decode {stream_name_raw} in R"); continue
                     if actual_data is not None:
-                        item_to_queue = {"timestamp": snapshot_ts, "stream": stream_name, "data": actual_data}
-                        # logger.debug(f"REPLAY QUEUE PUT (from R): Type={type(item_to_queue)}, Keys={' '.join(item_to_queue.keys())}, Stream={stream_name}")
-                        app_state.data_queue.put(item_to_queue)
-                        queued_count += 1
-            else: logger.warning(f"Snapshot block 'R' content not dict: {type(snapshot_data)}")
+                        app_state.data_queue.put({"stream": stream_name, "data": actual_data, "timestamp": snapshot_ts})
+                        put_count += 1
+                # Log moved outside inner loop
+                if put_count > 0: logger.debug(f"Queued {put_count} streams from snapshot (R) block.")
+            else:
+                logger.warning(f"Snapshot block 'R' non-dict: {type(snapshot_data)}")
 
-        # Handle direct list messages: ["StreamName", data, timestamp?]
         elif isinstance(message_data, list) and len(message_data) >= 2:
-             stream_name_raw = message_data[0]
-             data_content = message_data[1]
-             embedded_ts_str = message_data[2] if len(message_data) > 2 else None
-             final_timestamp = embedded_ts_str if embedded_ts_str else default_timestamp
+            # Logic to handle direct list ["StreamName", data, "Timestamp"]
+            stream_name_raw = message_data[0]; data_content = message_data[1]
+            timestamp_for_queue = message_data[2] if len(message_data) > 2 else (datetime.datetime.now(timezone.utc).isoformat() + 'Z')
+            stream_name = stream_name_raw; actual_data = data_content
+            if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
+                stream_name = stream_name_raw[:-2]
+                actual_data = utils._decode_and_decompress(data_content)
+                if actual_data is None: logger.warning(f"Failed decode {stream_name_raw} list msg"); return 0
+            if actual_data is not None:
+                app_state.data_queue.put({"stream": stream_name, "data": actual_data, "timestamp": timestamp_for_queue})
+                put_count += 1
 
-             stream_name = stream_name_raw
-             actual_data = data_content
-             # Decompress if needed
-             if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
-                 stream_name = stream_name_raw[:-2]
-                 actual_data = utils._decode_and_decompress(data_content) # Use utils
-                 if actual_data is None: logger.warning(f"Decode fail direct list: {stream_name_raw}"); return 0
+        elif isinstance(message_data, dict) and not message_data: # Heartbeat {}
+             app_state.data_queue.put({"stream": "Heartbeat", "data": {}, "timestamp": datetime.datetime.now(timezone.utc).isoformat() + 'Z'})
+             put_count += 1
 
-             # Queue the dictionary
-             if actual_data is not None:
-                 item_to_queue = {"timestamp": final_timestamp, "stream": stream_name, "data": actual_data}
-                 # logger.debug(f"REPLAY QUEUE PUT (from List): Type={type(item_to_queue)}, Keys={' '.join(item_to_queue.keys())}, Stream={stream_name}")
-                 app_state.data_queue.put(item_to_queue)
-                 queued_count += 1
+        # Handle M blocks if they weren't handled in the main loop (they are in Response 49 version)
+        # If _replay_thread_target doesn't handle M blocks, add logic here:
+        elif isinstance(message_data, dict) and "M" in message_data and isinstance(message_data["M"], list):
+            queued_count_m = 0; last_ts_in_m = None
+            for msg_container in message_data["M"]:
+                if isinstance(msg_container, dict) and msg_container.get("M") == "feed":
+                    msg_args = msg_container.get("A")
+                    if isinstance(msg_args, list) and len(msg_args) >= 2:
+                         snr=msg_args[0]; dc=msg_args[1]; last_ts_in_m = msg_args[2] if len(msg_args)>2 else datetime.datetime.now(timezone.utc).isoformat()+'Z'
+                         sn=snr; ad=dc
+                         if isinstance(snr, str) and snr.endswith('.z'): sn=snr[:-2]; ad=utils._decode_and_decompress(dc)
+                         if ad is not None: app_state.data_queue.put({"stream":sn,"data":ad,"timestamp":last_ts_in_m}); queued_count_m+=1
+            put_count += queued_count_m # Add queued count from M block
+        # else: logger.debug(f"_queue_message_from_replay skipped: {type(message_data)}")
 
-        # Silently ignore other valid JSON structures we don't need to queue
-        elif isinstance(message_data, dict) and not message_data: pass # Empty dict {}
-        elif isinstance(message_data, dict) and ("C" in message_data or "E" in message_data or "G" in message_data or "S" in message_data or "I" in message_data): pass # Control messages
-        else:
-             logger.warning(f"Unhandled JSON structure type in _queue_message_from_replay: {type(message_data)}")
 
-    except json.JSONDecodeError:
-        # Error already logged in _replay_thread_target
-        return 0 # Indicate nothing was queued
+    except queue.Full:
+        logger.warning("Replay: Data queue full! Discarding message(s).")
     except Exception as e:
-        logger.error(f"Unexpected error in _queue_message_from_replay for line '{line_content[:100]}...': {e}", exc_info=True)
-        return 0 # Indicate nothing was queued
+        # --- CORRECTED ERROR LOGGING ---
+        # Convert the message_data (dict/list) to string for logging, then slice
+        error_data_str = str(message_data)
+        logger.error(f"Unexpected error in _queue_message_from_replay for data '{error_data_str[:100]}...': {e}", exc_info=True)
+        # --- END CORRECTION ---
+    return put_count # Return how many messages were actually queued
 
-    return queued_count # Return number of messages actually queued from this line
 
-def _replay_thread_target(filename, speed=1.0):
+def _replay_thread_target(filename, initial_speed=1.0): # Renamed arg for clarity
     """
     Reads the replay file line by line, extracting EMBEDDED timestamps
-    to calculate delays adjusted by speed, and queues messages.
+    to calculate delays adjusted by the CURRENT speed (read from app_state),
+    and queues messages.
     """
-    # Use globals().get() workaround if the NameError persists in your environment
-    # global replay_thread # Keep global for assignment if needed below
-    filepath = config.REPLAY_DIR / filename # Use config path if defined
-    logger.info(f"Replay thread started for file: {filepath} at speed: {speed}x")
+    global replay_thread # Ensure global keyword is used if assigning to module variable later
+    filepath = config.REPLAY_DIR / filename
+    logger.info(f"Replay thread started for file: {filepath} at initial speed: {initial_speed}x")
 
-    # --- Speed validation ---
-    try:
-        playback_speed = float(speed)
-        if playback_speed <= 0 or math.isnan(playback_speed) or math.isinf(playback_speed):
-             logger.warning(f"Invalid playback speed ({speed}) received. Defaulting to 1.0x.")
-             playback_speed = 1.0
-    except (ValueError, TypeError):
-        logger.warning(f"Could not convert speed ({speed}) to float. Defaulting to 1.0x.")
-        playback_speed = 1.0
-    # --- End Speed validation ---
+    # Validate initial speed only for logging, actual speed read from state
+    try: initial_playback_speed = float(initial_speed) if not (math.isnan(float(initial_speed)) or math.isinf(float(initial_speed)) or float(initial_speed) <= 0) else 1.0
+    except: initial_playback_speed = 1.0
 
-    last_message_dt = None # Store the datetime object of the last processed message timestamp used for delay
-    lines_processed = 0
-    lines_skipped_json_error = 0
-    lines_skipped_other = 0
-    first_message_processed = False
+    last_message_dt = None
+    lines_processed = 0; lines_skipped_json_error = 0; lines_skipped_other = 0; first_message_processed = False
+    playback_status = "Running"
+    start_real_time = time.monotonic()
+    first_line_dt = None
 
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
-                if app_state.stop_event.is_set():
-                    logger.info("Replay thread: Stop event detected, exiting.")
-                    break
+                if app_state.stop_event.is_set(): logger.info("Replay thread: Stop event detected."); playback_status="Stopped"; break
+                line = line.strip();
+                if not line: continue
 
-                line = line.strip()
-                if not line: continue # Skip empty lines
-
-                start_time_line = time.monotonic() # For adjusting sleep based on processing time
-                current_message_dt = None # Timestamp for the *current* message used for delay calculation
-                timestamp_str_for_delay = None # String version of timestamp used for delay calculation
-                time_to_wait = 0 # Initialize delay for this line
+                start_time_line = time.monotonic()
+                current_message_dt = None; timestamp_str_for_delay = None; time_to_wait = 0
 
                 try:
-                    # Always try to load the line as JSON
                     raw_message = json.loads(line)
-                    message_queued_count = 0 # Track messages queued from this line
+                    queued_count = 0
 
-                    # --- Timestamp Extraction FOR DELAY ---
-                    # Try to find a timestamp suitable for delay calculation (typically A[2])
+                    # --- Timestamp Extraction FOR DELAY (same as user's code) ---
                     if isinstance(raw_message, dict) and 'M' in raw_message and isinstance(raw_message['M'], list):
-                        # Look in the *last* "feed" message within the "M" block for A[2]
-                        for msg_container in reversed(raw_message['M']): # Check from the end
+                        for msg_container in reversed(raw_message['M']):
                              if isinstance(msg_container, dict) and msg_container.get("M") == "feed":
-                                 msg_args = msg_container.get("A")
-                                 if isinstance(msg_args, list) and len(msg_args) > 2:
-                                     timestamp_str_for_delay = msg_args[2] # Found potential timestamp string
-                                     if timestamp_str_for_delay: break # Use the first one found from the end
+                                 msg_args = msg_container.get("A");
+                                 if isinstance(msg_args, list) and len(msg_args) > 2 and msg_args[2]:
+                                     timestamp_str_for_delay = msg_args[2]; break
                     elif isinstance(raw_message, list) and len(raw_message) > 2:
-                         # For direct list messages ["StreamName", data, timestamp]
                          timestamp_str_for_delay = raw_message[2]
+                    if timestamp_str_for_delay: current_message_dt = utils.parse_iso_timestamp_safe(timestamp_str_for_delay, line_num)
+                    # --- End Timestamp Extraction ---
 
-                    # If we found a timestamp string for delay, parse it
-                    if timestamp_str_for_delay:
-                         current_message_dt = utils.parse_iso_timestamp_safe(timestamp_str_for_delay, line_num)
+                    # --- Process and Queue ---
+                    # Pass the already parsed JSON object to the helper
+                    queued_count = _queue_message_from_replay(raw_message) # Pass parsed dict/list
+                    if queued_count > 0: lines_processed += queued_count
+                    else: lines_skipped_other += 1; continue # Skip delay if nothing useful queued
 
-                    # --- End Timestamp Extraction FOR DELAY ---
+                    # --- Delay Calculation ---
+                    if current_message_dt: # If we successfully parsed a timestamp
+                        if not first_message_processed: time_to_wait = 0; first_message_processed = True; first_line_dt = current_message_dt; start_real_time = time.monotonic()
+                        elif last_message_dt:
+                             try: time_diff_seconds = (current_message_dt - last_message_dt).total_seconds(); time_to_wait = max(0, time_diff_seconds)
+                             except Exception as dt_err: logger.warning(f"Time diff error L{line_num}: {dt_err}"); time_to_wait = 0
+                        last_message_dt = current_message_dt # Update last timestamp *used for delay calc*
 
-                    # --- Process and Queue the message(s) using the other function ---
-                    # This function handles different structures ('M', 'R', list) and puts DICTs on queue
-                    queued_count = _queue_message_from_replay(line_content=line) # Pass raw line content
-
-                    if queued_count > 0: lines_processed += queued_count # Count based on actual queued items
-                    # Don't increment skipped here, _queue_message handles logging warnings for bad structures
-
-                    # --- Delay Calculation (based on extracted timestamp for delay) ---
-                    if current_message_dt: # If we successfully parsed a timestamp suitable for delay
-                        if not first_message_processed:
-                             time_to_wait = 0 # No delay for the very first timestamped message
-                             first_message_processed = True
-                        elif last_message_dt: # If we have a timestamp from the previous relevant line
-                             try:
-                                 time_diff_seconds = (current_message_dt - last_message_dt).total_seconds()
-                                 time_to_wait = max(0, time_diff_seconds) # Ensure non-negative
-                             except Exception as dt_err:
-                                 logger.warning(f"Error calculating time diff line {line_num}: {dt_err}")
-                                 time_to_wait = 0 # Default to no delay on error
-                        # else: last_message_dt is None (should only happen before first message)
-
-                        # ** IMPORTANT: Update last_message_dt ONLY if we used its timestamp for delay calc **
-                        last_message_dt = current_message_dt
-
-                    # else: No usable timestamp found in this line for delay calc, time_to_wait remains 0
-
-                except json.JSONDecodeError:
-                     lines_skipped_json_error += 1
-                     if line_num > 5: # Be less noisy about initial non-json lines
-                         logger.warning(f"Invalid JSON line {line_num} (skipped): {line[:100]}...")
-                     continue # Skip sleep logic for lines that aren't valid JSON
+                except json.JSONDecodeError as e: # ADDED COLON ':' and optional 'as e'
+                    lines_skipped_json_error += 1
+                    # Log less verbosely, include error message
+                    if line_num > 5: logger.warning(f"Invalid JSON L{line_num} (skipped): {e} - Line: {line[:100]}...")
+                    continue # Skip sleep logic for lines that aren't valid JSON
+                # --- >>> END CORRECTION <<< ---
+                except queue.Full:
+                    logger.warning(f"Replay Queue full L{line_num}"); time.sleep(0.1) # Pause if queue full
+                    continue # Skip sleep logic if queue full
                 except Exception as e:
-                     lines_skipped_other += 1
-                     logger.error(f"Error processing line {line_num}: {e} - Line: {line[:100]}...", exc_info=True)
-                     continue # Skip sleep logic on unexpected error
+                    lines_skipped_other += 1
+                    logger.error(f"Error processing L{line_num}: {e} - Line: {line[:100]}...", exc_info=True)
+                    continue # Skip sleep logic on unexpected error
 
                 # --- Apply Sleep Logic ---
                 if time_to_wait > 0:
-                    target_delay = time_to_wait / playback_speed
+                    # --- >>> READ CURRENT SPEED FROM app_state <<< ---
+                    current_playback_speed = 1.0 # Default
+                    try:
+                         with app_state.app_state_lock: current_playback_speed = float(app_state.replay_speed)
+                         if current_playback_speed <= 0 or math.isnan(current_playback_speed) or math.isinf(current_playback_speed): current_playback_speed = 1.0
+                    except Exception: current_playback_speed = 1.0 # Fallback on error reading state
+                    # --- >>> END READ SPEED <<< ---
+
+                    target_delay = time_to_wait / current_playback_speed # Use current speed
                     processing_time = time.monotonic() - start_time_line
-                    # Simple adjustment: subtract processing time from target delay
                     adjusted_sleep_time = max(0, target_delay - processing_time)
+                    final_sleep = min(adjusted_sleep_time, 5.0) # Max sleep 5s
 
-                    max_reasonable_sleep = 5.0 # Prevent excessively long sleeps if timestamps jump weirdly
-                    final_sleep = min(adjusted_sleep_time, max_reasonable_sleep)
-
-                    if final_sleep > 0.001: # Avoid sleep calls for negligible amounts
-                        # logger.debug(f"Line {line_num}: Wait={time_to_wait:.3f}, Speed={playback_speed:.1f}, Sleep={final_sleep:.3f} (Proc: {processing_time:.3f})")
-                        time.sleep(final_sleep)
-                # else: No sleep if time_to_wait is 0
-
+                    if final_sleep > 0.001:
+                        # logger.debug(f"L{line_num}: Wait={time_to_wait:.3f}, Speed={current_playback_speed:.1f}, Sleep={final_sleep:.3f}")
+                        # Check stop event DURING sleep
+                        if app_state.stop_event.wait(final_sleep):
+                             logger.info("Replay thread: Stop event detected during sleep.")
+                             playback_status = "Stopped"
+                             break # Exit outer loop if stopped
 
             # End of file loop
-            logger.info(f"Replay file '{filename}' finished. Queued Messages: {lines_processed}, Skipped JSON: {lines_skipped_json_error}, Skipped Other: {lines_skipped_other}")
+            if playback_status == "Running": logger.info(f"Replay file '{filename}' finished. Queued: {lines_processed}, SkipJSON: {lines_skipped_json_error}, SkipOther: {lines_skipped_other}"); playback_status="Complete"
 
-    except FileNotFoundError:
-        logger.error(f"Replay Error: File not found at {filepath}")
-        with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": f"Error: Replay file not found"})
-    except Exception as e:
-        logger.error(f"Replay Error: An unexpected error occurred reading {filepath}: {e}", exc_info=True)
-        with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": f"Error: Replay failed ({type(e).__name__})"})
-    finally:
-        # Clean up state
+    except FileNotFoundError: logger.error(f"Replay Error: File not found at {filepath}"); playback_status="Error - File Not Found"
+    except Exception as e: logger.error(f"Replay Error: Unexpected error {filepath}: {e}", exc_info=True); playback_status="Error - Runtime"
+    finally: # Cleanup
+        logger.info(f"Replay thread finishing. Final Status: {playback_status}")
         with app_state.app_state_lock:
-            if app_state.app_status['state'] == "Replaying":
-                # Determine final state based on whether stop was triggered or file ended naturally
-                final_state = "Stopped" if app_state.stop_event.is_set() else "Playback Complete"
-                final_conn_msg = "Replay Stopped" if app_state.stop_event.is_set() else "Replay Finished"
-                app_state.app_status['state'] = final_state
-                app_state.app_status['connection'] = final_conn_msg
+            final_state = "Playback Complete" if playback_status == "Complete" else "Stopped" if playback_status == "Stopped" else "Error"
+            final_conn_msg = playback_status
+            # Only update state if it was still 'Replaying' or 'Stopping' (avoid overwriting Error set elsewhere)
+            if app_state.app_status["state"] in ["Replaying", "Initializing", "Stopping"]:
+                 app_state.app_status.update({"state": final_state, "connection": final_conn_msg})
             app_state.app_status['current_replay_file'] = None
-        logger.info(f"Replay thread for '{filename}' finishing execution.")
-
-        # Clean up the global replay_thread variable using the globals().get() workaround if needed
-        current_thread_obj = globals().get('replay_thread')
-        if threading.current_thread() is current_thread_obj:
-             # Need global keyword here because we are *assigning* to the module variable
-             global replay_thread
-             replay_thread = None
+        # Clean up module-level thread variable only if it's THIS thread
+        if threading.current_thread() is globals().get('replay_thread'):
+             globals()['replay_thread'] = None
 
 
 # *** MODIFIED replay_from_file to accept and pass speed ***
-def replay_from_file(filename, speed=1.0): # Added speed argument with default
-    """Starts the replay process in a background thread with a given speed."""
+def replay_from_file(data_file_path, replay_speed=1.0):
+    """Starts the replay thread, returning True on success, False on failure."""
     global replay_thread
+
+    # --- Pre-checks ---
     if replay_thread and replay_thread.is_alive():
         logger.warning("Replay already in progress. Please stop the current replay first.")
-        return
+        # --- Add Log ---
+        logger.debug("replay_from_file returning False (already running)")
+        return False
 
-    if app_state.stop_event.is_set():
-         logger.warning("Stop event was set before starting replay, clearing it.")
-         app_state.stop_event.clear()
+    replay_file_path_obj = Path(data_file_path)
+    if not replay_file_path_obj.is_file():
+        logger.error(f"Replay file not found or not a file: {replay_file_path_obj}")
+        with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": f"File Not Found"})
+        # --- Add Log ---
+        logger.debug("replay_from_file returning False (file not found)")
+        return False
 
-    logger.info(f"Starting replay for file: {filename} at speed {speed}x")
+    # --- Prepare State ---
+    # ... (state clearing logic remains the same) ...
+    app_state.stop_event.clear(); logger.debug("Stop event cleared (replay).")
     with app_state.app_state_lock:
-        app_state.app_status.update({
-            "state": "Replaying",
-            "connection": f"Replaying: {filename} ({speed}x)", # Include speed in status
-            "current_replay_file": filename
-        })
-        # Clear previous data stores if needed (uncomment if desired)
-        # logger.info("Clearing previous session data for replay...")
-        # app_state.data_store.clear(); app_state.timing_state.clear(); app_state.track_status_data.clear()
-        # app_state.session_details.clear(); app_state.race_control_log.clear()
+        logger.info("Replay mode: Clearing previous state...")
+        app_state.app_status.update({"state": "Initializing", "connection": f"Preparing: {replay_file_path_obj.name}", "current_replay_file": replay_file_path_obj.name})
+        app_state.data_store.clear(); app_state.timing_state.clear(); app_state.track_status_data.clear()
+        app_state.session_details.clear(); app_state.race_control_log.clear(); app_state.track_coordinates_cache = {'session_key': None}
+        while not app_state.data_queue.empty():
+             try: app_state.data_queue.get_nowait()
+             except queue.Empty: break
+    logger.info("Replay mode: Previous state cleared.")
 
-    # Create and start the replay thread, passing filename AND speed
-    replay_thread = threading.Thread(target=_replay_thread_target, args=(filename, speed), name="ReplayThread", daemon=True)
-    replay_thread.start()
+
+    # --- Start Thread with Error Handling ---
+    try:
+        logger.info(f"Starting replay thread for file: {replay_file_path_obj.name} at speed {replay_speed}x")
+        replay_thread = threading.Thread(
+            target=_replay_thread_target,
+            args=(str(replay_file_path_obj), replay_speed),
+            name="ReplayThread", daemon=True)
+        replay_thread.start()
+        logger.info(f"Replay thread initiated successfully for {replay_file_path_obj.name}")
+        
+        with app_state.app_state_lock:
+            app_state.app_status.update({"state": "Replaying", "connection": f"File: {replay_file_path_obj.name}"})
+            # --- >>> ADD THIS LOG <<< ---
+            logger.debug(f"State set to 'Replaying' in replay_from_file. Current app_status: {app_state.app_status}")
+            # --- >>> END ADDED LOG <<< ---
+        # --- Add Log ---
+        logger.debug("replay_from_file returning True")
+        return True # Explicitly return True on success
+
+    except Exception as e:
+        logger.error(f"Failed to create or start replay thread: {e}", exc_info=True)
+        with app_state.app_state_lock:
+            app_state.app_status.update({"state": "Error", "connection": "Replay Thread Failed Start"})
+            app_state.app_status['current_replay_file'] = None
+        # --- Add Log ---
+        logger.debug("replay_from_file returning False (exception)")
+        return False # Explicitly return False on error
+
 
 def stop_replay():
     """Stops the currently running replay thread. (Implementation from Response #19)"""
