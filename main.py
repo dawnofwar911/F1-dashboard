@@ -38,7 +38,7 @@ def setup_logging():
     """Configures logging for the application."""
     log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     # Use config level? Or keep fixed? Let's use fixed INFO for main, DEBUG set earlier.
-    log_level_main = logging.INFO  # Default level for console
+    log_level_main = logging.DEBUG  # Default level for console
     log_level_signalr = logging.DEBUG # Need DEBUG for raw messages if using logging method
 
     # Main application logger

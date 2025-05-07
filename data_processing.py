@@ -15,6 +15,7 @@ import app_state
 
 # Get logger
 main_logger = logging.getLogger("F1App.DataProcessing")
+logger = logging.getLogger("F1App.DataProcessing")
 
 # --- Individual Stream Processing Functions ---
 # These functions now read from and write to the variables imported from app_state
