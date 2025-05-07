@@ -590,134 +590,293 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
     # Return all outputs in the correct order
     return details_children, lap_options, lap_value, lap_disabled, telemetry_figure
 
-def get_valid_float_coord(pd, k, cn):
-    if not isinstance(pd,dict): return None
-    val=pd.get(k)
-    if val is None: return None
-    try: fv=float(val); return fv if not (math.isnan(fv) or math.isinf(fv)) else None
-    except: return None
 
 # --- Track Map Callback ---
 @app.callback(
     Output('track-map-graph', 'figure'),
-    Input('interval-component-slow', 'n_intervals')
+    Input('interval-component-medium', 'n_intervals')
 )
 def update_track_map(n):
     start_time_callback = time.monotonic()
-    logger.debug(f"update_track_map (Static Plot v3) Tick {n}")
+    # logger.debug(f"update_track_map Tick {n}")
 
     empty_layout_dict = {
         'template': 'plotly_dark', 'height': 450, 'margin': dict(t=40, b=30, l=40, r=10),
-        'xaxis': {'visible': False, 'showticklabels': False, 'range': [-1,1]}, 
-        'yaxis': {'visible': False, 'showticklabels': False, 'range': [-1,1]}, 
+        'xaxis': {'visible': False, 'showticklabels': False, 'range': [-1, 1]},
+        'yaxis': {'visible': False, 'showticklabels': False, 'range': [-1, 1]},
         'title_text': "Track Map: Initializing..."
     }
-    
+
     current_session_key = None
-    track_x_coords, track_y_coords, x_range, y_range = None, None, None, None
+    track_x_coords, track_y_coords, track_linestring_obj, x_range, y_range = None, None, None, None, None
     needs_api_fetch = False
 
-    # --- Step 1: Determine Session Key & Attempt to Load Track Data from Cache ---
+    # --- Step 1 & 2: Determine Session Key, Fetch/Load & Validate Track Data ---
+    # (This block from Response 88 - ensure it's correctly implemented in your file)
+    # BEGIN Step 1 & 2 (Condensed from Response 88)
     with app_state.app_state_lock:
-        year = app_state.session_details.get('Year'); circuit_key = app_state.session_details.get('CircuitKey')
-        if not (year and circuit_key): # Fallback
-            s_info = app_state.data_store.get('SessionInfo', {}).get('data', {})
+        year = app_state.session_details.get('Year')
+        circuit_key = app_state.session_details.get('CircuitKey')
+        if not (year and circuit_key):
+            s_info = app_state.data_store.get(
+                'SessionInfo', {}).get('data', {})
             if isinstance(s_info, dict):
-                if not circuit_key: circuit_key = s_info.get('Circuit', {}).get('Key')
-                if not year: p = s_info.get('Path', ''); ps = p.split('/'); year = ps[1] if len(ps)>1 and ps[1].isdigit() and len(ps[1])==4 else None
-        if year and circuit_key: current_session_key = f"{year}_{circuit_key}"
-        
-        cached = app_state.track_coordinates_cache 
-        if current_session_key and cached.get('session_key') == current_session_key and cached.get('x') and cached.get('range_x'):
-            track_x_coords=cached.get('x'); track_y_coords=cached.get('y'); x_range=cached.get('range_x'); y_range=cached.get('range_y')
-            logger.debug(f"Using cached track coords/ranges for {current_session_key}.")
-        elif current_session_key: 
-            needs_api_fetch = True
-            logger.info(f"Cache miss for session: {current_session_key}")
-        else: 
-            return go.Figure(layout=empty_layout_dict.update({'title_text': 'Map: Session Info Missing'}))
-
-    # --- Step 2: Fetch API Data if Needed ---
-    if needs_api_fetch:
-        api_url = f"https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"; logger.info(f"Track API fetch for: {current_session_key}")
-        # Reset variables - they will be assigned below if successful
-        track_x_coords, track_y_coords, x_range, y_range = None, None, None, None 
-        try:
-            response=requests.get(api_url,headers={'User-Agent':'F1-Dashboard-App/0.5'},timeout=10, verify=False) 
-            response.raise_for_status(); map_api_data = response.json()
-            raw_x=map_api_data.get('x',[]); raw_y=map_api_data.get('y',[]); valid_coords_list=[]
-            if len(raw_x)==len(raw_y):
-                for xi,yi in zip(raw_x,raw_y):
-                    try: 
-                        xf,yf=float(xi),float(yi);
-                        if not(math.isnan(xf) or math.isinf(xf) or math.isnan(yf) or math.isinf(yf)): valid_coords_list.append((xf,yf))
-                    except: pass
-            
-            if len(valid_coords_list) > 1:
-                # Assign directly to function-scoped variables
-                track_x_coords=[c[0] for c in valid_coords_list]; track_y_coords=[c[1] for c in valid_coords_list]
+                if not circuit_key:
+                    circuit_key = s_info.get('Circuit', {}).get('Key')
+                if not year:
+                    p = s_info.get('Path', '')
+                    ps = p.split('/')
+                    year = ps[1] if len(ps) > 1 and ps[1].isdigit() and len(
+                        ps[1]) == 4 else None
+        if year and circuit_key:
+            current_session_key = f"{year}_{circuit_key}"
+        cached = app_state.track_coordinates_cache
+        if current_session_key and cached.get('session_key') == current_session_key:
+            track_x_coords = cached.get('x')
+            track_y_coords = cached.get('y')
+            track_linestring_obj = cached.get('linestring')
+            x_range = cached.get('range_x')
+            y_range = cached.get('range_y')
+            if not isinstance(track_linestring_obj, LineString) and track_x_coords and track_y_coords and len(track_x_coords) > 1:
                 try:
-                    x_m,x_M=np.min(track_x_coords),np.max(track_x_coords); y_m,y_M=np.min(track_y_coords),np.max(track_y_coords); 
-                    padding_x=(x_M-x_m)*0.05; padding_y=(y_M-y_m)*0.05 
-                    x_range=[x_m-padding_x,x_M+padding_x]; y_range=[y_m-padding_y,y_M+padding_y]
-                    logger.info(f"Track API data successfully processed (coords/ranges): {current_session_key}")
-                except Exception as e_range:
-                    logger.error(f"Error calculating ranges: {e_range}")
-                    x_range, y_range = None, None # Ensure ranges are None if calc fails
-            else: 
-                logger.warning(f"API no valid x/y pairs: {current_session_key}")
-                # Ensure coords/ranges are None
-                track_x_coords, track_y_coords, x_range, y_range = None, None, None, None 
-            
-            # Update cache with the processed values (which might be None)
-            with app_state.app_state_lock: 
-                app_state.track_coordinates_cache={'session_key':current_session_key,'x':track_x_coords,'y':track_y_coords,'linestring':None,'range_x':x_range,'range_y':y_range}
-                logger.debug(f"Cache updated for {current_session_key} after API attempt.")
-        except Exception as e: 
-            logger.error(f"Track API FAILED: {e}", exc_info=True)
-            # Ensure cache reflects failure
+                    ls = LineString(zip(track_x_coords, track_y_coords))
+                    track_linestring_obj = ls if ls.is_valid and ls.length > 1e-9 else None
+                    app_state.track_coordinates_cache['linestring'] = track_linestring_obj
+                    logger.info(
+                        f"Re-created LineString from cache for {current_session_key}")
+                except Exception as e_ls_cache:
+                    logger.error(
+                        f"Error re-creating LineString from cache: {e_ls_cache}")
+                    track_linestring_obj = None
+            # else: logger.debug(f"Using valid cached LineString for {current_session_key}. Type: {type(track_linestring_obj)}")
+        elif current_session_key:
+            needs_api_fetch = True
+        else:
+            return go.Figure(layout=empty_layout_dict.update({'title_text': 'Map: Session Info Missing'}))
+    if needs_api_fetch:
+        api_url = f"https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
+        logger.info(f"Track API fetch for: {current_session_key}")
+        track_x_coords, track_y_coords, track_linestring_obj, x_range, y_range = None, None, None, None, None
+        try:
+            response = requests.get(api_url, headers={
+                                    'User-Agent': 'F1-Dashboard-App/0.5'}, timeout=10, verify=False)
+            response.raise_for_status()
+            map_api_data = response.json()
+            raw_x = map_api_data.get('x', [])
+            raw_y = map_api_data.get('y', [])
+            valid_coords_list = []
+            if len(raw_x) == len(raw_y):
+                for xi, yi in zip(raw_x, raw_y):
+                    try:
+                        xf, yf = float(xi), float(yi)
+                        if not (math.isnan(xf) or math.isinf(xf) or math.isnan(yf) or math.isinf(yf)):
+                            valid_coords_list.append((xf, yf))
+                    except:
+                        pass
+            if len(valid_coords_list) > 1:
+                temp_track_x = [c[0] for c in valid_coords_list]
+                temp_track_y = [c[1] for c in valid_coords_list]
+                try:
+                    temp_ls = LineString(valid_coords_list)
+                    if temp_ls.is_valid and temp_ls.length > 1e-9:
+                        track_x_coords, track_y_coords, track_linestring_obj = temp_track_x, temp_track_y, temp_ls
+                        x_m, x_M = np.min(track_x_coords), np.max(
+                            track_x_coords)
+                        y_m, y_M = np.min(track_y_coords), np.max(
+                            track_y_coords)
+                        padding_x = (x_M-x_m)*0.05
+                        padding_y = (y_M-y_m)*0.05
+                        x_range = [x_m-padding_x, x_M+padding_x]
+                        y_range = [y_m-padding_y, y_M+padding_y]
+                        # Moved after range calculation
+                        logger.info(
+                            f"Track API data successfully processed: {current_session_key}")
+                    else:
+                        logger.warning("API LineString invalid/zero-length.")
+                        track_linestring_obj = None
+                except Exception as e_ls:
+                    logger.error(f"API LineString/range error: {e_ls}")
+                    track_linestring_obj = None
+            else:
+                logger.warning(
+                    f"API no valid x/y pairs: {current_session_key}")
+                track_linestring_obj = None
             with app_state.app_state_lock:
-                 app_state.track_coordinates_cache={'session_key':current_session_key,'x':None,'y':None,'linestring':None,'range_x':None,'range_y':None}
-            # Ensure local variables are None after failure
-            track_x_coords, track_y_coords, x_range, y_range = None, None, None, None
-    
-    # --- CRITICAL CHECK for basic plotting (using variables from cache or API) ---
-    if not track_x_coords or not track_y_coords or not x_range or not y_range:
-        logger.error(f"Map Layout Data Missing/Invalid for {current_session_key} before plotting. Cannot plot map.")
-        return go.Figure(layout=empty_layout_dict.update({'title_text': f"Map: Layout Data Missing ({current_session_key or '?'})"}))
-    logger.debug(f"Track Coords and Ranges are VALID for {current_session_key}. Plotting static map.")
+                app_state.track_coordinates_cache = {'session_key': current_session_key, 'x': track_x_coords,
+                                                     'y': track_y_coords, 'linestring': track_linestring_obj, 'range_x': x_range, 'range_y': y_range}
+                logger.debug(
+                    f"Cache updated for {current_session_key}. Linestring type: {type(track_linestring_obj)}")
+        except Exception as e:
+            logger.error(f"Track API FAILED: {e}", exc_info=True)
+        with app_state.app_state_lock:  # Re-read from cache
+            cached_data = app_state.track_coordinates_cache
+            if cached_data.get('session_key') == current_session_key:
+                track_x_coords = cached_data.get('x')
+                track_y_coords = cached_data.get('y')
+                track_linestring_obj = cached_data.get('linestring')
+                x_range = cached_data.get('range_x')
+                y_range = cached_data.get('range_y')
+    # END Step 1 & 2
 
-    # --- Step 3: Prepare STATIC Car Data ---
-    # (Same as Response 92) ...
-    static_traces = []
-    with app_state.app_state_lock: timing_state_snapshot = app_state.timing_state.copy()
-    driver_order = sorted(timing_state_snapshot.keys(), key=lambda x: int(x) if x.isdigit() else float('inf'))
-    static_car_x = [None]*len(driver_order); static_car_y = [None]*len(driver_order)
-    static_car_text = [""]*len(driver_order); static_car_colors = ["#808080"]*len(driver_order)
-    static_car_opacities = [1.0]*len(driver_order)
-    cars_plotted_count = 0
+    # --- Log crucial variables before the critical check ---
+    logger.debug(f"Before critical check for {current_session_key}:")
+    logger.debug(f"  track_linestring_obj type: {type(track_linestring_obj)}")
+    if isinstance(track_linestring_obj, LineString):
+        logger.debug(
+            f"  is_valid: {track_linestring_obj.is_valid}, length: {track_linestring_obj.length:.2f}")
+    logger.debug(
+        f"  track_x_coords type: {type(track_x_coords)}, length: {len(track_x_coords) if track_x_coords else 'None'}")
+    logger.debug(f"  x_range: {x_range}, y_range: {y_range}")
+    # --- End Log ---
+
+    if not isinstance(track_linestring_obj, LineString) or not track_linestring_obj.is_valid or track_linestring_obj.length < 1e-9:
+        title = f"Map: Layout Problem ({current_session_key or '?'})"
+        logger.error(f"{title}. LS type: {type(track_linestring_obj)}")
+        return go.Figure(layout=empty_layout_dict.update({'title_text': title}))
+    logger.debug(
+        f"Track LineString for {current_session_key} is VALID. Length: {track_linestring_obj.length:.2f}")
+
+    # --- Step 3: Prepare Car Data and Interpolation ---
+    base_traces = []
+    animation_frames = []
+    N_INTERPOLATION_STEPS = 5
+    with app_state.app_state_lock:
+        timing_state_snapshot = app_state.timing_state.copy()
+    driver_order = sorted(timing_state_snapshot.keys(
+    ), key=lambda x: int(x) if x.isdigit() else float('inf'))
+
+    base_car_x = [None]*len(driver_order)
+    base_car_y = [None]*len(driver_order)
+    base_car_text = [""]*len(driver_order)
+    base_car_colors = ["#808080"]*len(driver_order)
+    base_car_opacities = [1.0]*len(driver_order)
+    drivers_to_animate_this_segment = []
+
+    # Added default for car_num_for_log
+    def get_valid_float_coord(pos_dict, coord_key, car_num_for_log="N/A"):
+        """Safely gets and validates a coordinate as a float."""
+        if not isinstance(pos_dict, dict):
+            # logger.debug(f"Car {car_num_for_log}: pos_dict is not a dict for {coord_key}.")
+            return None
+
+        val = pos_dict.get(coord_key)  # Assign to 'val'
+
+        if val is None:               # Check 'val'
+            # logger.debug(f"Car {car_num_for_log}: Coord {coord_key} is None in pos_dict.")
+            return None
+        try:
+            f_val = float(val)
+            if math.isnan(f_val) or math.isinf(f_val):
+                # logger.warning(f"Car {car_num_for_log}: Coord {coord_key} is NaN/Inf ({f_val}).")
+                return None
+            return f_val
+        except (TypeError, ValueError):
+            # logger.warning(f"Car {car_num_for_log}: Coord {coord_key} ('{val}') not convertible to float.")
+            return None
+
+    # Populate base_car_x/y and drivers_to_animate
     for i, car_num_str in enumerate(driver_order):
-        ds=timing_state_snapshot.get(car_num_str,{}); cpd=ds.get('PositionData')
-        cX=get_valid_float_coord(cpd,'X',car_num_str); cY=get_valid_float_coord(cpd,'Y',car_num_str)
-        static_car_x[i], static_car_y[i] = cX, cY
-        if static_car_x[i] is not None: cars_plotted_count += 1
-        status=ds.get('Status','').lower();tla=ds.get('Tla',car_num_str);static_car_colors[i]=f"#{ds.get('TeamColour','808080')}";off_track=('pit' in status or 'retired' in status or 'out' in status or 'stopped' in status);static_car_text[i]="" if off_track else tla;static_car_opacities[i]=0.3 if off_track else 1.0
-    logger.debug(f"Prepared static data for {cars_plotted_count} cars.")
-    static_traces.append(go.Scattergl(x=track_x_coords, y=track_y_coords, mode='lines', line=dict(color='grey', width=2), name='Track', hoverinfo='none'))
-    static_traces.append(go.Scattergl(x=static_car_x, y=static_car_y, mode='markers+text', text=static_car_text, marker=dict(size=10, color=static_car_colors, line=dict(width=1,color='Black'), opacity=static_car_opacities), textposition='middle right', name='Cars', hoverinfo='text', textfont=dict(size=9, color='white')))
-    
-    # --- Step 4: Create Plotly Figure Layout ---
-    final_layout_dict = go.Layout(
-        xaxis=dict(showgrid=False,zeroline=False,showticklabels=False,range=x_range,visible=True), 
-        yaxis=dict(showgrid=False,zeroline=False,showticklabels=False,range=y_range,scaleanchor="x",scaleratio=1,visible=True), 
-        showlegend=False, uirevision=current_session_key, 
-        plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)', 
-        font=dict(color='white'), margin=dict(l=5,r=5,t=40,b=30), 
-        title_text=f"Track Map ({current_session_key or '?'})"
-    )
-    final_figure = go.Figure(data=static_traces, layout=final_layout_dict) 
-    
-    logger.debug(f"Map update (Static Plot) took {time.monotonic() - start_time_callback:.4f}s")
+        driver_state = timing_state_snapshot.get(car_num_str, {})
+        cpd = driver_state.get('PositionData')
+        ppd = driver_state.get('PreviousPositionData')
+        cX = get_valid_float_coord(cpd, 'X', car_num_str)
+        cY = get_valid_float_coord(cpd, 'Y', car_num_str)
+        pX = get_valid_float_coord(ppd, 'X', car_num_str)
+        pY = get_valid_float_coord(ppd, 'Y', car_num_str)
+        plot_X, plot_Y = (cX, cY) if cX is not None and cY is not None else (
+            pX, pY) if pX is not None and pY is not None else (None, None)
+        base_car_x[i], base_car_y[i] = plot_X, plot_Y
+        if base_car_x[i] is None:
+            logger.debug(f"Car {car_num_str}: No valid base pos for map.")
+        status = driver_state.get('Status', '').lower()
+        tla = driver_state.get('Tla', car_num_str)
+        base_car_colors[i] = f"#{driver_state.get('TeamColour','808080')}"
+        off_track = (
+            'pit' in status or 'retired' in status or 'out' in status or 'stopped' in status)
+        base_car_text[i] = "" if off_track else tla
+        base_car_opacities[i] = 0.3 if off_track else 1.0
+        if pX is not None and pY is not None and cX is not None and cY is not None and (ppd and cpd and ppd.get('Timestamp') != cpd.get('Timestamp')):
+            drivers_to_animate_this_segment.append(
+                {'idx': i, 'car_num': car_num_str, 'prev_X': pX, 'prev_Y': pY, 'curr_X': cX, 'curr_Y': cY})
+
+    for k_frame_idx in range(N_INTERPOLATION_STEPS + 1):
+        animation_frames.append(go.Frame(data=[go.Scattergl(x=list(
+            base_car_x), y=list(base_car_y))], name=f'frame{k_frame_idx}', traces=[1]))
+
+    for k_frame_idx in range(N_INTERPOLATION_STEPS + 1):
+        fraction = k_frame_idx / N_INTERPOLATION_STEPS
+        frame_x_coords = list(animation_frames[k_frame_idx].data[0].x)
+        frame_y_coords = list(animation_frames[k_frame_idx].data[0].y)
+        for anim_car_data in drivers_to_animate_this_segment:
+            idx = anim_car_data['idx']
+            car_num = anim_car_data['car_num']
+            pX, pY, cX, cY = anim_car_data['prev_X'], anim_car_data[
+                'prev_Y'], anim_car_data['curr_X'], anim_car_data['curr_Y']
+            # logger.debug(f"Car {car_num} Fr{k_frame_idx}: Anim P({pX:.2f},{pY:.2f}) C({cX:.2f},{cY:.2f})")
+            try:
+                prev_point_geom = Point(pX, pY)
+                curr_point_geom = Point(cX, cY)
+                dist_prev = track_linestring_obj.project(prev_point_geom)
+                dist_curr = track_linestring_obj.project(curr_point_geom)
+                track_len = track_linestring_obj.length
+                # logger.debug(f"Car {car_num} Fr{k_frame_idx}: Dists P={dist_prev}, C={dist_curr}")
+                if math.isnan(dist_prev) or math.isnan(dist_curr):
+                    logger.warning(
+                        f"Car {car_num} Fr{k_frame_idx}: NaN dist. P:{dist_prev}, C:{dist_curr}. Skipping.")
+                    continue
+                if dist_curr < track_len*0.1 and dist_prev > track_len*0.9 and (dist_prev-dist_curr) > track_len*0.5:
+                    dist_curr += track_len
+                interp_dist = dist_prev+(dist_curr-dist_prev)*fraction
+                final_interp_dist = interp_dist % track_len
+                interpolated_point = track_linestring_obj.interpolate(
+                    final_interp_dist)
+
+                # --- >>> VALIDATE INTERPOLATED POINT <<< ---
+                if interpolated_point is None or not interpolated_point.is_valid or interpolated_point.is_empty:
+                    logger.warning(
+                        f"Car {car_num} Fr{k_frame_idx}: Interpolated point is None or invalid/empty. Dist: {final_interp_dist:.2f}")
+                    # Keep base position for this frame (already in frame_x_coords[idx])
+                elif math.isnan(interpolated_point.x) or math.isnan(interpolated_point.y):
+                    logger.warning(
+                        f"Car {car_num} Fr{k_frame_idx}: Interpolated point has NaN coords. Point: {interpolated_point.wkt}. Dist: {final_interp_dist:.2f}")
+                else:
+                    frame_x_coords[idx] = interpolated_point.x
+                    frame_y_coords[idx] = interpolated_point.y
+            except Exception as e_interp:
+                logger.error(
+                    f"Interpolation car {car_num} Fr{k_frame_idx}: {e_interp}", exc_info=False)
+        animation_frames[k_frame_idx].data[0].x = frame_x_coords
+        animation_frames[k_frame_idx].data[0].y = frame_y_coords
+
+    # --- Step 4: Create Plotly Figure ---
+    # (Same as Response 88)
+    base_traces.append(go.Scattergl(x=track_x_coords, y=track_y_coords, mode='lines', line=dict(
+        color='grey', width=2), name='Track', hoverinfo='none'))
+    base_traces.append(go.Scattergl(x=base_car_x, y=base_car_y, mode='markers+text', text=base_car_text, marker=dict(size=10, color=base_car_colors, line=dict(
+        width=1, color='Black'), opacity=base_car_opacities), textposition='middle right', name='Cars', hoverinfo='text', textfont=dict(size=9, color='white')))
+    frame_duration = 800/(N_INTERPOLATION_STEPS +
+                          1) if N_INTERPOLATION_STEPS > 0 else 500
+    transition_duration = frame_duration*0.8
+    final_layout_dict = go.Layout(xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=x_range, visible=True if x_range else False), yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=y_range, scaleanchor="x" if x_range and y_range else None, scaleratio=1 if x_range and y_range else None, visible=True if y_range else False), showlegend=False, uirevision=current_session_key, plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'), margin=dict(
+        l=5, r=5, t=40, b=30), title_text=f"Track Map ({current_session_key or '?'})", updatemenus=[dict(type="buttons", direction="left", x=0.1, xanchor="right", y=0, yanchor="top", buttons=[dict(label="Play", method="animate", args=[None, {"frame": {"duration": frame_duration, "redraw": True}, "fromcurrent": True, "transition": {"duration": transition_duration, "easing": "linear"}, "mode": "immediate"}]), dict(label="Pause", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate", "transition": {"duration": 0}}])])])
+    effective_animation_frames = [f for f in animation_frames if f.data and f.data[0].x is not None and f.data[0].y is not None and any(
+        coord is not None for coord_list in (f.data[0].x, f.data[0].y) if isinstance(coord_list, list) for coord in coord_list)]
+    if not effective_animation_frames and (not any(x is not None for x in base_car_x)):
+        final_figure = go.Figure(data=[base_traces[0]] if base_traces and base_traces[0]
+                                 and base_traces[0].x else [], layout=final_layout_dict)
+        final_figure.update_layout(
+            title_text=f"Map: No Car Data ({current_session_key or '?'})")
+    elif not effective_animation_frames:
+        logger.debug("No valid anim frames, plotting static cars.")
+        final_figure = go.Figure(data=base_traces, layout=final_layout_dict)
+    else:
+        logger.debug(
+            f"Generated {len(effective_animation_frames)} effective anim frames.")
+        final_figure = go.Figure(
+            data=base_traces, layout=final_layout_dict, frames=effective_animation_frames)
+
+    logger.debug(
+        f"Map update took {time.monotonic() - start_time_callback:.4f}s")
     return final_figure
 
 # --- >>> ADDED: Driver Dropdown Update Callback <<< ---
