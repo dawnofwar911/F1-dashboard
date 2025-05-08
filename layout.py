@@ -43,9 +43,11 @@ def create_layout():
 
     layout = dbc.Container([
         # --- Added Interval Components ---
+        dcc.Interval(id='interval-component-map-animation', interval=100, n_intervals=0),
         dcc.Interval(id='interval-component-fast', interval=500, n_intervals=0),
         dcc.Interval(id='interval-component-medium', interval=1000, n_intervals=0),
         dcc.Interval(id='interval-component-slow', interval=5000, n_intervals=0),
+        dcc.Interval(id='interval-component-real-slow', interval=10000, n_intervals=0),
         html.Div(id='dummy-output-for-controls', style={'display': 'none'}),
         # --- End Added Intervals ---
 
@@ -108,7 +110,7 @@ def create_layout():
             dbc.Col([
                 html.H4("Track Map"),
                 dcc.Graph(id='track-map-graph', style={'height': '30vh', 'marginBottom': '10px'}), # Adjusted height
-
+                html.Div(id='dummy-cache-output', style={'display': 'none'}), # Add this hidden Div
                 html.H4("Driver Details & Telemetry"),
                 dcc.Dropdown(
                     id='driver-select-dropdown', # <<< DRIVER SELECTOR
