@@ -7,74 +7,16 @@ Updates the shared application state defined in app_state.py.
 import logging
 import time
 import queue # Needed for queue.Empty exception
-import requests
-from shapely.geometry import LineString
-import numpy as np
 import threading
 
 # Import shared state variables and lock
 import app_state
 # Import utility functions (if needed by any _process function directly)
-# import utils
+import utils
 
 # Get logger
 main_logger = logging.getLogger("F1App.DataProcessing")
 logger = logging.getLogger("F1App.DataProcessing")
-
-def _fetch_track_data_for_cache(session_key, year, circuit_key):
-    """Fetches track data from API. Returns a dict for the cache or None on failure."""
-    # Ensure year and circuit_key are usable strings for the URL
-    if not year or not circuit_key:
-        main_logger.error(f"Fetch Helper: Invalid year or circuit key ({year}, {circuit_key})")
-        return None # Return None to indicate failure
-        
-    api_url = f"https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
-    main_logger.info(f"Fetch Helper: API fetch initiated for: {api_url}")
-    track_x_coords, track_y_coords, track_linestring_obj, x_range, y_range = [None]*5 
-    try:
-        response = requests.get(api_url, headers={'User-Agent': 'F1-Dash/0.4'}, timeout=15) 
-        response.raise_for_status(); map_api_data = response.json()
-        temp_x_api = [float(p) for p in map_api_data.get('x', [])]; temp_y_api = [float(p) for p in map_api_data.get('y', [])]
-        if temp_x_api and temp_y_api and len(temp_x_api) == len(temp_y_api) and len(temp_x_api) > 1:
-            _api_ls = LineString(zip(temp_x_api, temp_y_api))
-            if _api_ls.length > 0:
-                track_x_coords, track_y_coords, track_linestring_obj = temp_x_api, temp_y_api, _api_ls
-                x_min, x_max = np.min(track_x_coords), np.max(track_x_coords); y_min, y_max = np.min(track_y_coords), np.max(track_y_coords)
-                pad_x = (x_max - x_min) * 0.05; pad_y = (y_max - y_min) * 0.05
-                x_range = [x_min - pad_x, x_max + pad_x]; y_range = [y_min - pad_y, y_max + pad_y]; 
-                main_logger.info(f"Fetch Helper: API SUCCESS for {session_key}.")
-            else: main_logger.warning(f"Fetch Helper: API {session_key} provided zero-length track.")
-        else: main_logger.warning(f"Fetch Helper: API {session_key} no valid x/y.")
-    except Exception as e_api: main_logger.error(f"Fetch Helper: API FAILED for {session_key}: {e_api}", exc_info=False) # Keep log concise
-
-    # Return results in a dictionary matching cache structure
-    cache_update_data = {
-        'session_key': session_key, 'x': track_x_coords, 'y': track_y_coords,
-        'linestring': track_linestring_obj, 'range_x': x_range, 'range_y': y_range
-    }
-    # Log what we are returning
-    ls_type = type(cache_update_data.get('linestring')).__name__
-    main_logger.debug(f"Fetch Helper: Returning data. Linestring Type={ls_type}, X is None: {track_x_coords is None}")
-    return cache_update_data
-
-
-# --- Target function for the background fetch thread ---
-def _background_track_fetch_and_update(session_key, year, circuit_key, app_state):
-    """Runs fetch in background and updates cache under lock."""
-    fetched_data = _fetch_track_data_for_cache(session_key, year, circuit_key)
-    if fetched_data: # Only update cache if fetch returned data (even if partial/None values)
-        with app_state.app_state_lock: # Acquire lock ONLY for cache update
-            # Check if session key hasn't changed AGAIN since fetch started
-            current_session_in_state = app_state.session_details.get('SessionKey')
-            if current_session_in_state == session_key:
-                main_logger.info(f"Background Fetch: Updating cache for {session_key}.")
-                app_state.track_coordinates_cache = fetched_data
-                ls_type = type(app_state.track_coordinates_cache.get('linestring')).__name__
-                main_logger.debug(f"Background Fetch: Cache updated. Linestring Type={ls_type}")
-            else:
-                main_logger.warning(f"Background Fetch: Session changed ({current_session_in_state}) while fetching for {session_key}. Discarding fetched data.")
-    else:
-        main_logger.error(f"Background Fetch: Fetch helper failed for {session_key}. Cache not updated.")
 
 # --- Individual Stream Processing Functions ---
 # These functions now read from and write to the variables imported from app_state
@@ -493,7 +435,7 @@ def _process_session_info(data, app_state):
         # Start fetch in background thread *after* releasing the main lock if needed
         if needs_fetch:
              fetch_thread = threading.Thread(
-                  target=_background_track_fetch_and_update, 
+                  target=utils._background_track_fetch_and_update, 
                   args=(new_session_key, year_str, circuit_key, app_state),
                   daemon=True # Allows main program to exit even if thread is running
              )

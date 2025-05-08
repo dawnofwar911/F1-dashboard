@@ -41,6 +41,22 @@ def create_layout():
     ]
     # --- End Column Definition ---
 
+    # BEGIN MODIFICATIONS FOR CLIENTSIDE ANIMATION
+    stores_and_intervals_for_clientside = [
+        dcc.Store(id='car-positions-store'),
+        dcc.Store(id='current-track-layout-cache-key-store'),
+        # Optional: Store for track layout if we want to pass it explicitly to JS,
+        # but for now, the initial figure load can handle it.
+        # dcc.Store(id='track-layout-store'),
+        dcc.Interval(
+            id='clientside-update-interval',
+            interval=1250,  # Update car data for JS every 1000 ms (1 second)
+            n_intervals=0,
+            disabled=True # Initially disabled, enable when session starts
+        )
+    ]
+    # END MODIFICATIONS FOR CLIENTSIDE ANIMATION
+
     layout = dbc.Container([
         # --- Added Interval Components ---
         dcc.Interval(id='interval-component-map-animation', interval=100, n_intervals=0),
@@ -49,7 +65,7 @@ def create_layout():
         dcc.Interval(id='interval-component-slow', interval=5000, n_intervals=0),
         dcc.Interval(id='interval-component-real-slow', interval=10000, n_intervals=0),
         html.Div(id='dummy-output-for-controls', style={'display': 'none'}),
-        # --- End Added Intervals ---
+        html.Div(children=stores_and_intervals_for_clientside),
 
         dbc.Row(dbc.Col(html.H1("F1 Live Timing SignalR Viewer"), width=12), className="mb-3"),
 
@@ -109,7 +125,7 @@ def create_layout():
             # --- Right Column ---
             dbc.Col([
                 html.H4("Track Map"),
-                dcc.Graph(id='track-map-graph', style={'height': '30vh', 'marginBottom': '10px'}), # Adjusted height
+                dcc.Graph(id='track-map-graph', style={'height': '450px', 'marginBottom': '10px'}), # Adjusted height
                 html.Div(id='dummy-cache-output', style={'display': 'none'}), # Add this hidden Div
                 html.H4("Driver Details & Telemetry"),
                 dcc.Dropdown(
