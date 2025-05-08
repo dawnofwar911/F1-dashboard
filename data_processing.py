@@ -7,6 +7,10 @@ Updates the shared application state defined in app_state.py.
 import logging
 import time
 import queue # Needed for queue.Empty exception
+import requests
+from shapely.geometry import LineString
+import numpy as np
+import threading
 
 # Import shared state variables and lock
 import app_state
@@ -16,6 +20,61 @@ import app_state
 # Get logger
 main_logger = logging.getLogger("F1App.DataProcessing")
 logger = logging.getLogger("F1App.DataProcessing")
+
+def _fetch_track_data_for_cache(session_key, year, circuit_key):
+    """Fetches track data from API. Returns a dict for the cache or None on failure."""
+    # Ensure year and circuit_key are usable strings for the URL
+    if not year or not circuit_key:
+        main_logger.error(f"Fetch Helper: Invalid year or circuit key ({year}, {circuit_key})")
+        return None # Return None to indicate failure
+        
+    api_url = f"https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
+    main_logger.info(f"Fetch Helper: API fetch initiated for: {api_url}")
+    track_x_coords, track_y_coords, track_linestring_obj, x_range, y_range = [None]*5 
+    try:
+        response = requests.get(api_url, headers={'User-Agent': 'F1-Dash/0.4'}, timeout=15) 
+        response.raise_for_status(); map_api_data = response.json()
+        temp_x_api = [float(p) for p in map_api_data.get('x', [])]; temp_y_api = [float(p) for p in map_api_data.get('y', [])]
+        if temp_x_api and temp_y_api and len(temp_x_api) == len(temp_y_api) and len(temp_x_api) > 1:
+            _api_ls = LineString(zip(temp_x_api, temp_y_api))
+            if _api_ls.length > 0:
+                track_x_coords, track_y_coords, track_linestring_obj = temp_x_api, temp_y_api, _api_ls
+                x_min, x_max = np.min(track_x_coords), np.max(track_x_coords); y_min, y_max = np.min(track_y_coords), np.max(track_y_coords)
+                pad_x = (x_max - x_min) * 0.05; pad_y = (y_max - y_min) * 0.05
+                x_range = [x_min - pad_x, x_max + pad_x]; y_range = [y_min - pad_y, y_max + pad_y]; 
+                main_logger.info(f"Fetch Helper: API SUCCESS for {session_key}.")
+            else: main_logger.warning(f"Fetch Helper: API {session_key} provided zero-length track.")
+        else: main_logger.warning(f"Fetch Helper: API {session_key} no valid x/y.")
+    except Exception as e_api: main_logger.error(f"Fetch Helper: API FAILED for {session_key}: {e_api}", exc_info=False) # Keep log concise
+
+    # Return results in a dictionary matching cache structure
+    cache_update_data = {
+        'session_key': session_key, 'x': track_x_coords, 'y': track_y_coords,
+        'linestring': track_linestring_obj, 'range_x': x_range, 'range_y': y_range
+    }
+    # Log what we are returning
+    ls_type = type(cache_update_data.get('linestring')).__name__
+    main_logger.debug(f"Fetch Helper: Returning data. Linestring Type={ls_type}, X is None: {track_x_coords is None}")
+    return cache_update_data
+
+
+# --- Target function for the background fetch thread ---
+def _background_track_fetch_and_update(session_key, year, circuit_key, app_state):
+    """Runs fetch in background and updates cache under lock."""
+    fetched_data = _fetch_track_data_for_cache(session_key, year, circuit_key)
+    if fetched_data: # Only update cache if fetch returned data (even if partial/None values)
+        with app_state.app_state_lock: # Acquire lock ONLY for cache update
+            # Check if session key hasn't changed AGAIN since fetch started
+            current_session_in_state = app_state.session_details.get('SessionKey')
+            if current_session_in_state == session_key:
+                main_logger.info(f"Background Fetch: Updating cache for {session_key}.")
+                app_state.track_coordinates_cache = fetched_data
+                ls_type = type(app_state.track_coordinates_cache.get('linestring')).__name__
+                main_logger.debug(f"Background Fetch: Cache updated. Linestring Type={ls_type}")
+            else:
+                main_logger.warning(f"Background Fetch: Session changed ({current_session_in_state}) while fetching for {session_key}. Discarding fetched data.")
+    else:
+        main_logger.error(f"Background Fetch: Fetch helper failed for {session_key}. Cache not updated.")
 
 # --- Individual Stream Processing Functions ---
 # These functions now read from and write to the variables imported from app_state
@@ -356,8 +415,6 @@ def _process_car_data(data):
                         except (ValueError, TypeError): value = None
                     lap_telemetry_history[data_key].append(value) # Append value or None
 
-
-
 def _process_session_data(data):
     """ Processes SessionData updates (like status). MUST be called within app_state.app_state_lock."""
     # global session_details # Removed global
@@ -377,50 +434,77 @@ def _process_session_data(data):
     except Exception as e:
         main_logger.error(f"Error processing SessionData: {e}", exc_info=True)
 
-def _process_session_info(data):
-    """ Processes SessionInfo data. MUST be called within app_state.app_state_lock. """
-    # global session_details # Removed global
-    if not isinstance(data, dict):
-        main_logger.warning(f"SessionInfo handler received non-dict data: {data}")
-        return
+def _process_session_info(data, app_state):
+    """ 
+    Processes SessionInfo data. MUST be called within app_state.app_state_lock.
+    Starts a background thread for proactive track data fetch if session changes.
+    """
+    if not isinstance(data, dict): main_logger.warning(f"SessionInfo non-dict: {data}"); return
     try:
-        # Use app_state.session_details
-        meeting_info = data.get('Meeting', {})
-        if not isinstance(meeting_info, dict): meeting_info = {}
-        circuit_info = meeting_info.get('Circuit', {})
-        if not isinstance(circuit_info, dict): circuit_info = {}
-        country_info = meeting_info.get('Country', {})
-        if not isinstance(country_info, dict): country_info = {}
+        # Extract info safely (ensure circuit_info is always a dict)
+        meeting_info = data.get('Meeting', {}); circuit_info = meeting_info.get('Circuit', {}); country_info = meeting_info.get('Country', {})
+        if not isinstance(circuit_info, dict): circuit_info = {} 
+        if not isinstance(meeting_info, dict): meeting_info = {} 
+        if not isinstance(country_info, dict): country_info = {} 
 
+        # Extract Year safely
+        year_str = None; start_date_str = data.get('StartDate')
+        if start_date_str and isinstance(start_date_str, str) and len(start_date_str) >= 4:
+             try: int(start_date_str[:4]); year_str = start_date_str[:4]
+             except ValueError: main_logger.warning(f"Invalid year in StartDate: {start_date_str}")
+        
+        circuit_key = circuit_info.get('Key') 
+
+        # Construct new session key if possible
+        new_session_key = f"{year_str}_{circuit_key}" if year_str and circuit_key is not None and str(circuit_key).strip() else None
+
+        # Get OLD session key BEFORE updating session_details
+        old_session_key = app_state.session_details.get('SessionKey')
+
+        # Update session_details 
+        app_state.session_details['Year'] = year_str
+        app_state.session_details['CircuitKey'] = circuit_key
+        app_state.session_details['SessionKey'] = new_session_key
         app_state.session_details['Meeting'] = meeting_info
         app_state.session_details['Circuit'] = circuit_info
         app_state.session_details['Country'] = country_info
         app_state.session_details['Name'] = data.get('Name')
         app_state.session_details['Type'] = data.get('Type')
-        app_state.session_details['StartDate'] = data.get('StartDate')
+        app_state.session_details['StartDate'] = start_date_str
         app_state.session_details['EndDate'] = data.get('EndDate')
         app_state.session_details['GmtOffset'] = data.get('GmtOffset')
         app_state.session_details['Path'] = data.get('Path')
+        
+        # Check if fetch is needed and start background thread
+        needs_fetch = False
+        if new_session_key:
+            main_logger.info(f"DataProcessing: SessionKey '{new_session_key}' set.")
+            cached_session_key = app_state.track_coordinates_cache.get('session_key')
+            if old_session_key != new_session_key or cached_session_key != new_session_key:
+                 main_logger.info(f"DataProcessing: Proactive track fetch needed for {new_session_key}")
+                 needs_fetch = True
+            else:
+                 main_logger.debug(f"DataProcessing: Cache key {new_session_key} OK. No fetch needed.")
+        else: # Invalid new session key
+             main_logger.warning(f"DataProcessing: Could not construct valid SessionKey. Clearing cache.")
+             app_state.session_details.pop('SessionKey', None)
+             app_state.track_coordinates_cache = {} # Clear track cache
 
-        year = None
-        start_date_str = data.get('StartDate')
-        if start_date_str and isinstance(start_date_str, str) and len(start_date_str) >= 4:
-             try: year = int(start_date_str[:4])
-             except ValueError: main_logger.warning(f"Could not parse year from StartDate: {start_date_str}")
-        app_state.session_details['Year'] = year
-        app_state.session_details['CircuitKey'] = circuit_info.get('Key')
+        # Start fetch in background thread *after* releasing the main lock if needed
+        if needs_fetch:
+             fetch_thread = threading.Thread(
+                  target=_background_track_fetch_and_update, 
+                  args=(new_session_key, year_str, circuit_key, app_state),
+                  daemon=True # Allows main program to exit even if thread is running
+             )
+             fetch_thread.start()
+             main_logger.info(f"DataProcessing: Background fetch thread started for {new_session_key}.")
 
-        # Log using app_state data
-        meeting_name = app_state.session_details.get('Meeting', {}).get('Name', 'N/A')
-        session_name = app_state.session_details.get('Name', 'N/A')
-        circuit_name_log = app_state.session_details.get('Circuit', {}).get('ShortName', 'N/A')
-        circuit_key_log = app_state.session_details.get('CircuitKey', 'N/A')
-        year_log = app_state.session_details.get('Year', 'N/A')
-        main_logger.info(f"Processed SessionInfo: Y:{year_log} {meeting_name} - {session_name} (Circuit: {circuit_name_log}, Key: {circuit_key_log})")
+        # Log summary
+        session_key_log = app_state.session_details.get('SessionKey', 'N/A') 
+        main_logger.info(f"Processed SessionInfo: ... -> Stored SessionKey: {session_key_log}") # Concise log
 
-    except Exception as e:
-        main_logger.error(f"Error processing SessionInfo data: {e}", exc_info=True)
-
+    except Exception as e: main_logger.error(f"Error processing SessionInfo: {e}", exc_info=True)
 
 # --- Main Processing Loop ---
 def data_processing_loop():
@@ -480,7 +564,7 @@ def data_processing_loop():
                          app_state.app_status["last_heartbeat"] = timestamp # Update dict in app_state
                     elif stream_name == "DriverList": _process_driver_list(actual_data)
                     elif stream_name == "TimingData": _process_timing_data(actual_data)
-                    elif stream_name == "SessionInfo": _process_session_info(actual_data)
+                    elif stream_name == "SessionInfo": _process_session_info(actual_data, app_state)
                     elif stream_name == "SessionData": _process_session_data(actual_data)
                     elif stream_name == "TimingAppData": _process_timing_app_data(actual_data)
                     elif stream_name == "TrackStatus": _process_track_status(actual_data)
