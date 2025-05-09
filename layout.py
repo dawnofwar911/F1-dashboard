@@ -40,7 +40,30 @@ def create_layout():
         {'name': 'DRS', 'id': 'DRS'},
     ]
     # --- End Column Definition ---
-
+    
+    track_map_config = {
+        'staticPlot': False,  # True would make it a static image, but False allows hover, Plotly.animate etc.
+        'displayModeBar': False, # This is the most effective way to remove all buttons and interactions tied to them
+        'scrollZoom': False, # Explicitly disable scroll to zoom
+        # The following are often defaults when displayModeBar is false, but let's be explicit
+        'editable': False,
+        'edits': {
+            'annotationPosition': False,
+            'annotationTail': False,
+            'annotationText': False,
+            'axisTitleText': False,
+            'colorbarLabel': False,
+            'colorbarTitleText': False,
+            'legendPosition': False,
+            'legendText': False,
+            'shapePosition': False,
+            'titleText': False
+        },
+        'autosizable': True, # Let graph resize with its container
+        'responsive': True,  # Make it responsive to window size changes
+        'displaylogo': False # Hides the Plotly logo
+    }
+    
     # BEGIN MODIFICATIONS FOR CLIENTSIDE ANIMATION
     stores_and_intervals_for_clientside = [
         dcc.Store(id='car-positions-store'),
@@ -125,7 +148,11 @@ def create_layout():
             # --- Right Column ---
             dbc.Col([
                 html.H4("Track Map"),
-                dcc.Graph(id='track-map-graph', style={'height': '450px', 'marginBottom': '10px'}), # Adjusted height
+                dcc.Graph(id='track-map-graph', style={'height': '450px', 'marginBottom': '10px'},config={
+                'displayModeBar': False, # Completely hide the modebar
+                'scrollZoom': False,     # Disable zooming with mouse scroll
+                'dragmode': False        # Disable drag modes (pan, zoom box)
+            }), # Adjusted height
                 html.Div(id='dummy-cache-output', style={'display': 'none'}), # Add this hidden Div
                 html.H4("Driver Details & Telemetry"),
                 dcc.Dropdown(

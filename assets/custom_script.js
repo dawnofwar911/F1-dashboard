@@ -51,7 +51,17 @@ window.dash_clientside.clientside = {
             console.warn('No traces with UIDs found. Cannot animate.');
             return window.dash_clientside.no_update;
         }
-
+        
+        if (gd.layout && (gd.layout.dragmode !== false || gd.layout.xaxis.fixedrange !== true)) {
+            console.log("Forcing layout changes to disable zoom/pan via JS");
+            Plotly.relayout(graphDivId, {
+                'dragmode': false,
+                'xaxis.fixedrange': true, // Disables zoom/pan on x-axis
+                'yaxis.fixedrange': true,  // Disables zoom/pan on y-axis
+                'modebar': false
+            });
+        }
+        
         // --- Prepare updates ---
         let dataUpdates = [];
         let traceIndicesToUpdate = [];
@@ -105,8 +115,8 @@ window.dash_clientside.clientside = {
                     data: dataUpdates,
                     traces: traceIndicesToUpdate
                 }, {
-                    transition: { duration: 900, easing: 'linear' },
-                    frame: { duration: 900, redraw: false }
+                    transition: { duration: 1200, easing: 'linear' },
+                    frame: { duration: 1200, redraw: false }
                 });
                 // console.log('Plotly.animate call appears successful.');
             } catch (e) {

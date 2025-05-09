@@ -727,72 +727,84 @@ def update_car_data_for_clientside(n_intervals):
 
     return processed_car_data
 
+# In callbacks.py
 
 @app.callback(
     Output('track-map-graph', 'figure', allow_duplicate=True),
-    # Receives the YYYY_CircuitKey string
-    Input('current-track-layout-cache-key-store', 'data'),
-    prevent_initial_call=True
+    # --- Trigger Change ---
+    Input('interval-component-medium', 'n_intervals'), # Trigger periodically (e.g., every 1 sec)
+    # --- State Inputs ---
+    State('current-track-layout-cache-key-store', 'data'), # Get the expected session ID
+    State('track-map-graph', 'figure'), # Get the CURRENT figure shown in the graph.
+    prevent_initial_call='initial_duplicate'
 )
-# This is the YYYY_CircuitKey (e.g., "2023_44")
-def initialize_track_map(expected_session_id):
-    logger.info(
-        f"Initializing track map. Expecting session ID: {expected_session_id}")
+def initialize_track_map(n_intervals, expected_session_id, current_figure):
+    # <<< START MODIFIED LOGIC >>>
+    if not expected_session_id:
+        # If no session is active, return an empty/waiting map only if graph isn't already showing that
+        # This prevents unnecessary updates when idle. Check if current figure exists and maybe has a specific title.
+        # For simplicity, we can just return no_update if no session ID is expected.
+        # logger.debug("Initialize Map check: No expected session ID.")
+        return dash.no_update
+
+    # --- Check if the CURRENTLY displayed figure is already correct ---
+    # We use the uirevision we set previously ('tracklayout_YYYY_CircuitKey')
+    expected_uirevision = f"tracklayout_{expected_session_id}"
+    if current_figure and isinstance(current_figure, dict) and \
+       current_figure.get('layout', {}).get('uirevision') == expected_uirevision:
+        # The correct map for the current session is already displayed. Do nothing.
+        # logger.debug(f"Initialize Map check: Correct uirevision '{expected_uirevision}' already shown. No update.")
+        return dash.no_update
+    # --- End uirevision check ---
+
+    # If we reach here, either no map is shown, or it's the wrong one, or it's the waiting one.
+    # Proceed with checking the cache for the expected session ID.
+    logger.info(f"--- initialize_track_map [Interval Trigger]. Expected: '{expected_session_id}'. Current uirevision: {current_figure.get('layout', {}).get('uirevision') if current_figure else 'None'} ---")
     start_time_callback = time.monotonic()
 
-    if not expected_session_id:
-        logger.warning("Initialize Map: Received no expected_session_id.")
-        return go.Figure(layout={'template': 'plotly_dark',
-                                 'title_text': "Track Map: Waiting for session ID",
-                                 'xaxis': {'visible': False}, 'yaxis': {'visible': False}})
-
+    # --- Cache checking logic remains the same ---
     track_x_coords, track_y_coords, x_range, y_range = None, None, None, None
     cache_is_valid_for_expected_session = False
+    session_key_in_cache = None
 
     with app_state.app_state_lock:
-        # app_state.track_coordinates_cache is the dictionary containing x, y, and its own 'session_key'
         cached_data_dict = app_state.track_coordinates_cache
-
-        # Get driver list for placeholders
-        driver_numbers_in_session = list(app_state.timing_state.keys())
-        all_driver_details_snapshot = app_state.timing_state.copy()
+        # Need driver list only if check passes
+        driver_numbers_in_session = list(app_state.timing_state.keys()) if app_state.timing_state else []
+        all_driver_details_snapshot = app_state.timing_state.copy() if app_state.timing_state else {}
         if not driver_numbers_in_session and app_state.driver_info:
-            driver_numbers_in_session = list(app_state.driver_info.keys())
-            all_driver_details_snapshot = app_state.driver_info.copy()
+             driver_numbers_in_session = list(app_state.driver_info.keys())
+             all_driver_details_snapshot = app_state.driver_info.copy()
 
+
+    # logger.debug(f"Initialize Map: Type of cache = {type(cached_data_dict)}")
     if isinstance(cached_data_dict, dict):
-        session_key_in_cache = cached_data_dict.get(
-            'session_key')  # This should be "YYYY_CircuitKey"
-        logger.debug(
-            f"Initialize Map: Expected Session ID: '{expected_session_id}', Session Key in Cache: '{session_key_in_cache}'")
-
+        session_key_in_cache = cached_data_dict.get('session_key')
+        # logger.info(f"Initialize Map: Session Key FOUND in Cache: '{session_key_in_cache}'")
         if session_key_in_cache == expected_session_id:
+            # logger.info(f"Initialize Map: CACHE HIT!")
             track_x_coords = cached_data_dict.get('x')
             track_y_coords = cached_data_dict.get('y')
             x_range = cached_data_dict.get('range_x')
             y_range = cached_data_dict.get('range_y')
             if track_x_coords and track_y_coords:
                 cache_is_valid_for_expected_session = True
-                logger.info(
-                    f"Initialize Map: Track coordinates found and valid for session {expected_session_id}.")
-            else:
-                logger.warning(
-                    f"Initialize Map: Cache matches session ID {expected_session_id}, but x/y coords are missing.")
-        else:
-            logger.warning(
-                f"Initialize Map: Session ID mismatch. Expected '{expected_session_id}', Cache has '{session_key_in_cache}'. Waiting for cache update.")
-    else:
-        logger.warning(
-            "Initialize Map: app_state.track_coordinates_cache is not a dictionary or is empty.")
+                # logger.info("Initialize Map: Track coordinates look valid.")
+            # else: logger.warning("Initialize Map: Cache key matches, but track coordinates missing!")
+        # else: logger.warning(f"Initialize Map: CACHE MISS/MISMATCH. Expected '{expected_session_id}', Cache has '{session_key_in_cache}'.")
+    # else: logger.warning("Initialize Map: app_state.track_coordinates_cache is empty or not a dict.")
 
     if not cache_is_valid_for_expected_session:
-        logger.debug(
-            f"Initialize Map: Track layout not ready for expected session ID '{expected_session_id}'.")
+        logger.info("Initialize Map: Cache invalid or mismatch. Returning 'Waiting for Layout' figure (again).")
+        # Return the waiting figure, ensure IT DOES NOT have the target uirevision
         return go.Figure(layout={'template': 'plotly_dark', 'height': 450,
-                                 'title_text': f"Track Map: Waiting for Layout ({expected_session_id or 'No Session'})",
-                                 'xaxis': {'visible': False}, 'yaxis': {'visible': False}})
+                                 'title_text': f"Track Map: Waiting ({expected_session_id})",
+                                 'xaxis': {'visible': False}, 'yaxis': {'visible': False},
+                                 'uirevision': f"waiting_{expected_session_id}" # Use a different uirevision for waiting state
+                                 })
 
-    # --- Create Figure (This part remains largely the same as in Response #7) ---
+    # --- If cache check passed, create the actual figure ---
+    logger.info("Initialize Map: Cache check PASSED, creating figure with traces...")
     fig_data = []
     if track_x_coords and track_y_coords:
         fig_data.append(go.Scattergl(
@@ -800,10 +812,9 @@ def initialize_track_map(expected_session_id):
             mode='lines', line=dict(color='grey', width=2),
             name='Track', hoverinfo='none'
         ))
-
     logger.info(
         f"Initialize Map: Preparing placeholder traces for {len(driver_numbers_in_session)} drivers for session '{expected_session_id}'.")
-    # (The loop to add car Scattergl traces with uid=car_num_str remains the same)
+    # The loop to add car Scatter traces with uid=car_num_str
     for car_num_str in driver_numbers_in_session:
         driver_detail = all_driver_details_snapshot.get(car_num_str, {})
         tla = driver_detail.get('Tla', car_num_str)
@@ -824,6 +835,10 @@ def initialize_track_map(expected_session_id):
             text=tla
         ))
 
+    if not fig_data: # Should at least have track trace
+         logger.error("Initialize Map: fig_data list is empty after trace creation loops!")
+         return go.Figure(layout={'template': 'plotly_dark', 'title_text': "Error: Failed to create traces"})
+    
     xaxis_cfg = dict(visible=False, showgrid=False, zeroline=False, showticklabels=False,
                      range=x_range, autorange=False if x_range else True)
     yaxis_cfg = dict(visible=False, showgrid=False, zeroline=False, showticklabels=False,
@@ -856,7 +871,6 @@ def initialize_track_map(expected_session_id):
     logger.info(
         f"Map initialization for session '{expected_session_id}' took {elapsed_time:.4f}s. Figure has {len(fig_data)} traces.")
     return final_figure
-
 
 app.clientside_callback(
     ClientsideFunction(
