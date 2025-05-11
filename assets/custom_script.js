@@ -55,11 +55,26 @@ window.dash_clientside.clientside = {
             console.warn('No traces with UIDs found.');
             return window.dash_clientside.no_update;
         }
+        
+        if (gd.layout && (gd.layout.dragmode !== false || gd.layout.xaxis.fixedrange !== true)) {
+            console.log("Forcing layout changes to disable zoom/pan via JS");
+            Plotly.relayout(graphDivId, {
+                'dragmode': false,
+                'xaxis.fixedrange': true, // Disables zoom/pan on x-axis
+                'yaxis.fixedrange': true,  // Disables zoom/pan on y-axis
+                'modebar': false
+            });
+        }
 
         // --- Prepare data updates (common for both methods) ---
         let traceIndicesToUpdate = [];
-        // For restyle:
-        let restyleUpdatePayload = { x: [], y: [], text: [], 'marker.color': [], 'marker.opacity': [] };
+        let restyle_x = [];
+        let restyle_y = [];
+        let restyle_text = [];
+        let restyle_marker_color = [];
+        let restyle_marker_opacity = [];
+        let restyle_textfont_color = []; // <<< To hold text colors for restyle
+
         // For animate:
         let animateDataUpdates = [];
 
@@ -73,23 +88,43 @@ window.dash_clientside.clientside = {
                     console.error(`Invalid coordinates for Car ${racingNumber}! Skipping.`);
                     continue;
                 }
+                
+                const tla = (typeof car.tla === 'string' && car.tla.trim() !== '') ? car.tla : racingNumber.toString();
+                const markerColor = (typeof car.color === 'string' && car.color.startsWith('#') && (car.color.length === 7 || car.color.length === 4)) ? car.color : '#808080';
+                
+                const car_status_string = (typeof car.status === 'string') ? car.status.toLowerCase() : ""; // Ensure lowercase and defined
+                
+                const isRetired = car_status_string.includes('retired');
+                const isInPit = car_status_string.includes('pit');
+                const isStopped = car_status_string.includes('stopped');
+                
+                const isDimmed = isRetired || isInPit || isStopped;
+                const markerOpacityValue = isDimmed ? 0.3 : 1.0;
+
+                const textBaseRgb = "255, 255, 255"; // Assuming base text is white (R, G, B)
+                const textAlpha = isDimmed ? 0.35 : 1.0;    // Text alpha (opacity)
+                const textFontColorValue = `rgba(${textBaseRgb}, ${textAlpha})`;
+
 
                 // Data for restyle
-                restyleUpdatePayload.x.push([car.x]);
-                restyleUpdatePayload.y.push([car.y]);
-                restyleUpdatePayload.text.push([car.tla]);
-                restyleUpdatePayload['marker.color'].push(car.color);
-                restyleUpdatePayload['marker.opacity'].push((car.status && (car.status === 'pit' || car.status === 'retired' || car.status === 'stopped' || car.status === 'out')) ? 0.3 : 1.0);
+                restyle_x.push([car.x]);
+                restyle_y.push([car.y]);
+                restyle_text.push([tla]);
+                restyle_marker_color.push(markerColor);
+                restyle_marker_opacity.push(markerOpacityValue);
+                restyle_textfont_color.push(textFontColorValue); // <<< ADDED
 
                 // Data for animate (needs to be structured per trace)
                 let singleAnimateTraceUpdate = {
-                    x: [car.x], // Double bracket for frame data
+                    x: [car.x], // Your correction: single array for direct update
                     y: [car.y],
-                    text: [car.tla],
-                    // To keep it simpler and focus on position:
-                    marker: { // This will apply to the trace when animate is called for its data
-                        color: car.color,
-                        opacity: (car.status && (car.status === 'pit' || car.status === 'retired' || car.status === 'stopped' || car.status === 'out')) ? 0.3 : 1.0,
+                    text: [tla],
+                    marker: { 
+                        color: markerColor,
+                        opacity: markerOpacityValue,
+                    },
+                    textfont: { // <<< ADDED
+                        color: textFontColorValue
                     }
                 };
                 animateDataUpdates.push(singleAnimateTraceUpdate);
@@ -104,6 +139,14 @@ window.dash_clientside.clientside = {
 
         // --- Conditional animation logic ---
         const DURATION_THRESHOLD_MS = 600; // If update interval is longer than this, use Plotly.animate
+        const finalRestylePayload = {
+            x: restyle_x,
+            y: restyle_y,
+            text: restyle_text,
+            'marker.color': restyle_marker_color,
+            'marker.opacity': restyle_marker_opacity,
+            'textfont.color': restyle_textfont_color // <<< ADDED
+        };
 
         if (updateIntervalDuration && updateIntervalDuration > DURATION_THRESHOLD_MS) {
             // Low frequency updates: Use Plotly.animate for smooth transitions
@@ -129,7 +172,7 @@ window.dash_clientside.clientside = {
                  // and the final argument is an array of trace indices to apply to.
                  // The restyleUpdatePayload is already structured by attribute,
                  // and each attribute's array of values should map to traceIndicesToUpdate.
-                Plotly.restyle(gd, restyleUpdatePayload, traceIndicesToUpdate);
+                Plotly.restyle(gd, finalRestylePayload, traceIndicesToUpdate);
             } catch (e) {
                 console.error('Error during Plotly.restyle:', e);
             }
