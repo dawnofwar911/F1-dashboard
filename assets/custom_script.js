@@ -5,34 +5,43 @@ window.dash_clientside.clientside = {
     plotlyReactedMap: {},
 
     animateCarMarkers: function (newCarData, existingFigure, graphDivId, updateIntervalDuration) {
-        if (!newCarData || Object.keys(newCarData).length === 0) { return window.dash_clientside.no_update; }
+        if (!newCarData || Object.keys(newCarData).length === 0) {
+            return window.dash_clientside.no_update;
+        }
 
         const gd = document.getElementById(graphDivId);
-        if (!gd) { /* console.warn... */ return window.dash_clientside.no_update; }
+        if (!gd) {
+            // console.warn("Graph div not found:", graphDivId);
+            return window.dash_clientside.no_update;
+        }
 
+        // Ensure Plotly object is fully initialized (same as before)
         let needsReactCheck = !gd.data || !gd.layout;
         const currentUiRevision = existingFigure?.layout?.uirevision;
         const reactedUiRevision = window.dash_clientside.clientside.plotlyReactedMap[graphDivId];
 
         if (needsReactCheck && currentUiRevision && reactedUiRevision !== currentUiRevision) {
-            // console.warn(`Plotly properties missing... Attempting Plotly.react...`);
             if (existingFigure?.data && existingFigure?.layout) {
                 try {
-                    Plotly.react(gd, existingFigure.data, existingFigure.layout);
-                    // console.log('After Plotly.react: .data=', gd.data, ' .layout=', gd.layout ? 'Exists' : 'Missing');
+                    Plotly.react(gd, existingFigure.data, existingFigure.layout, existingFigure.config);
                     window.dash_clientside.clientside.plotlyReactedMap[graphDivId] = currentUiRevision;
                     needsReactCheck = !gd.data || !gd.layout;
-                } catch (e) { /* console.error... */ return window.dash_clientside.no_update; }
-            } else { /* console.warn... */ return window.dash_clientside.no_update; }
-        } else if (needsReactCheck) { /* console.warn... */ return window.dash_clientside.no_update; }
-
-        const dataArray = gd.data || gd._fullData;
-        if (!dataArray || !Array.isArray(dataArray) || dataArray.length === 0) {
-            // console.warn('Graph data still not ready after checks/react...');
+                } catch (e) {
+                    console.error('Error during Plotly.react:', e);
+                    return window.dash_clientside.no_update;
+                }
+            } else {
+                return window.dash_clientside.no_update;
+            }
+        } else if (needsReactCheck) {
             return window.dash_clientside.no_update;
         }
 
-        // --- UID mapping ---
+        const dataArray = gd.data || gd._fullData;
+        if (!dataArray || !Array.isArray(dataArray) || dataArray.length === 0) {
+            return window.dash_clientside.no_update;
+        }
+
         let uidToTraceIndex = {};
         let foundUids = false;
         dataArray.forEach((trace, index) => {
@@ -42,90 +51,88 @@ window.dash_clientside.clientside = {
             }
         });
 
-        // --- ADD LOGGING HERE ---
-        console.log(`UID Mapping Result: foundUids = ${foundUids}`);
-        console.log('UID to Trace Index Map:', uidToTraceIndex); // Log the map itself
-        // --- END LOGGING ---
-
         if (!foundUids) {
-            console.warn('No traces with UIDs found. Cannot animate.');
+            console.warn('No traces with UIDs found.');
             return window.dash_clientside.no_update;
         }
-        
-        if (gd.layout && (gd.layout.dragmode !== false || gd.layout.xaxis.fixedrange !== true)) {
-            console.log("Forcing layout changes to disable zoom/pan via JS");
-            Plotly.relayout(graphDivId, {
-                'dragmode': false,
-                'xaxis.fixedrange': true, // Disables zoom/pan on x-axis
-                'yaxis.fixedrange': true,  // Disables zoom/pan on y-axis
-                'modebar': false
-            });
-        }
-        
-        // --- Prepare updates ---
-        let dataUpdates = [];
+
+        // --- Prepare data updates (common for both methods) ---
         let traceIndicesToUpdate = [];
-        let logCount = 0; // Log only first few car coords
-        console.log('Processing newCarData:', newCarData); // Log the incoming data
+        // For restyle:
+        let restyleUpdatePayload = { x: [], y: [], text: [], 'marker.color': [], 'marker.opacity': [] };
+        // For animate:
+        let animateDataUpdates = [];
+
 
         for (const racingNumber in newCarData) {
             const car = newCarData[racingNumber];
             const traceIndex = uidToTraceIndex[racingNumber];
 
             if (traceIndex !== undefined) {
-                // Check coordinate types (keep this check)
-                // console.log(`Data for Car ${racingNumber}: X=${car.x} (type: ${typeof car.x}), Y=${car.y} (type: ${typeof car.y})`);
                 if (typeof car.x !== 'number' || typeof car.y !== 'number' || isNaN(car.x) || isNaN(car.y)) {
                     console.error(`Invalid coordinates for Car ${racingNumber}! Skipping.`);
-                    continue; // Skip this car if coords invalid
+                    continue;
                 }
 
-                // --- MODIFIED traceUpdateData Structure ---
-                let traceUpdateData = {
-                    x: [car.x], // <<< CHANGE: Use single bracket array [value]
-                    y: [car.y], // <<< CHANGE: Use single bracket array [value]
-                    text: [car.tla], // <<< CHANGE: Use single bracket array [value]
-                    // Marker object remains the same
-                    marker: {
+                // Data for restyle
+                restyleUpdatePayload.x.push([car.x]);
+                restyleUpdatePayload.y.push([car.y]);
+                restyleUpdatePayload.text.push([car.tla]);
+                restyleUpdatePayload['marker.color'].push(car.color);
+                restyleUpdatePayload['marker.opacity'].push((car.status && (car.status === 'pit' || car.status === 'retired' || car.status === 'stopped' || car.status === 'out')) ? 0.3 : 1.0);
+
+                // Data for animate (needs to be structured per trace)
+                let singleAnimateTraceUpdate = {
+                    x: [car.x], // Double bracket for frame data
+                    y: [car.y],
+                    text: [car.tla],
+                    // To keep it simpler and focus on position:
+                    marker: { // This will apply to the trace when animate is called for its data
                         color: car.color,
                         opacity: (car.status && (car.status === 'pit' || car.status === 'retired' || car.status === 'stopped' || car.status === 'out')) ? 0.3 : 1.0,
-                        size: 10, line: { width: 1, color: 'Black' }
                     }
                 };
-                // --- END MODIFICATION ---
+                animateDataUpdates.push(singleAnimateTraceUpdate);
 
-                dataUpdates.push(traceUpdateData);
                 traceIndicesToUpdate.push(traceIndex);
-
-                // Optional logging for first few updates
-                if (logCount < 3) {
-                   console.log(` ==> Preparing update for Car ${racingNumber} (Index ${traceIndex}): X=${car.x}, Y=${car.y}`);
-                   logCount++;
-                }
-            } else {
-                // console.warn(`   => No trace index found for car ${racingNumber}.`);
             }
         }
-        
-        const animationDuration = updateIntervalDuration ? Math.max(50, updateIntervalDuration * 0.9) : 500; // Min 50ms
 
-        // --- Call Plotly.animate (remains the same) ---
-        if (traceIndicesToUpdate.length > 0) {
-            // console.log(`Calling Plotly.animate for ${traceIndicesToUpdate.length} traces.`);
+        if (traceIndicesToUpdate.length === 0) {
+            return window.dash_clientside.no_update;
+        }
+
+        // --- Conditional animation logic ---
+        const DURATION_THRESHOLD_MS = 600; // If update interval is longer than this, use Plotly.animate
+
+        if (updateIntervalDuration && updateIntervalDuration > DURATION_THRESHOLD_MS) {
+            // Low frequency updates: Use Plotly.animate for smooth transitions
+            const animationDuration = Math.max(50, updateIntervalDuration * 0.9); // e.g., 90% of interval
+            // console.log(`Using Plotly.animate, duration: ${animationDuration}ms`);
+
             try {
-                Plotly.animate(graphDivId, {
-                    data: dataUpdates,
-                    traces: traceIndicesToUpdate
+                Plotly.animate(gd, {
+                    data: animateDataUpdates, // Array of update objects, one per trace
+                    traces: traceIndicesToUpdate // Indices of traces to apply these updates to
                 }, {
                     transition: { duration: animationDuration, easing: 'linear' },
                     frame: { duration: animationDuration, redraw: false }
                 });
-                // console.log('Plotly.animate call appears successful.');
             } catch (e) {
                 console.error('Error during Plotly.animate:', e);
             }
         } else {
-            // console.log("No matching traces found to update.");
+            // High frequency updates: Use Plotly.restyle for directness
+            // console.log(`Using Plotly.restyle, interval: ${updateIntervalDuration}ms`);
+            try {
+                 // Plotly.restyle expects update payload structured by attribute
+                 // and the final argument is an array of trace indices to apply to.
+                 // The restyleUpdatePayload is already structured by attribute,
+                 // and each attribute's array of values should map to traceIndicesToUpdate.
+                Plotly.restyle(gd, restyleUpdatePayload, traceIndicesToUpdate);
+            } catch (e) {
+                console.error('Error during Plotly.restyle:', e);
+            }
         }
 
         return window.dash_clientside.no_update;
