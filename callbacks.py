@@ -837,7 +837,7 @@ def initialize_track_map(n_intervals, expected_session_id, current_figure):
     logger.info("Initialize Map: Cache check PASSED, creating figure with traces...")
     fig_data = []
     if track_x_coords and track_y_coords:
-        fig_data.append(go.Scattergl(
+        fig_data.append(go.Scatter(
             x=list(track_x_coords), y=list(track_y_coords),
             mode='lines', line=dict(color='grey', width=2),
             name='Track', hoverinfo='none'
