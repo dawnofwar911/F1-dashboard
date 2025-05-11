@@ -727,7 +727,37 @@ def update_car_data_for_clientside(n_intervals):
 
     return processed_car_data
 
-# In callbacks.py
+@app.callback(
+    Output('clientside-update-interval', 'interval'),
+    Input('replay-speed-slider', 'value'),
+    State('clientside-update-interval', 'disabled'),
+    prevent_initial_call=True
+)
+def update_clientside_interval_speed(replay_speed, interval_disabled):
+    """
+    Adjusts the clientside-update-interval based on the replay speed.
+    Sends updates more frequently at higher speeds.
+    """
+    if interval_disabled or replay_speed is None:
+        # If the main interval is disabled, or no speed, don't change its rate
+        return dash.no_update
+
+    try:
+        speed = float(replay_speed)
+        if speed <= 0:
+            speed = 1.0 # Avoid division by zero or negative intervals
+    except (ValueError, TypeError):
+        speed = 1.0 # Default to 1x speed if conversion fails
+
+    # Define a base interval (e.g., the default 1250ms for 1x speed)
+    base_interval_ms = 1250
+
+    # Calculate new interval: faster speed = smaller interval
+    # Ensure a minimum interval to prevent overwhelming the system
+    new_interval_ms = max(100, int(base_interval_ms / speed)) # Minimum 100ms
+
+    logger.info(f"Adjusting clientside-update-interval to {new_interval_ms}ms for replay speed {speed}x")
+    return new_interval_ms
 
 @app.callback(
     Output('track-map-graph', 'figure', allow_duplicate=True),
@@ -883,7 +913,8 @@ app.clientside_callback(
     # Passes the current figure as 'existingFigure' to JS
     State('track-map-graph', 'figure'),
     # Passes the graph's div ID as 'graphDivId' to JS
-    State('track-map-graph', 'id')
+    State('track-map-graph', 'id'),
+    State('clientside-update-interval', 'interval')
 )
 
 # --- >>> ADDED: Driver Dropdown Update Callback <<< ---

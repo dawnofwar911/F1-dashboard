@@ -4,7 +4,7 @@ if (!window.dash_clientside) { window.dash_clientside = {}; }
 window.dash_clientside.clientside = {
     plotlyReactedMap: {},
 
-    animateCarMarkers: function (newCarData, existingFigure, graphDivId) {
+    animateCarMarkers: function (newCarData, existingFigure, graphDivId, updateIntervalDuration) {
         if (!newCarData || Object.keys(newCarData).length === 0) { return window.dash_clientside.no_update; }
 
         const gd = document.getElementById(graphDivId);
@@ -106,6 +106,8 @@ window.dash_clientside.clientside = {
                 // console.warn(`   => No trace index found for car ${racingNumber}.`);
             }
         }
+        
+        const animationDuration = updateIntervalDuration ? Math.max(50, updateIntervalDuration * 0.9) : 500; // Min 50ms
 
         // --- Call Plotly.animate (remains the same) ---
         if (traceIndicesToUpdate.length > 0) {
@@ -115,8 +117,8 @@ window.dash_clientside.clientside = {
                     data: dataUpdates,
                     traces: traceIndicesToUpdate
                 }, {
-                    transition: { duration: 1200, easing: 'linear' },
-                    frame: { duration: 1200, redraw: false }
+                    transition: { duration: animationDuration, easing: 'linear' },
+                    frame: { duration: animationDuration, redraw: false }
                 });
                 // console.log('Plotly.animate call appears successful.');
             } catch (e) {
