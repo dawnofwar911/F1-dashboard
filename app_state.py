@@ -51,8 +51,8 @@ track_coordinates_cache = { # Holds track layout from API
 # Structure: { driver_num: { lap_num: {'Timestamps': [], 'RPM': [], 'Speed': [], ...} } }
 telemetry_data = {}
 driver_info = {}
-initial_replay_speed = 1
-replay_speed = 1
+initial_replay_speed = 1.0
+replay_speed = 1.0
 # --- Live Recording State ---
 live_data_file = None       # File handle for live recording
 is_saving_active = False    # Flag indicating if recording is enabled and file is open

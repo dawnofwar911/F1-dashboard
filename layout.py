@@ -83,6 +83,7 @@ def create_layout():
     layout = dbc.Container([
         # --- Added Interval Components ---
         dcc.Interval(id='interval-component-map-animation', interval=100, n_intervals=0),
+        dcc.Interval(id='interval-component-timing', interval=150, n_intervals=0),
         dcc.Interval(id='interval-component-fast', interval=500, n_intervals=0),
         dcc.Interval(id='interval-component-medium', interval=1000, n_intervals=0),
         dcc.Interval(id='interval-component-slow', interval=5000, n_intervals=0),

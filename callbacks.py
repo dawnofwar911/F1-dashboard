@@ -164,7 +164,7 @@ def update_session_info_display(n):
     Output('other-data-display', 'children'),
     Output('timing-data-actual-table', 'data'),
     Output('timing-data-timestamp', 'children'),
-    Input('interval-component-fast', 'n_intervals')
+    Input('interval-component-timing', 'n_intervals')
 )
 def update_main_data_displays(n):
     """Updates the timing table and the 'other data' display area (Optimized)."""
@@ -264,7 +264,6 @@ def update_main_data_displays(n):
             f"Error in update_main_data_displays callback: {e_update}", exc_info=True)
         return no_update, no_update, no_update
 
-
 @app.callback(
     Output('race-control-log-display', 'value'),
     Input('interval-component-slow', 'n_intervals')
@@ -273,7 +272,7 @@ def update_race_control_log(n):
     # (Logic from Response 22/24)
     try:
         with app_state.app_state_lock: log_snapshot = list(app_state.race_control_log)
-        display_text = "\n".join(reversed(log_snapshot))
+        display_text = "\n".join(log_snapshot)
         return display_text if display_text else "Waiting for Race Control messages..."
     except Exception as e: logger.error(f"Error updating RC log: {e}", exc_info=True); return "Error loading RC log."
 
@@ -727,7 +726,37 @@ def update_car_data_for_clientside(n_intervals):
 
     return processed_car_data
 
-# In callbacks.py
+@app.callback(
+    Output('clientside-update-interval', 'interval'),
+    Input('replay-speed-slider', 'value'),
+    State('clientside-update-interval', 'disabled'),
+    prevent_initial_call=True
+)
+def update_clientside_interval_speed(replay_speed, interval_disabled):
+    """
+    Adjusts the clientside-update-interval based on the replay speed.
+    Sends updates more frequently at higher speeds.
+    """
+    if interval_disabled or replay_speed is None:
+        # If the main interval is disabled, or no speed, don't change its rate
+        return dash.no_update
+
+    try:
+        speed = float(replay_speed)
+        if speed <= 0:
+            speed = 1.0 # Avoid division by zero or negative intervals
+    except (ValueError, TypeError):
+        speed = 1.0 # Default to 1x speed if conversion fails
+
+    # Define a base interval (e.g., the default 1250ms for 1x speed)
+    base_interval_ms = 1250
+
+    # Calculate new interval: faster speed = smaller interval
+    # Ensure a minimum interval to prevent overwhelming the system
+    new_interval_ms = max(100, int(base_interval_ms / speed)) # Minimum 100ms
+
+    logger.info(f"Adjusting clientside-update-interval to {new_interval_ms}ms for replay speed {speed}x")
+    return new_interval_ms
 
 @app.callback(
     Output('track-map-graph', 'figure', allow_duplicate=True),
@@ -807,7 +836,7 @@ def initialize_track_map(n_intervals, expected_session_id, current_figure):
     logger.info("Initialize Map: Cache check PASSED, creating figure with traces...")
     fig_data = []
     if track_x_coords and track_y_coords:
-        fig_data.append(go.Scattergl(
+        fig_data.append(go.Scatter(
             x=list(track_x_coords), y=list(track_y_coords),
             mode='lines', line=dict(color='grey', width=2),
             name='Track', hoverinfo='none'
@@ -883,7 +912,8 @@ app.clientside_callback(
     # Passes the current figure as 'existingFigure' to JS
     State('track-map-graph', 'figure'),
     # Passes the graph's div ID as 'graphDivId' to JS
-    State('track-map-graph', 'id')
+    State('track-map-graph', 'id'),
+    State('clientside-update-interval', 'interval')
 )
 
 # --- >>> ADDED: Driver Dropdown Update Callback <<< ---

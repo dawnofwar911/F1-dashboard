@@ -29,6 +29,35 @@ logger = logging.getLogger("F1App.Utils")
 main_logger = logging.getLogger("F1App.Utils")
 
 
+# utils.py
+
+# ... (other imports) ...
+import datetime # Ensure this is imported
+from datetime import timezone # Ensure this is imported
+
+def convert_utc_str_to_epoch_ms(timestamp_str):
+    """
+    Parses an F1 UTC timestamp string using the existing parse_iso_timestamp_safe
+    and returns milliseconds since epoch. Returns None if parsing fails.
+    """
+    if not timestamp_str or not isinstance(timestamp_str, str):
+        # logger.debug(f"convert_utc_str_to_epoch_ms: Invalid input - {timestamp_str}")
+        return None
+    
+    # Assuming parse_iso_timestamp_safe is robust and handles various F1 TS formats
+    dt_object = parse_iso_timestamp_safe(timestamp_str) 
+    
+    if dt_object:
+        # Ensure it's UTC before getting timestamp
+        if dt_object.tzinfo is None: # If naive, assume it's UTC as per F1 data context
+            dt_object = dt_object.replace(tzinfo=timezone.utc)
+        else: # If timezone-aware, convert to UTC
+            dt_object = dt_object.astimezone(timezone.utc)
+        return int(dt_object.timestamp() * 1000)
+    
+    # logger.warning(f"convert_utc_str_to_epoch_ms: Failed to parse '{timestamp_str}' using parse_iso_timestamp_safe.")
+    return None
+
 def _fetch_track_data_for_cache(session_key, year, circuit_key):
     """Fetches track data from API. Returns a dict for the cache or None on failure."""
     # Ensure year and circuit_key are usable strings for the URL
