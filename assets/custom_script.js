@@ -150,7 +150,7 @@ window.dash_clientside.clientside = {
 
         if (updateIntervalDuration && updateIntervalDuration > DURATION_THRESHOLD_MS) {
             // Low frequency updates: Use Plotly.animate for smooth transitions
-            const animationDuration = Math.max(50, updateIntervalDuration * 0.9); // e.g., 90% of interval
+            const animationDuration = Math.max(50, updateIntervalDuration * 0.95); // e.g., 90% of interval
             // console.log(`Using Plotly.animate, duration: ${animationDuration}ms`);
 
             try {

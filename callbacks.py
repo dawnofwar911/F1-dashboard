@@ -164,7 +164,7 @@ def update_session_info_display(n):
     Output('other-data-display', 'children'),
     Output('timing-data-actual-table', 'data'),
     Output('timing-data-timestamp', 'children'),
-    Input('interval-component-fast', 'n_intervals')
+    Input('interval-component-timing', 'n_intervals')
 )
 def update_main_data_displays(n):
     """Updates the timing table and the 'other data' display area (Optimized)."""
@@ -264,7 +264,6 @@ def update_main_data_displays(n):
             f"Error in update_main_data_displays callback: {e_update}", exc_info=True)
         return no_update, no_update, no_update
 
-
 @app.callback(
     Output('race-control-log-display', 'value'),
     Input('interval-component-slow', 'n_intervals')
@@ -273,7 +272,7 @@ def update_race_control_log(n):
     # (Logic from Response 22/24)
     try:
         with app_state.app_state_lock: log_snapshot = list(app_state.race_control_log)
-        display_text = "\n".join(reversed(log_snapshot))
+        display_text = "\n".join(log_snapshot)
         return display_text if display_text else "Waiting for Race Control messages..."
     except Exception as e: logger.error(f"Error updating RC log: {e}", exc_info=True); return "Error loading RC log."
 
