@@ -1,3 +1,2 @@
-replays/
-__pycache__/
-__pycache__/app_state.cpython-39.pyc
+replays/*
+__pycache__/*
