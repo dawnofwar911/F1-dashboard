@@ -7,14 +7,16 @@ Updates the shared application state defined in app_state.py.
 import logging
 import time
 import queue # Needed for queue.Empty exception
+import threading
 
 # Import shared state variables and lock
 import app_state
 # Import utility functions (if needed by any _process function directly)
-# import utils
+import utils
 
 # Get logger
 main_logger = logging.getLogger("F1App.DataProcessing")
+logger = logging.getLogger("F1App.DataProcessing")
 
 # --- Individual Stream Processing Functions ---
 # These functions now read from and write to the variables imported from app_state
@@ -225,52 +227,55 @@ def _process_track_status(data):
         main_logger.info(f"Track Status Update: Status={new_status}, Message='{new_message}'")
 
 def _process_position_data(data):
-    """Handles Position data. MUST be called within app_state.app_state_lock."""
-    # global timing_state # Removed global
-
+    """
+    Handles Position data. Updates current and previous position data in app_state.
+    MUST be called within app_state.app_state_lock.
+    """
     # Use app_state.timing_state
-    if 'timing_state' not in app_state.__dict__: # Check if loaded in app_state
-         main_logger.error("Global 'timing_state' not found in app_state for Position processing.")
-         return
+    if not app_state.timing_state:
+        # logger.debug("Position data received, but timing_state not yet initialized.")
+        return # Cannot process without driver entries in timing_state
 
-    if not isinstance(data, dict) or 'Position' not in data: # Check data format
-         main_logger.warning(f"Position handler received unexpected format: {data}")
-         return
-
-    position_entries = data.get('Position', [])
-    if not isinstance(position_entries, list):
-        main_logger.warning(f"Position data 'Position' key is not a list: {position_entries}")
+    if not isinstance(data, dict) or 'Position' not in data:
+        logger.warning(f"Position handler received unexpected format: {type(data)}")
         return
 
-    for entry_group in position_entries:
+    position_entries_list = data.get('Position', [])
+    if not isinstance(position_entries_list, list):
+        logger.warning(f"Position data 'Position' key is not a list: {type(position_entries_list)}")
+        return
+
+    for entry_group in position_entries_list:
         if not isinstance(entry_group, dict): continue
-        timestamp = entry_group.get('Timestamp')
-        entries = entry_group.get('Entries', {})
-        if not isinstance(entries, dict): continue
+        timestamp_str = entry_group.get('Timestamp') # Timestamp for this batch of positions
+        if not timestamp_str: continue # Need a timestamp
 
-        for car_number_str, pos_info in entries.items():
-            # Use app_state.timing_state
+        entries_dict = entry_group.get('Entries', {})
+        if not isinstance(entries_dict, dict): continue
+
+        for car_number_str, new_pos_info in entries_dict.items():
             if car_number_str not in app_state.timing_state:
-                continue # Skip if driver isn't known
+                # logger.debug(f"Position data for unknown driver {car_number_str}")
+                continue # Skip if driver isn't known (e.g., not in DriverList yet)
 
-            if isinstance(pos_info, dict):
-                x_pos = pos_info.get('X'); y_pos = pos_info.get('Y'); status = pos_info.get('Status')
+            if isinstance(new_pos_info, dict):
+                current_driver_state = app_state.timing_state[car_number_str]
 
-                # Ensure 'PositionData' sub-dictionary exists in app_state entry
-                if 'PositionData' not in app_state.timing_state[car_number_str]:
-                    app_state.timing_state[car_number_str]['PositionData'] = {}
+                # --- Shift current to previous ---
+                if 'PositionData' in current_driver_state and current_driver_state['PositionData']:
+                    # Only copy if PositionData actually existed and had content
+                    current_driver_state['PreviousPositionData'] = current_driver_state['PositionData'].copy()
+                # else: # First position update for this driver, no previous to set
+                #    current_driver_state['PreviousPositionData'] = None # Or empty dict
 
-                # Store the latest position data in app_state entry
-                pos_data_dict = app_state.timing_state[car_number_str]['PositionData']
-                if x_pos is not None: pos_data_dict['X'] = x_pos
-                if y_pos is not None: pos_data_dict['Y'] = y_pos
-                if status is not None: pos_data_dict['Status'] = status
-                if timestamp is not None: pos_data_dict['Timestamp'] = timestamp
-
-                # Optional logging
-                # if car_number_str == '63':
-                #    main_logger.debug(f"Updating PositionData for 63: X={x_pos}, Y={y_pos}, Status={status}")
-
+                # --- Store new current position data ---
+                current_driver_state['PositionData'] = {
+                    'X': new_pos_info.get('X'),
+                    'Y': new_pos_info.get('Y'),
+                    'Status': new_pos_info.get('Status'), # e.g., "OnTrack"
+                    'Timestamp': timestamp_str # Timestamp for this specific update
+                }
+                # logger.debug(f"Updated Position for {car_number_str}: New X={new_pos_info.get('X')}, Prev X={current_driver_state.get('PreviousPositionData',{}).get('X')}")
 
 def _process_car_data(data):
     """Handles CarData. MUST be called within app_state.app_state_lock."""
@@ -352,8 +357,6 @@ def _process_car_data(data):
                         except (ValueError, TypeError): value = None
                     lap_telemetry_history[data_key].append(value) # Append value or None
 
-
-
 def _process_session_data(data):
     """ Processes SessionData updates (like status). MUST be called within app_state.app_state_lock."""
     # global session_details # Removed global
@@ -373,50 +376,77 @@ def _process_session_data(data):
     except Exception as e:
         main_logger.error(f"Error processing SessionData: {e}", exc_info=True)
 
-def _process_session_info(data):
-    """ Processes SessionInfo data. MUST be called within app_state.app_state_lock. """
-    # global session_details # Removed global
-    if not isinstance(data, dict):
-        main_logger.warning(f"SessionInfo handler received non-dict data: {data}")
-        return
+def _process_session_info(data, app_state):
+    """ 
+    Processes SessionInfo data. MUST be called within app_state.app_state_lock.
+    Starts a background thread for proactive track data fetch if session changes.
+    """
+    if not isinstance(data, dict): main_logger.warning(f"SessionInfo non-dict: {data}"); return
     try:
-        # Use app_state.session_details
-        meeting_info = data.get('Meeting', {})
-        if not isinstance(meeting_info, dict): meeting_info = {}
-        circuit_info = meeting_info.get('Circuit', {})
-        if not isinstance(circuit_info, dict): circuit_info = {}
-        country_info = meeting_info.get('Country', {})
-        if not isinstance(country_info, dict): country_info = {}
+        # Extract info safely (ensure circuit_info is always a dict)
+        meeting_info = data.get('Meeting', {}); circuit_info = meeting_info.get('Circuit', {}); country_info = meeting_info.get('Country', {})
+        if not isinstance(circuit_info, dict): circuit_info = {} 
+        if not isinstance(meeting_info, dict): meeting_info = {} 
+        if not isinstance(country_info, dict): country_info = {} 
 
+        # Extract Year safely
+        year_str = None; start_date_str = data.get('StartDate')
+        if start_date_str and isinstance(start_date_str, str) and len(start_date_str) >= 4:
+             try: int(start_date_str[:4]); year_str = start_date_str[:4]
+             except ValueError: main_logger.warning(f"Invalid year in StartDate: {start_date_str}")
+        
+        circuit_key = circuit_info.get('Key') 
+
+        # Construct new session key if possible
+        new_session_key = f"{year_str}_{circuit_key}" if year_str and circuit_key is not None and str(circuit_key).strip() else None
+
+        # Get OLD session key BEFORE updating session_details
+        old_session_key = app_state.session_details.get('SessionKey')
+
+        # Update session_details 
+        app_state.session_details['Year'] = year_str
+        app_state.session_details['CircuitKey'] = circuit_key
+        app_state.session_details['SessionKey'] = new_session_key
         app_state.session_details['Meeting'] = meeting_info
         app_state.session_details['Circuit'] = circuit_info
         app_state.session_details['Country'] = country_info
         app_state.session_details['Name'] = data.get('Name')
         app_state.session_details['Type'] = data.get('Type')
-        app_state.session_details['StartDate'] = data.get('StartDate')
+        app_state.session_details['StartDate'] = start_date_str
         app_state.session_details['EndDate'] = data.get('EndDate')
         app_state.session_details['GmtOffset'] = data.get('GmtOffset')
         app_state.session_details['Path'] = data.get('Path')
+        
+        # Check if fetch is needed and start background thread
+        needs_fetch = False
+        if new_session_key:
+            main_logger.info(f"DataProcessing: SessionKey '{new_session_key}' set.")
+            cached_session_key = app_state.track_coordinates_cache.get('session_key')
+            if old_session_key != new_session_key or cached_session_key != new_session_key:
+                 main_logger.info(f"DataProcessing: Proactive track fetch needed for {new_session_key}")
+                 needs_fetch = True
+            else:
+                 main_logger.debug(f"DataProcessing: Cache key {new_session_key} OK. No fetch needed.")
+        else: # Invalid new session key
+             main_logger.warning(f"DataProcessing: Could not construct valid SessionKey. Clearing cache.")
+             app_state.session_details.pop('SessionKey', None)
+             app_state.track_coordinates_cache = {} # Clear track cache
 
-        year = None
-        start_date_str = data.get('StartDate')
-        if start_date_str and isinstance(start_date_str, str) and len(start_date_str) >= 4:
-             try: year = int(start_date_str[:4])
-             except ValueError: main_logger.warning(f"Could not parse year from StartDate: {start_date_str}")
-        app_state.session_details['Year'] = year
-        app_state.session_details['CircuitKey'] = circuit_info.get('Key')
+        # Start fetch in background thread *after* releasing the main lock if needed
+        if needs_fetch:
+             fetch_thread = threading.Thread(
+                  target=utils._background_track_fetch_and_update, 
+                  args=(new_session_key, year_str, circuit_key, app_state),
+                  daemon=True # Allows main program to exit even if thread is running
+             )
+             fetch_thread.start()
+             main_logger.info(f"DataProcessing: Background fetch thread started for {new_session_key}.")
 
-        # Log using app_state data
-        meeting_name = app_state.session_details.get('Meeting', {}).get('Name', 'N/A')
-        session_name = app_state.session_details.get('Name', 'N/A')
-        circuit_name_log = app_state.session_details.get('Circuit', {}).get('ShortName', 'N/A')
-        circuit_key_log = app_state.session_details.get('CircuitKey', 'N/A')
-        year_log = app_state.session_details.get('Year', 'N/A')
-        main_logger.info(f"Processed SessionInfo: Y:{year_log} {meeting_name} - {session_name} (Circuit: {circuit_name_log}, Key: {circuit_key_log})")
+        # Log summary
+        session_key_log = app_state.session_details.get('SessionKey', 'N/A') 
+        main_logger.info(f"Processed SessionInfo: ... -> Stored SessionKey: {session_key_log}") # Concise log
 
-    except Exception as e:
-        main_logger.error(f"Error processing SessionInfo data: {e}", exc_info=True)
-
+    except Exception as e: main_logger.error(f"Error processing SessionInfo: {e}", exc_info=True)
 
 # --- Main Processing Loop ---
 def data_processing_loop():
@@ -476,7 +506,7 @@ def data_processing_loop():
                          app_state.app_status["last_heartbeat"] = timestamp # Update dict in app_state
                     elif stream_name == "DriverList": _process_driver_list(actual_data)
                     elif stream_name == "TimingData": _process_timing_data(actual_data)
-                    elif stream_name == "SessionInfo": _process_session_info(actual_data)
+                    elif stream_name == "SessionInfo": _process_session_info(actual_data, app_state)
                     elif stream_name == "SessionData": _process_session_data(actual_data)
                     elif stream_name == "TimingAppData": _process_timing_app_data(actual_data)
                     elif stream_name == "TrackStatus": _process_track_status(actual_data)

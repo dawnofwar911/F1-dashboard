@@ -3,7 +3,8 @@
 Contains all the Dash callback functions for the application.
 Handles UI updates, user actions, and plot generation.
 """
-
+import datetime
+import pytz
 import logging
 import json
 import time
@@ -13,13 +14,15 @@ import threading
 from pathlib import Path
 
 import dash
-from dash.dependencies import Input, Output, State
+from dash.dependencies import Input, Output, State, ClientsideFunction
 from dash import dcc, html, dash_table, no_update # Import no_update
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots # Import make_subplots
 import numpy as np
 import requests
+from shapely.geometry import LineString, Point # <<< ADD SHAPELY IMPORT
+from shapely.ops import nearest_points # <<< For snapping points to line
 
 # --- App Import ---
 try:
@@ -48,7 +51,7 @@ logger = logging.getLogger("F1App.Callbacks") # Use consistent logger name
 def update_connection_status(n):
     """Updates the connection status indicator."""
     # --- >>> ADD DEBUG LOGGING <<< ---
-    logger.debug(f"Running update_connection_status (Interval {n})")
+    # logger.debug(f"Running update_connection_status (Interval {n})")
     # --- >>> END DEBUG LOGGING <<< ---
 
     # Initialize defaults
@@ -64,7 +67,7 @@ def update_connection_status(n):
             rep_file = app_state.app_status.get("current_replay_file")
 
             # --- >>> ADD DEBUG LOGGING <<< ---
-            logger.debug(f"Read State: {state}, Conn: {status}, Recording: {is_rec}, RecFile: {rec_file}, RepFile: {rep_file}")
+            # l ogger.debug(f"Read State: {state}, Conn: {status}, Recording: {is_rec}, RecFile: {rec_file}, RepFile: {rep_file}")
             # --- >>> END DEBUG LOGGING <<< ---
 
         status_text = f"State: {state} | Conn: {status}"
@@ -161,61 +164,115 @@ def update_session_info_display(n):
     Output('other-data-display', 'children'),
     Output('timing-data-actual-table', 'data'),
     Output('timing-data-timestamp', 'children'),
-    Input('interval-component-medium', 'n_intervals')
+    Input('interval-component-timing', 'n_intervals')
 )
 def update_main_data_displays(n):
-    """Updates the timing table and the 'other data' display area."""
-    # (Logic combined and adapted from user's update_output in Response 24)
-    other_elements = []; table_data = []; timestamp_text = "Waiting..."
+    """Updates the timing table and the 'other data' display area (Optimized)."""
+    other_elements = []
+    table_data = []
+    timestamp_text = "Waiting..."
+    start_time = time.monotonic()  # Time the callback
+
     try:
         with app_state.app_state_lock:
+            # Copy only needed states under lock
             timing_state_copy = app_state.timing_state.copy()
-            data_store_copy = app_state.data_store.copy()
+            # No need to copy if only reading specific keys
+            data_store_copy = app_state.data_store
 
-        # Other Data
-        excluded = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position', 'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat']
-        streams = sorted([s for s in data_store_copy.keys() if s not in excluded])
-        for s_name in streams:
-            val = data_store_copy.get(s_name, {}); data=val.get('data','N/A'); ts=val.get('timestamp','N/A')
-            try: d_str = json.dumps(data, indent=2)
-            except TypeError: d_str = str(data)
-            if len(d_str) > 500: d_str = d_str[:500] + "\n...(truncated)"
-            other_elements.append(html.Details([html.Summary(f"{s_name} ({ts})"), html.Pre(d_str, style={'marginLeft':'15px','maxHeight':'200px','overflowY':'auto'})], open=(s_name=='LapCount'))) # Example open
+        # --- Other Data Display (Keep previous logic) ---
+        excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
+                            'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat']
+        sorted_streams = sorted(
+            [s for s in data_store_copy.keys() if s not in excluded_streams])
+        for stream in sorted_streams:
+            value = data_store_copy.get(stream, {})
+            data_payload = value.get('data', 'N/A')
+            timestamp_str = value.get('timestamp', 'N/A')
+            try:
+                data_str = json.dumps(data_payload, indent=2)
+            except TypeError:
+                data_str = str(data_payload)
+            if len(data_str) > 500:
+                data_str = data_str[:500] + "\n...(truncated)"
+            other_elements.append(html.Details([html.Summary(f"{stream} ({timestamp_str})"), html.Pre(data_str, style={
+                                  'marginLeft': '15px', 'maxHeight': '200px', 'overflowY': 'auto'})], open=(stream == "LapCount")))
 
-        # Timing Table
-        timing_entry = data_store_copy.get('TimingData', {})
-        timestamp_text = f"Timing TS: {timing_entry.get('timestamp', 'N/A')}" if timing_entry else "Waiting..."
-        if timing_state_copy:
-            t_data = []
-            drivers = sorted(timing_state_copy.keys(), key=lambda x: int(x) if x.isdigit() else float('inf'))
-            for num in drivers:
-                state = timing_state_copy.get(num);
-                if not state: continue
-                tyre = f"{state.get('TyreCompound', '-')}({state.get('TyreAge', '?')}L)" if state.get('TyreCompound', '-') != '-' else '-'
-                tla = state.get("Tla", num)
-                c_data = state.get('CarData', {}); drs_val = c_data.get('DRS'); drs_map = {8:"E",10:"On",12:"On",14:"ON"}; drs = drs_map.get(drs_val, 'Off') if drs_val is not None else 'Off'
-                row = {'Car':tla, 'Pos':state.get('Position', '-'), 'Tyre':tyre, 'Time':state.get('Time', '-'), 'Gap':state.get('GapToLeader', '-'),
-                       'Interval':utils.get_nested_state(state,'IntervalToPositionAhead','Value',default='-'), 'Last Lap':utils.get_nested_state(state,'LastLapTime','Value',default='-'),
-                       'Best Lap':utils.get_nested_state(state,'BestLapTime','Value',default='-'), 'S1':utils.get_nested_state(state,'Sectors','0','Value',default='-'),
-                       'S2':utils.get_nested_state(state,'Sectors','1','Value',default='-'), 'S3':utils.get_nested_state(state,'Sectors','2','Value',default='-'),
-                       'Status':state.get('Status','N/A'), 'Speed':c_data.get('Speed','-'), 'Gear':c_data.get('Gear','-'), 'RPM':c_data.get('RPM','-'), 'DRS':drs}
-                t_data.append(row)
-            t_data.sort(key=utils.pos_sort_key); table_data = t_data
-        else: timestamp_text = "Waiting for DriverList..."
+        # --- Timing Table Timestamp ---
+        timing_data_entry = data_store_copy.get(
+            'TimingData', {})  # Read from non-copied dict
+        timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else "Waiting..."
+
+        # --- Generate Timing Table Data (Optimized Loop) ---
+        if timing_state_copy:  # Process the copied timing state
+            processed_table_data = []
+            # No need to sort keys here if sorting the final list later
+            for car_num, driver_state in timing_state_copy.items():
+                # Use .get() with defaults directly where possible
+                # Use car_num as fallback for Car column
+                tla = driver_state.get("Tla", car_num)
+                pos = driver_state.get('Position', '-')
+                compound = driver_state.get('TyreCompound', '-')
+                age = driver_state.get('TyreAge', '?')
+                tyre = f"{compound}({age}L)" if compound != '-' else '-'
+                time_val = driver_state.get('Time', '-')
+                gap = driver_state.get('GapToLeader', '-')
+                interval = utils.get_nested_state(
+                    driver_state, 'IntervalToPositionAhead', 'Value', default='-')
+                last_lap = utils.get_nested_state(
+                    driver_state, 'LastLapTime', 'Value', default='-')
+                best_lap = utils.get_nested_state(
+                    driver_state, 'BestLapTime', 'Value', default='-')
+                s1 = utils.get_nested_state(
+                    driver_state, 'Sectors', '0', 'Value', default='-')
+                s2 = utils.get_nested_state(
+                    driver_state, 'Sectors', '1', 'Value', default='-')
+                s3 = utils.get_nested_state(
+                    driver_state, 'Sectors', '2', 'Value', default='-')
+                status = driver_state.get('Status', 'N/A')
+                # Access CarData sub-dict, default to empty dict if not present
+                car_data = driver_state.get('CarData', {})
+                speed = car_data.get('Speed', '-')
+                gear = car_data.get('Gear', '-')
+                rpm = car_data.get('RPM', '-')
+                drs_val = car_data.get('DRS')
+                drs_map = {8: "E", 10: "On", 12: "On", 14: "ON"}
+                drs = drs_map.get(
+                    drs_val, 'Off') if drs_val is not None else 'Off'
+
+                row = {'Car': tla, 'Pos': pos, 'Tyre': tyre, 'Time': time_val, 'Gap': gap,
+                       'Interval': interval, 'Last Lap': last_lap, 'Best Lap': best_lap,
+                       'S1': s1, 'S2': s2, 'S3': s3, 'Status': status,
+                       'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs}
+                processed_table_data.append(row)
+
+            # Sort the final list once
+            processed_table_data.sort(key=utils.pos_sort_key)
+            table_data = processed_table_data
+        else:
+            timestamp_text = "Waiting for DriverList..."
+
+        end_time = time.monotonic()
+        # Log execution time
+        # logger.debug(
+            # f"update_main_data_displays took {end_time - start_time:.4f}s")
 
         return other_elements, table_data, timestamp_text
-    except Exception as e: logger.error(f"Error updating main data: {e}", exc_info=True); return no_update, no_update, no_update
 
+    except Exception as e_update:
+        logger.error(
+            f"Error in update_main_data_displays callback: {e_update}", exc_info=True)
+        return no_update, no_update, no_update
 
 @app.callback(
     Output('race-control-log-display', 'value'),
-    Input('interval-component-medium', 'n_intervals')
+    Input('interval-component-slow', 'n_intervals')
 )
 def update_race_control_log(n):
     # (Logic from Response 22/24)
     try:
         with app_state.app_state_lock: log_snapshot = list(app_state.race_control_log)
-        display_text = "\n".join(reversed(log_snapshot))
+        display_text = "\n".join(log_snapshot)
         return display_text if display_text else "Waiting for Race Control messages..."
     except Exception as e: logger.error(f"Error updating RC log: {e}", exc_info=True); return "Error loading RC log."
 
@@ -413,7 +470,9 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
     lap_options = []
     lap_value = None
     lap_disabled = True
-    telemetry_figure = go.Figure(layout={'template': 'plotly_dark', 'height': 400, 'margin': dict(t=20, b=30, l=40, r=10), 'title_text': "Select Driver/Lap for Telemetry"})  # Empty placeholder
+    telemetry_layout_uirevision = f"{selected_driver_number or 'none'}_{selected_lap or 'none'}"
+    telemetry_figure = go.Figure(layout={'template': 'plotly_dark', 'height': 400, 'margin': dict(
+        t=20, b=30, l=40, r=10), 'title_text': "Select Driver/Lap for Telemetry", 'uirevision': telemetry_layout_uirevision})  # Empty placeholder
 
     if not selected_driver_number:
         return details_children, lap_options, lap_value, lap_disabled, telemetry_figure
@@ -483,7 +542,7 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
                 # Define channels and create subplots
                 channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
                 fig = make_subplots(rows=len(channels), cols=1, shared_xaxes=True, subplot_titles=channels, vertical_spacing=0.02)
-                fig.update_layout(template='plotly_dark', height=100*len(channels), hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10))
+                fig.update_layout(template='plotly_dark', height=100*len(channels), hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10), uirevision=telemetry_layout_uirevision)
 
                 for i, channel in enumerate(channels):
                     y_data_raw = lap_data.get(channel, [])
@@ -531,82 +590,331 @@ def display_driver_details(selected_driver_number, selected_lap): # Removed n_in
     return details_children, lap_options, lap_value, lap_disabled, telemetry_figure
 
 
-# --- Track Map Callback ---
 @app.callback(
-    Output('track-map-graph', 'figure'),
-    Input('interval-component-medium', 'n_intervals')
+    # This store will hold the YYYY_CircuitKey string
+    Output('current-track-layout-cache-key-store', 'data'),
+    Input('interval-component-medium', 'n_intervals'),
+    State('current-track-layout-cache-key-store', 'data')
 )
-def update_track_map(n):
-    """Updates the track map using fetched track layout and live car positions."""
-    # (Using the implementation from Response 18/21, adapted for app_state)
-    # This needs the full logic for fetching API data and plotting cars
-    start_time_map = time.time()
-    logger.debug(f"Updating track map (tick {n})...")
-    # --- Step 1: Determine Session Key and Check Cache Match ---
-    current_session_key = None; needs_api_fetch = False; year_from_state = None; circuit_key_from_state = None
+def update_current_session_id_for_map(n_intervals, existing_session_id_in_store):
     with app_state.app_state_lock:
-        year_from_state = app_state.session_details.get('Year'); circuit_key_from_state = app_state.session_details.get('CircuitKey')
-        if not year_from_state or not circuit_key_from_state: # Fallback using SessionInfo from data_store
-             session_info_local = app_state.data_store.get('SessionInfo', {}).get('data',{})
-             if isinstance(session_info_local, dict):
-                 if not circuit_key_from_state: circuit_key_from_state = session_info_local.get('Circuit', {}).get('Key')
-                 if not year_from_state:
-                      path = session_info_local.get('Path', ''); parts = path.split('/')
-                      if len(parts) > 1 and parts[1].isdigit() and len(parts[1]) == 4: year_from_state = parts[1]
-        if year_from_state and circuit_key_from_state: current_session_key = f"{year_from_state}_{circuit_key_from_state}"
-        cached_session_key = app_state.track_coordinates_cache.get('session_key')
-    if current_session_key and cached_session_key != current_session_key: needs_api_fetch = True; logger.debug(f"Map: Cache miss for {current_session_key}.")
-    elif not current_session_key: logger.debug("Map: No session key.")
-    # --- Step 2: Fetch API data if needed (OUTSIDE lock) ---
-    api_data = None
-    if needs_api_fetch and current_session_key:
-        api_url = f"https://api.multiviewer.app/api/v1/circuits/{circuit_key_from_state}/{year_from_state}"; logger.info(f"Track API fetch: {api_url}")
+        # Get Year and CircuitKey from app_state.session_details
+        # These are set by _process_session_info
+        year = app_state.session_details.get('Year')
+        circuit_key = app_state.session_details.get(
+            'CircuitKey')  # This is the numeric key
+        app_status_state = app_state.app_status.get("state", "Idle")
+
+    if not year or not circuit_key or app_status_state in ["Idle", "Stopped", "Error"]:
+        if existing_session_id_in_store is not None:
+            # logger.debug("Clearing current-track-layout-cache-key-store (now session-id-store) as session is not active or details missing.")
+            return None  # Clear the session ID from the store
+        return dash.no_update
+
+    # Construct the session identifier string (e.g., "2023_44")
+    # This is the 'session_key' that _process_session_info calculates and stores in
+    # app_state.session_details['SessionKey'] and uses for the track_coordinates_cache['session_key']
+    current_session_id = f"{year}_{circuit_key}"
+
+    if current_session_id != existing_session_id_in_store:
+        logger.info(
+            f"Updating current-track-layout-cache-key-store (now session-id-store) to: {current_session_id}")
+        return current_session_id  # This is the YYYY_CircuitKey string
+
+    return dash.no_update
+
+
+@app.callback(
+    Output('clientside-update-interval', 'disabled'),
+    [Input('connect-button', 'n_clicks'),
+     Input('replay-button', 'n_clicks'),
+     Input('disconnect-button', 'n_clicks'),
+     Input('stop-replay-button', 'n_clicks'),
+     Input('interval-component-fast', 'n_intervals')],  # Generic interval to check app_state
+    [State('clientside-update-interval', 'disabled'),
+     State('replay-file-selector', 'value')]  # Correctly uses 'replay-file-selector'
+)
+def toggle_clientside_interval(connect_clicks, replay_clicks, disconnect_clicks, stop_replay_clicks,
+                               fast_interval_tick, currently_disabled, selected_replay_file):
+    ctx = dash.callback_context
+    triggered_id = ctx.triggered[0]['prop_id'].split(
+        '.')[0] if ctx.triggered else None
+
+    with app_state.app_state_lock:
+        current_app_s = app_state.app_status.get("state", "Idle")
+
+    if triggered_id in ['connect-button', 'replay-button']:
+        if triggered_id == 'replay-button' and not selected_replay_file:
+            logger.info(
+                "Replay button clicked, but no file selected. Interval remains disabled.")
+            return True
+
+        logger.info(
+            f"Attempting to enable clientside-update-interval due to {triggered_id}.")
+        return False  # Enable
+
+    elif triggered_id in ['disconnect-button', 'stop-replay-button']:
+        logger.info(
+            f"Disabling clientside-update-interval due to {triggered_id}.")
+        return True   # Disable
+
+    elif triggered_id == 'interval-component-fast':
+        if current_app_s in ["Live", "Replaying"]:
+            if currently_disabled:
+                logger.info(
+                    f"Fast interval: App is {current_app_s}, enabling interval.")
+                return False
+            return dash.no_update
+        else:
+            if not currently_disabled:
+                logger.info(
+                    f"Fast interval: App is {current_app_s}, disabling interval.")
+                return True
+            return dash.no_update
+
+    return dash.no_update
+
+
+@app.callback(
+    Output('car-positions-store', 'data'),
+    Input('clientside-update-interval', 'n_intervals'),
+    # Or a more direct 'current_session_key' from app_state if available
+    # No need for live-mode or replay-file state if timing_state is the single source of truth
+)
+# Removed session_key_from_dropdown parameter
+def update_car_data_for_clientside(n_intervals):
+    if n_intervals == 0:
+        return dash.no_update
+
+    with app_state.app_state_lock:
+        current_app_status = app_state.app_status.get("state", "Idle")
+        timing_state_snapshot = app_state.timing_state.copy()
+
+    if current_app_status not in ["Live", "Replaying"] or not timing_state_snapshot:
+        # logger.debug("Not updating car-positions-store: App not Live/Replaying or no timing data.")
+        return dash.no_update
+
+    processed_car_data = {}
+    for car_num_str, driver_state in timing_state_snapshot.items():
+        if not isinstance(driver_state, dict):
+            continue
+
+        pos_data = driver_state.get('PositionData')
+        if not pos_data or 'X' not in pos_data or 'Y' not in pos_data:
+            continue
+
         try:
-            headers = { 'User-Agent': 'F1-Dashboard-App/0.3' }; response = requests.get(api_url, headers=headers, timeout=10); response.raise_for_status(); map_api_data = response.json()
-            extracted_data = {}
-            try: extracted_data['x'] = [float(p) for p in map_api_data.get('x',[])]; extracted_data['y'] = [float(p) for p in map_api_data.get('y',[])]
-            except: extracted_data['x'] = None; extracted_data['y'] = None
-            if extracted_data.get('x') and extracted_data.get('y'):
-                 try:
-                     x_min, x_max = np.min(extracted_data['x']), np.max(extracted_data['x']); y_min, y_max = np.min(extracted_data['y']), np.max(extracted_data['y'])
-                     padding_x = (x_max - x_min) * 0.05; padding_y = (y_max - y_min) * 0.05
-                     extracted_data['range_x'] = [x_min - padding_x, x_max + padding_x]; extracted_data['range_y'] = [y_min - padding_y, y_max + padding_y]
-                 except Exception as range_err: logger.error(f"Map range error: {range_err}"); extracted_data['range_x'] = None; extracted_data['range_y'] = None
-                 api_data = extracted_data; logger.info(f"Track API SUCCESS for {current_session_key}")
-            else: logger.warning(f"Track API did not yield valid x/y: {current_session_key}"); api_data = None
-        except Exception as e: logger.error(f"Track API FAILED: {e}"); api_data = None
-    # --- Step 3: Update cache & read plot data (Lock) ---
-    track_x, track_y, x_range, y_range = None, None, None, None; drivers_x, drivers_y, drivers_text, drivers_color, drivers_opacity = [], [], [], [], []; plot_session_key = None
-    with app_state.app_state_lock:
-        if needs_api_fetch:
-            if api_data: app_state.track_coordinates_cache = {**api_data, 'session_key': current_session_key}; logger.debug("Cache updated.")
-            else: app_state.track_coordinates_cache = {'session_key': current_session_key, 'x':None, 'y':None, 'range_x':None, 'range_y':None}; logger.debug("Cache key updated, coords cleared.")
-        plot_session_key = app_state.track_coordinates_cache.get('session_key')
-        if plot_session_key == current_session_key: track_x, track_y, x_range, y_range = app_state.track_coordinates_cache.get('x'), app_state.track_coordinates_cache.get('y'), app_state.track_coordinates_cache.get('range_x'), app_state.track_coordinates_cache.get('range_y')
-        timing_state_snapshot = app_state.timing_state.copy() # Copy state needed for cars
-    # --- Process cars (outside lock) ---
-    for car_num, state in timing_state_snapshot.items():
-         pos_data = state.get('PositionData', state); x_val, y_val = pos_data.get('X'), pos_data.get('Y')
-         if x_val is not None and y_val is not None:
-             try:
-                 x, y = float(x_val), float(y_val); status = state.get('Status','').lower(); tla = state.get('Tla', car_num); color = f"#{state.get('TeamColour','808080')}"
-                 off_track = ('pit' in status or 'retired' in status or 'out' in status or 'stopped' in status)
-                 drivers_x.append(x); drivers_y.append(y); drivers_text.append("" if off_track else tla); drivers_color.append(color); drivers_opacity.append(0.3 if off_track else 1.0)
-             except (ValueError, TypeError): logger.warning(f"Map: Bad pos data for {car_num}: {x_val}, {y_val}")
-    # --- Step 4: Create Plotly Figure ---
-    figure_data = []; final_figure = go.Figure(layout={'template':'plotly_dark', 'margin':dict(t=30, b=5, l=5, r=5), 'xaxis':{'visible':False}, 'yaxis':{'visible':False}}) # Default empty
+            x_val = float(pos_data['X'])
+            y_val = float(pos_data['Y'])
+        except (TypeError, ValueError):
+            continue
+
+        team_colour_hex = driver_state.get('TeamColour', '808080')
+        if not team_colour_hex.startswith('#'):
+            team_colour_hex = '#' + team_colour_hex
+
+        processed_car_data[car_num_str] = {
+            'x': x_val,
+            'y': y_val,
+            'color': team_colour_hex,
+            'tla': driver_state.get('Tla', car_num_str),
+            'status': driver_state.get('Status', 'Unknown').lower()
+        }
+
+    if not processed_car_data:
+        return dash.no_update
+
+    return processed_car_data
+
+@app.callback(
+    Output('clientside-update-interval', 'interval'),
+    Input('replay-speed-slider', 'value'),
+    State('clientside-update-interval', 'disabled'),
+    prevent_initial_call=True
+)
+def update_clientside_interval_speed(replay_speed, interval_disabled):
+    """
+    Adjusts the clientside-update-interval based on the replay speed.
+    Sends updates more frequently at higher speeds.
+    """
+    if interval_disabled or replay_speed is None:
+        # If the main interval is disabled, or no speed, don't change its rate
+        return dash.no_update
+
     try:
-        if track_x and track_y: figure_data.append(go.Scatter(x=track_x, y=track_y, mode='lines', line=dict(color='grey', width=2), name='Track', hoverinfo='none'))
-        if drivers_x: figure_data.append(go.Scatter(x=drivers_x, y=drivers_y, mode='markers+text', marker=dict(size=10, color=drivers_color, line=dict(width=1,color='Black'), opacity=drivers_opacity), text=drivers_text, textposition='middle right', name='Cars', hoverinfo='text', textfont=dict(size=9, color='white')))
-        if figure_data:
-            xaxis_cfg = dict(showgrid=False, zeroline=False, showticklabels=False, range=x_range); yaxis_cfg = dict(showgrid=False, zeroline=False, showticklabels=False, range=y_range)
-            if x_range and y_range: yaxis_cfg['scaleanchor']="x"; yaxis_cfg['scaleratio']=1
-            layout = go.Layout(xaxis=xaxis_cfg, yaxis=yaxis_cfg, showlegend=False, uirevision=plot_session_key, plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'), margin=dict(l=5,r=5,t=30,b=5), title=f"Track Map ({plot_session_key})" if plot_session_key else "Track Map")
-            final_figure = go.Figure(data=figure_data, layout=layout)
-        else: final_figure.update_layout(title="Track Map: Waiting for Data...")
-    except Exception as fig_err: logger.error(f"Map figure error: {fig_err}", exc_info=True); final_figure.update_layout(title="Error Creating Map")
-    logger.debug(f"Map update took {time.time() - start_time_map:.4f}s")
+        speed = float(replay_speed)
+        if speed <= 0:
+            speed = 1.0 # Avoid division by zero or negative intervals
+    except (ValueError, TypeError):
+        speed = 1.0 # Default to 1x speed if conversion fails
+
+    # Define a base interval (e.g., the default 1250ms for 1x speed)
+    base_interval_ms = 1250
+
+    # Calculate new interval: faster speed = smaller interval
+    # Ensure a minimum interval to prevent overwhelming the system
+    new_interval_ms = max(100, int(base_interval_ms / speed)) # Minimum 100ms
+
+    logger.info(f"Adjusting clientside-update-interval to {new_interval_ms}ms for replay speed {speed}x")
+    return new_interval_ms
+
+@app.callback(
+    Output('track-map-graph', 'figure', allow_duplicate=True),
+    # --- Trigger Change ---
+    Input('interval-component-medium', 'n_intervals'), # Trigger periodically (e.g., every 1 sec)
+    # --- State Inputs ---
+    State('current-track-layout-cache-key-store', 'data'), # Get the expected session ID
+    State('track-map-graph', 'figure'), # Get the CURRENT figure shown in the graph.
+    prevent_initial_call='initial_duplicate'
+)
+def initialize_track_map(n_intervals, expected_session_id, current_figure):
+    # <<< START MODIFIED LOGIC >>>
+    if not expected_session_id:
+        # If no session is active, return an empty/waiting map only if graph isn't already showing that
+        # This prevents unnecessary updates when idle. Check if current figure exists and maybe has a specific title.
+        # For simplicity, we can just return no_update if no session ID is expected.
+        # logger.debug("Initialize Map check: No expected session ID.")
+        return dash.no_update
+
+    # --- Check if the CURRENTLY displayed figure is already correct ---
+    # We use the uirevision we set previously ('tracklayout_YYYY_CircuitKey')
+    expected_uirevision = f"tracklayout_{expected_session_id}"
+    if current_figure and isinstance(current_figure, dict) and \
+       current_figure.get('layout', {}).get('uirevision') == expected_uirevision:
+        # The correct map for the current session is already displayed. Do nothing.
+        # logger.debug(f"Initialize Map check: Correct uirevision '{expected_uirevision}' already shown. No update.")
+        return dash.no_update
+    # --- End uirevision check ---
+
+    # If we reach here, either no map is shown, or it's the wrong one, or it's the waiting one.
+    # Proceed with checking the cache for the expected session ID.
+    logger.info(f"--- initialize_track_map [Interval Trigger]. Expected: '{expected_session_id}'. Current uirevision: {current_figure.get('layout', {}).get('uirevision') if current_figure else 'None'} ---")
+    start_time_callback = time.monotonic()
+
+    # --- Cache checking logic remains the same ---
+    track_x_coords, track_y_coords, x_range, y_range = None, None, None, None
+    cache_is_valid_for_expected_session = False
+    session_key_in_cache = None
+
+    with app_state.app_state_lock:
+        cached_data_dict = app_state.track_coordinates_cache
+        # Need driver list only if check passes
+        driver_numbers_in_session = list(app_state.timing_state.keys()) if app_state.timing_state else []
+        all_driver_details_snapshot = app_state.timing_state.copy() if app_state.timing_state else {}
+        if not driver_numbers_in_session and app_state.driver_info:
+             driver_numbers_in_session = list(app_state.driver_info.keys())
+             all_driver_details_snapshot = app_state.driver_info.copy()
+
+
+    # logger.debug(f"Initialize Map: Type of cache = {type(cached_data_dict)}")
+    if isinstance(cached_data_dict, dict):
+        session_key_in_cache = cached_data_dict.get('session_key')
+        # logger.info(f"Initialize Map: Session Key FOUND in Cache: '{session_key_in_cache}'")
+        if session_key_in_cache == expected_session_id:
+            # logger.info(f"Initialize Map: CACHE HIT!")
+            track_x_coords = cached_data_dict.get('x')
+            track_y_coords = cached_data_dict.get('y')
+            x_range = cached_data_dict.get('range_x')
+            y_range = cached_data_dict.get('range_y')
+            if track_x_coords and track_y_coords:
+                cache_is_valid_for_expected_session = True
+                # logger.info("Initialize Map: Track coordinates look valid.")
+            # else: logger.warning("Initialize Map: Cache key matches, but track coordinates missing!")
+        # else: logger.warning(f"Initialize Map: CACHE MISS/MISMATCH. Expected '{expected_session_id}', Cache has '{session_key_in_cache}'.")
+    # else: logger.warning("Initialize Map: app_state.track_coordinates_cache is empty or not a dict.")
+
+    if not cache_is_valid_for_expected_session:
+        logger.info("Initialize Map: Cache invalid or mismatch. Returning 'Waiting for Layout' figure (again).")
+        # Return the waiting figure, ensure IT DOES NOT have the target uirevision
+        return go.Figure(layout={'template': 'plotly_dark', 'height': 450,
+                                 'title_text': f"Track Map: Waiting ({expected_session_id})",
+                                 'xaxis': {'visible': False}, 'yaxis': {'visible': False},
+                                 'uirevision': f"waiting_{expected_session_id}" # Use a different uirevision for waiting state
+                                 })
+
+    # --- If cache check passed, create the actual figure ---
+    logger.info("Initialize Map: Cache check PASSED, creating figure with traces...")
+    fig_data = []
+    if track_x_coords and track_y_coords:
+        fig_data.append(go.Scatter(
+            x=list(track_x_coords), y=list(track_y_coords),
+            mode='lines', line=dict(color='grey', width=2),
+            name='Track', hoverinfo='none'
+        ))
+    logger.info(
+        f"Initialize Map: Preparing placeholder traces for {len(driver_numbers_in_session)} drivers for session '{expected_session_id}'.")
+    # The loop to add car Scatter traces with uid=car_num_str
+    for car_num_str in driver_numbers_in_session:
+        driver_detail = all_driver_details_snapshot.get(car_num_str, {})
+        tla = driver_detail.get('Tla', car_num_str)
+        team_colour = driver_detail.get('TeamColour', '808080')
+        if isinstance(team_colour, str) and not team_colour.startswith('#'):  # Ensure # prefix
+            team_colour = '#' + team_colour
+
+        fig_data.append(go.Scatter(
+            x=[], y=[],
+            mode='markers+text',  # JS will update this
+            marker=dict(size=10, color=team_colour,
+                        line=dict(width=1, color='Black')),
+            textfont=dict(size=9, color='white'),
+            textposition='middle right',
+            name=tla,
+            uid=car_num_str,  # CRUCIAL: Unique ID for JavaScript to target this trace
+            hoverinfo='text',
+            text=tla
+        ))
+
+    if not fig_data: # Should at least have track trace
+         logger.error("Initialize Map: fig_data list is empty after trace creation loops!")
+         return go.Figure(layout={'template': 'plotly_dark', 'title_text': "Error: Failed to create traces"})
+    
+    xaxis_cfg = dict(visible=False, showgrid=False, zeroline=False, showticklabels=False,
+                     range=x_range, autorange=False if x_range else True)
+    yaxis_cfg = dict(visible=False, showgrid=False, zeroline=False, showticklabels=False,
+                     range=y_range, autorange=False if y_range else True)
+    if x_range and y_range:
+        yaxis_cfg['scaleanchor'] = "x"
+        yaxis_cfg['scaleratio'] = 1
+
+    if x_range and y_range:
+        logger.info(
+            f"Initialize Map: Calculated axis ranges: X={x_range}, Y={y_range}")
+    else:
+        logger.warning(
+            "Initialize Map: Axis ranges (x_range/y_range) were not calculated!")
+
+
+    layout = go.Layout(
+        xaxis=xaxis_cfg, yaxis=yaxis_cfg, showlegend=False,
+        # uirevision tied to the specific session ID
+        uirevision=f"tracklayout_{expected_session_id}",
+        plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='white'), margin=dict(l=5, r=5, t=30, b=5), height=450,
+        title_text=f"Track Map ({expected_session_id})"
+    )
+
+    final_figure = go.Figure(data=fig_data, layout=layout)
+    elapsed_time = time.monotonic() - start_time_callback
+    logger.info(
+        f"Initialize Map: Final figure object created. Number of traces in data: {len(final_figure.data)}")
+    logger.info(
+        f"Map initialization for session '{expected_session_id}' took {elapsed_time:.4f}s. Figure has {len(fig_data)} traces.")
     return final_figure
+
+app.clientside_callback(
+    ClientsideFunction(
+        namespace='clientside',  # Matches window.dash_clientside.clientside
+        function_name='animateCarMarkers'  # Matches the function name in custom_script.js
+    ),
+    # Still need an Output, though JS modifies in place
+    Output('track-map-graph', 'figure'),
+    Input('car-positions-store', 'data'),
+    # Passes the current figure as 'existingFigure' to JS
+    State('track-map-graph', 'figure'),
+    # Passes the graph's div ID as 'graphDivId' to JS
+    State('track-map-graph', 'id'),
+    State('clientside-update-interval', 'interval')
+)
 
 # --- >>> ADDED: Driver Dropdown Update Callback <<< ---
 @app.callback(

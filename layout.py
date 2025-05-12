@@ -40,14 +40,56 @@ def create_layout():
         {'name': 'DRS', 'id': 'DRS'},
     ]
     # --- End Column Definition ---
+    
+    track_map_config = {
+        'staticPlot': False,  # True would make it a static image, but False allows hover, Plotly.animate etc.
+        'displayModeBar': False, # This is the most effective way to remove all buttons and interactions tied to them
+        'scrollZoom': False, # Explicitly disable scroll to zoom
+        # The following are often defaults when displayModeBar is false, but let's be explicit
+        'editable': False,
+        'edits': {
+            'annotationPosition': False,
+            'annotationTail': False,
+            'annotationText': False,
+            'axisTitleText': False,
+            'colorbarLabel': False,
+            'colorbarTitleText': False,
+            'legendPosition': False,
+            'legendText': False,
+            'shapePosition': False,
+            'titleText': False
+        },
+        'autosizable': True, # Let graph resize with its container
+        'responsive': True,  # Make it responsive to window size changes
+        'displaylogo': False # Hides the Plotly logo
+    }
+    
+    # BEGIN MODIFICATIONS FOR CLIENTSIDE ANIMATION
+    stores_and_intervals_for_clientside = [
+        dcc.Store(id='car-positions-store'),
+        dcc.Store(id='current-track-layout-cache-key-store'),
+        # Optional: Store for track layout if we want to pass it explicitly to JS,
+        # but for now, the initial figure load can handle it.
+        # dcc.Store(id='track-layout-store'),
+        dcc.Interval(
+            id='clientside-update-interval',
+            interval=1250,  # Update car data for JS every 1000 ms (1 second)
+            n_intervals=0,
+            disabled=True # Initially disabled, enable when session starts
+        )
+    ]
+    # END MODIFICATIONS FOR CLIENTSIDE ANIMATION
 
     layout = dbc.Container([
         # --- Added Interval Components ---
+        dcc.Interval(id='interval-component-map-animation', interval=100, n_intervals=0),
+        dcc.Interval(id='interval-component-timing', interval=150, n_intervals=0),
         dcc.Interval(id='interval-component-fast', interval=500, n_intervals=0),
         dcc.Interval(id='interval-component-medium', interval=1000, n_intervals=0),
         dcc.Interval(id='interval-component-slow', interval=5000, n_intervals=0),
+        dcc.Interval(id='interval-component-real-slow', interval=10000, n_intervals=0),
         html.Div(id='dummy-output-for-controls', style={'display': 'none'}),
-        # --- End Added Intervals ---
+        html.Div(children=stores_and_intervals_for_clientside),
 
         dbc.Row(dbc.Col(html.H1("F1 Live Timing SignalR Viewer"), width=12), className="mb-3"),
 
@@ -107,8 +149,12 @@ def create_layout():
             # --- Right Column ---
             dbc.Col([
                 html.H4("Track Map"),
-                dcc.Graph(id='track-map-graph', style={'height': '30vh', 'marginBottom': '10px'}), # Adjusted height
-
+                dcc.Graph(id='track-map-graph', style={'height': '450px', 'marginBottom': '10px'},config={
+                'displayModeBar': False, # Completely hide the modebar
+                'scrollZoom': False,     # Disable zooming with mouse scroll
+                'dragmode': False        # Disable drag modes (pan, zoom box)
+            }), # Adjusted height
+                html.Div(id='dummy-cache-output', style={'display': 'none'}), # Add this hidden Div
                 html.H4("Driver Details & Telemetry"),
                 dcc.Dropdown(
                     id='driver-select-dropdown', # <<< DRIVER SELECTOR

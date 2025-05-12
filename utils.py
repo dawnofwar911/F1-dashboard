@@ -11,6 +11,9 @@ from datetime import timezone
 import re
 import sys
 from pathlib import Path
+import requests
+from shapely.geometry import LineString
+import numpy as np
 
 # Import for F1 Schedule / Data
 try:
@@ -23,7 +26,115 @@ except ImportError:
     pd = None
 
 logger = logging.getLogger("F1App.Utils")
+main_logger = logging.getLogger("F1App.Utils")
 
+
+# utils.py
+
+# ... (other imports) ...
+import datetime # Ensure this is imported
+from datetime import timezone # Ensure this is imported
+
+def convert_utc_str_to_epoch_ms(timestamp_str):
+    """
+    Parses an F1 UTC timestamp string using the existing parse_iso_timestamp_safe
+    and returns milliseconds since epoch. Returns None if parsing fails.
+    """
+    if not timestamp_str or not isinstance(timestamp_str, str):
+        # logger.debug(f"convert_utc_str_to_epoch_ms: Invalid input - {timestamp_str}")
+        return None
+    
+    # Assuming parse_iso_timestamp_safe is robust and handles various F1 TS formats
+    dt_object = parse_iso_timestamp_safe(timestamp_str) 
+    
+    if dt_object:
+        # Ensure it's UTC before getting timestamp
+        if dt_object.tzinfo is None: # If naive, assume it's UTC as per F1 data context
+            dt_object = dt_object.replace(tzinfo=timezone.utc)
+        else: # If timezone-aware, convert to UTC
+            dt_object = dt_object.astimezone(timezone.utc)
+        return int(dt_object.timestamp() * 1000)
+    
+    # logger.warning(f"convert_utc_str_to_epoch_ms: Failed to parse '{timestamp_str}' using parse_iso_timestamp_safe.")
+    return None
+
+def _fetch_track_data_for_cache(session_key, year, circuit_key):
+    """Fetches track data from API. Returns a dict for the cache or None on failure."""
+    # Ensure year and circuit_key are usable strings for the URL
+    if not year or not circuit_key:
+        main_logger.error(
+            f"Fetch Helper: Invalid year or circuit key ({year}, {circuit_key})")
+        return None  # Return None to indicate failure
+
+    api_url = f"https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
+    main_logger.info(f"Fetch Helper: API fetch initiated for: {api_url}")
+    track_x_coords, track_y_coords, track_linestring_obj, x_range, y_range = [
+        None]*5
+    try:
+        response = requests.get(
+            api_url, headers={'User-Agent': 'F1-Dash/0.4'}, timeout=15)
+        response.raise_for_status()
+        map_api_data = response.json()
+        temp_x_api = [float(p) for p in map_api_data.get('x', [])]
+        temp_y_api = [float(p) for p in map_api_data.get('y', [])]
+        if temp_x_api and temp_y_api and len(temp_x_api) == len(temp_y_api) and len(temp_x_api) > 1:
+            _api_ls = LineString(zip(temp_x_api, temp_y_api))
+            if _api_ls.length > 0:
+                track_x_coords, track_y_coords, track_linestring_obj = temp_x_api, temp_y_api, _api_ls
+                x_min, x_max = np.min(track_x_coords), np.max(track_x_coords)
+                y_min, y_max = np.min(track_y_coords), np.max(track_y_coords)
+                pad_x = (x_max - x_min) * 0.05
+                pad_y = (y_max - y_min) * 0.05
+                x_range = [x_min - pad_x, x_max + pad_x]
+                y_range = [y_min - pad_y, y_max + pad_y]
+                main_logger.info(
+                    f"Fetch Helper: API SUCCESS for {session_key}.")
+            else:
+                main_logger.warning(
+                    f"Fetch Helper: API {session_key} provided zero-length track.")
+        else:
+            main_logger.warning(
+                f"Fetch Helper: API {session_key} no valid x/y.")
+    except Exception as e_api:
+        # Keep log concise
+        main_logger.error(
+            f"Fetch Helper: API FAILED for {session_key}: {e_api}", exc_info=False)
+
+    # Return results in a dictionary matching cache structure
+    cache_update_data = {
+        'session_key': session_key, 'x': track_x_coords, 'y': track_y_coords,
+        'linestring': track_linestring_obj, 'range_x': x_range, 'range_y': y_range
+    }
+    # Log what we are returning
+    ls_type = type(cache_update_data.get('linestring')).__name__
+    main_logger.debug(
+        f"Fetch Helper: Returning data. Linestring Type={ls_type}, X is None: {track_x_coords is None}")
+    return cache_update_data
+
+# --- Target function for the background fetch thread ---
+def _background_track_fetch_and_update(session_key, year, circuit_key, app_state):
+    """Runs fetch in background and updates cache under lock."""
+    fetched_data = _fetch_track_data_for_cache(session_key, year, circuit_key)
+    # Only update cache if fetch returned data (even if partial/None values)
+    if fetched_data:
+        with app_state.app_state_lock:  # Acquire lock ONLY for cache update
+            # Check if session key hasn't changed AGAIN since fetch started
+            current_session_in_state = app_state.session_details.get(
+                'SessionKey')
+            if current_session_in_state == session_key:
+                main_logger.info(
+                    f"Background Fetch: Updating cache for {session_key}.")
+                app_state.track_coordinates_cache = fetched_data
+                ls_type = type(app_state.track_coordinates_cache.get(
+                    'linestring')).__name__
+                main_logger.debug(
+                    f"Background Fetch: Cache updated. Linestring Type={ls_type}")
+            else:
+                main_logger.warning(
+                    f"Background Fetch: Session changed ({current_session_in_state}) while fetching for {session_key}. Discarding fetched data.")
+    else:
+        main_logger.error(
+            f"Background Fetch: Fetch helper failed for {session_key}. Cache not updated.")
 
 # --- Filename Sanitization ---
 def sanitize_filename(name):

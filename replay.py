@@ -52,7 +52,7 @@ def get_replay_files(directory):
     if dir_path.exists() and dir_path.is_dir():
         try:
             files = sorted([f.name for f in dir_path.glob('*.data.txt') if f.is_file()])
-            logger.debug(f"Found replay files in {directory}: {files}")
+            # logger.debug(f"Found replay files in {directory}: {files}")
         except Exception as e:
             logger.error(f"Error scanning directory '{directory}' for replay files: {e}")
     else:
