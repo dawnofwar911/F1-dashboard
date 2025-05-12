@@ -753,7 +753,7 @@ def update_clientside_interval_speed(replay_speed, interval_disabled):
 
     # Calculate new interval: faster speed = smaller interval
     # Ensure a minimum interval to prevent overwhelming the system
-    new_interval_ms = max(100, int(base_interval_ms / speed)) # Minimum 100ms
+    new_interval_ms = max(350, int(base_interval_ms / speed)) # Minimum 100ms
 
     logger.info(f"Adjusting clientside-update-interval to {new_interval_ms}ms for replay speed {speed}x")
     return new_interval_ms
