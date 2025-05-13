@@ -180,8 +180,10 @@ def _process_driver_list(data):
                     "TyreAge": "?",
                     "IsNewTyre": False, # Or True, depending on preferred default display
                     "StintsData": {},   # Initialize as empty dict
-                    "NumberOfPitStops": 0 # From TimingData, init to 0
+                    "NumberOfPitStops": 0, # From TimingData, init to 0
+                    "ReliablePitStops": 0
                 }
+                app_state.lap_time_history[driver_num_str] = [] # <<< ADDED
                 added_count += 1
             else:
                 # Modify existing entry in app_state.timing_state
@@ -199,6 +201,10 @@ def _process_driver_list(data):
                 current_driver_state.setdefault("IsNewTyre", False)
                 current_driver_state.setdefault("StintsData", {})
                 current_driver_state.setdefault("NumberOfPitStops", 0) # Unlikely to be missing if driver exists
+                current_driver_state.setdefault("ReliablePitStops", 0)
+                # Ensure lap history list exists for older states if this script is updated
+                if driver_num_str not in app_state.lap_time_history: # <<< ADDED
+                    app_state.lap_time_history[driver_num_str] = []   # <<< ADDED
                 updated_count += 1
 
         main_logger.debug(f"Processed DriverList message ({processed_count} entries). Added: {added_count}, Updated: {updated_count}. Total drivers now: {len(app_state.timing_state)}")
@@ -215,16 +221,29 @@ def _process_timing_data(data):
         for car_num_str, line_data in data['Lines'].items():
             driver_current_state = app_state.timing_state.get(car_num_str) # Use app_state
             if driver_current_state and isinstance(line_data, dict):
-                # ... (rest of update logic modifies driver_current_state directly) ...
+                # --- Capture Lap Time History ---
+                # 'NumberOfLaps' is the count of completed laps.
+                # 'LastLapTime' is the time for the lap that was just completed.
+                
+                # Get current completed laps count (before this potential new one)
+                prev_completed_laps = driver_current_state.get('NumberOfLaps', 0)
+                
+                # Update driver_current_state with all incoming data first
+                # This includes NumberOfLaps which will be the new total completed laps
+                original_last_lap_time_info = driver_current_state.get('LastLapTime', {}).copy()
+                
                 for key in ["Position", "Time", "GapToLeader", "InPit", "Retired", "Stopped", "PitOut", "NumberOfLaps", "NumberOfPitStops"]:
                      if key in line_data: driver_current_state[key] = line_data[key]
                 for key in ["IntervalToPositionAhead", "LastLapTime", "BestLapTime"]:
                     if key in line_data:
                         incoming_value = line_data[key]
                         if key not in driver_current_state or not isinstance(driver_current_state[key], dict): driver_current_state[key] = {}
-                        if isinstance(incoming_value, dict): driver_current_state[key].update(incoming_value)
+                        if isinstance(incoming_value, dict):
+                            driver_current_state[key].update(incoming_value)
                         else:
-                            sub_key = 'Value' if key == "IntervalToPositionAhead" else 'Time'; driver_current_state[key][sub_key] = incoming_value
+                            sub_key = 'Value' if key == "IntervalToPositionAhead" else 'Time' if key == "LastLapTime" else 'Value';
+                            if key == "LastLapTime" and not isinstance(driver_current_state[key], dict) : driver_current_state[key] = {} # Ensure dict for LastLapTime
+                            driver_current_state[key][sub_key] = incoming_value
                 if "Sectors" in line_data and isinstance(line_data["Sectors"], dict):
                      if "Sectors" not in driver_current_state or not isinstance(driver_current_state["Sectors"], dict): driver_current_state["Sectors"] = {}
                      for sector_idx, sector_data in line_data["Sectors"].items():
@@ -241,6 +260,45 @@ def _process_timing_data(data):
                 if driver_current_state.get("PitOut"): status_flags.append("Out Lap")
                 if status_flags: driver_current_state["Status"] = ", ".join(status_flags)
                 elif driver_current_state.get("Position", "-") != "-": driver_current_state["Status"] = "On Track"
+                
+                # --- Process LastLapTime for history AFTER it's updated in driver_current_state ---
+                new_last_lap_time_info = driver_current_state.get('LastLapTime', {})
+                new_lap_time_str = new_last_lap_time_info.get('Value') # F1 feed often uses 'Value' for LastLapTime
+                
+                current_completed_laps = driver_current_state.get('NumberOfLaps', 0)
+
+                # Add to history if NumberOfLaps increased and LastLapTime is new and valid
+                # Check if this lap number has already been recorded for this driver
+                # We use NumberOfLaps as the lap number for the LastLapTime that was just set
+                lap_number_for_this_time = current_completed_laps 
+                
+                if new_lap_time_str and new_lap_time_str != original_last_lap_time_info.get('Value'):
+                    # Also check if this lap number is greater than the last recorded lap number for this driver
+                    last_recorded_lap_num = 0
+                    if car_num_str in app_state.lap_time_history and app_state.lap_time_history[car_num_str]:
+                        last_recorded_lap_num = app_state.lap_time_history[car_num_str][-1]['lap_number']
+
+                    if lap_number_for_this_time > 0 and lap_number_for_this_time > last_recorded_lap_num:
+                        lap_time_seconds = utils.parse_lap_time_to_seconds(new_lap_time_str)
+                        if lap_time_seconds is not None:
+                            # Try to get the compound used for this lap.
+                            # This is tricky as TimingAppData (stints) might not be perfectly synced.
+                            # We look at the *current* tyre compound stored in driver_current_state,
+                            # which should be from the most recent TimingAppData.
+                            compound_for_lap = driver_current_state.get('TyreCompound', 'UNKNOWN')
+                            if compound_for_lap == '-': compound_for_lap = 'UNKNOWN' # Standardize
+
+                            lap_entry = {
+                                'lap_number': lap_number_for_this_time,
+                                'lap_time_seconds': lap_time_seconds,
+                                'compound': compound_for_lap, 
+                                'is_valid': new_last_lap_time_info.get('OverallFastest', False) or new_last_lap_time_info.get('PersonalFastest', False) or not driver_current_state.get('InPit', False) # Basic validity
+                            }
+                            
+                            if car_num_str not in app_state.lap_time_history: # Should be created by _process_driver_list
+                                app_state.lap_time_history[car_num_str] = []
+                            app_state.lap_time_history[car_num_str].append(lap_entry)
+                            logger.debug(f"Added Lap {lap_number_for_this_time} for {car_num_str}: {new_lap_time_str} ({lap_time_seconds}s) on {compound_for_lap}")
 
     elif data:
          main_logger.warning(f"Unexpected TimingData format received: {type(data)}")

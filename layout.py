@@ -193,7 +193,21 @@ def create_layout():
                 dcc.Graph(id='telemetry-graph', style={'height': '25vh'}),
                 html.Div(id='driver-details-output', style={'maxHeight': '15vh', 'overflowY': 'auto', 'border': '1px solid #444', 'padding': '5px', 'fontSize': 'small', 'marginTop':'10px'}),
                 html.Hr()
-            ], md=5)
+            ], md=5),
+            dbc.Row([
+            dbc.Col([
+                html.H4("Lap Time Progression"),
+                dcc.Dropdown(
+                    id='lap-time-driver-selector',
+                    options=[], # Populated by callback
+                    value=[],   # Initially no drivers selected, or select a few by default
+                    multi=True,
+                    placeholder="Select drivers for lap chart...",
+                    style={'marginBottom': '10px', 'color': '#333'}
+                ),
+                dcc.Graph(id='lap-time-progression-graph', style={'height': '400px'})
+            ], md=12) # Full width, or adjust as needed
+        ], className="mt-4 mb-3"), # Add some margin top
         ])
     ], fluid=True)
 
