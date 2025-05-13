@@ -28,12 +28,39 @@ except ImportError:
 logger = logging.getLogger("F1App.Utils")
 main_logger = logging.getLogger("F1App.Utils")
 
+def parse_lap_time_to_seconds(time_str: str) -> float | None:
+    """
+    Parses an F1 lap time string (e.g., "1:23.456" or "58.789") into total seconds.
+    Returns float if successful, None otherwise.
+    """
+    if not time_str or not isinstance(time_str, str) or time_str == '-':
+        return None
 
-# utils.py
+    # Check for minute:second.millisecond format
+    match_min_sec_ms = re.match(r'(\d+):(\d{2})\.(\d{3})', time_str)
+    if match_min_sec_ms:
+        minutes = int(match_min_sec_ms.group(1))
+        seconds = int(match_min_sec_ms.group(2))
+        milliseconds = int(match_min_sec_ms.group(3))
+        return minutes * 60 + seconds + milliseconds / 1000.0
 
-# ... (other imports) ...
-import datetime # Ensure this is imported
-from datetime import timezone # Ensure this is imported
+    # Check for second.millisecond format
+    match_sec_ms = re.match(r'(\d+)\.(\d{3})', time_str)
+    if match_sec_ms:
+        seconds = int(match_sec_ms.group(1))
+        milliseconds = int(match_sec_ms.group(2))
+        return seconds + milliseconds / 1000.0
+    
+    # Check for just seconds (less common for lap times, but possible)
+    match_s = re.match(r'(\d+)', time_str)
+    if match_s:
+        try:
+            return float(time_str) # Could be an int or float already
+        except ValueError:
+            pass # Fall through if not a simple float
+
+    logger.warning(f"Could not parse lap time string: '{time_str}'")
+    return None
 
 def convert_utc_str_to_epoch_ms(timestamp_str):
     """

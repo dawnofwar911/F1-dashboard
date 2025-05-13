@@ -978,7 +978,124 @@ def update_driver_dropdown_options(n_intervals):
          logger.error(f"Error generating driver dropdown options: {e}", exc_info=True)
          options = [{'label': 'Error loading drivers', 'value': '', 'disabled': True}]
     return options
+    
+@app.callback(
+    Output('lap-time-driver-selector', 'options'),
+    Input('interval-component-slow', 'n_intervals') # Update driver list slowly
+)
+def update_lap_chart_driver_options(n_intervals):
+    """Updates the driver selection dropdown options for the lap chart."""
+    # This can reuse the same utility as the main driver selector if the format is suitable
+    # Or create a specific one if needed. For now, reuse.
+    with app_state.app_state_lock:
+        timing_state_copy = app_state.timing_state.copy()
+    
+    options = utils.generate_driver_options(timing_state_copy) # Assumes this returns list of {'label': ..., 'value': ...}
+    # Set default selected drivers - e.g., top few, or based on some logic
+    # For now, we'll let user select.
+    return options
 
+
+@app.callback(
+    Output('lap-time-progression-graph', 'figure'),
+    [Input('lap-time-driver-selector', 'value'),
+     Input('interval-component-medium', 'n_intervals')] # Refresh graph periodically or on selection change
+)
+def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
+    # selected_drivers_rnos will be a list of driver numbers (strings, e.g., ["44", "1"])
+    
+    fig = go.Figure(layout={
+        'template': 'plotly_dark',
+        'title_text': 'Lap Time Progression',
+        'xaxis_title': 'Lap Number',
+        'yaxis_title': 'Lap Time (seconds)',
+        'hovermode': 'x unified' # Or 'closest'
+    })
+    
+    if not selected_drivers_rnos: # If no drivers are selected
+        fig.update_layout(
+            annotations=[{
+                'text': "Select drivers to display their lap times.",
+                'xref': 'paper', 'yref': 'paper',
+                'showarrow': False, 'font': {'size': 14}
+            }]
+        )
+        return fig
+
+    # Access lap_time_history safely
+    with app_state.app_state_lock:
+        # Create a deep copy if modifying, or iterate carefully if just reading
+        lap_history_snapshot = {
+            rno: list(laps) for rno, laps in app_state.lap_time_history.items()
+        }
+        # Also get team colors for traces
+        timing_state_snapshot = app_state.timing_state.copy()
+
+    min_time = float('inf')
+    max_time = float('-inf')
+
+    for driver_rno in selected_drivers_rnos:
+        driver_laps = lap_history_snapshot.get(driver_rno, [])
+        if not driver_laps:
+            continue
+
+        # Get driver TLA and team color for the legend
+        driver_info = timing_state_snapshot.get(driver_rno, {})
+        tla = driver_info.get('Tla', driver_rno)
+        team_color_hex = driver_info.get('TeamColour', 'FFFFFF') # Default to white
+        if not team_color_hex.startswith('#'):
+            team_color_hex = '#' + team_color_hex
+
+        lap_numbers = [lap['lap_number'] for lap in driver_laps if lap.get('is_valid', True)]
+        lap_times_sec = [lap['lap_time_seconds'] for lap in driver_laps if lap.get('is_valid', True)]
+        
+        # For y-axis range calculation
+        if lap_times_sec:
+            min_time = min(min_time, min(lap_times_sec))
+            max_time = max(max_time, max(lap_times_sec))
+
+        # Custom hover text
+        hover_texts = []
+        for lap in driver_laps:
+            if lap.get('is_valid', True):
+                time_formatted = str(datetime.timedelta(seconds=lap['lap_time_seconds'])).split('.')[0][2:] # Format as MM:SS
+                if lap['lap_time_seconds'] < 60: # if under a minute, format as SS.mmm
+                     time_formatted = f"{lap['lap_time_seconds']:.3f}"
+                else: # format as M:SS.mmm, but timedelta might give H:MM:SS.
+                     total_seconds = lap['lap_time_seconds']
+                     minutes = int(total_seconds // 60)
+                     seconds = total_seconds % 60
+                     time_formatted = f"{minutes}:{seconds:06.3f}"
+
+
+                hover_texts.append(
+                    f"<b>{tla}</b><br>Lap: {lap['lap_number']}<br>Time: {time_formatted}<br>Compound: {lap['compound']}<extra></extra>"
+                )
+
+
+        fig.add_trace(go.Scatter(
+            x=lap_numbers,
+            y=lap_times_sec,
+            mode='lines+markers',
+            name=tla, # For legend
+            marker=dict(color=team_color_hex, size=6),
+            line=dict(color=team_color_hex, width=2),
+            hovertext=hover_texts,
+            hoverinfo='text' # Use custom hover text
+        ))
+
+    # Adjust y-axis range for better visualization
+    if min_time != float('inf') and max_time != float('-inf'):
+        padding = (max_time - min_time) * 0.05 # 5% padding
+        fig.update_yaxes(range=[min_time - padding, max_time + padding])
+    
+    # Format y-axis ticks to show M:SS.mmm
+    # This is a bit tricky as y-axis values are floats (seconds)
+    # We can show them as seconds and let hover text show formatted time.
+    # Or attempt to format ticks (more complex, might need specific tickvals and ticktext)
+    
+    fig.update_layout(legend_title_text='Drivers')
+    return fig
 
 # --- Final Log ---
 logger.info("Callback definitions processed.")

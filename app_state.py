@@ -39,6 +39,13 @@ timing_state = {}
 #     # Other timing info (laps, sectors, etc.)
 # }
 
+# Structure: { driver_num_str (e.g., "44"): [
+#               {'lap_number': 1, 'lap_time_seconds': 95.345, 'compound': 'MEDIUM', 'is_valid': True},
+#               {'lap_number': 2, 'lap_time_seconds': 94.876, 'compound': 'MEDIUM', 'is_valid': True},
+#               # ... more laps ...
+#            ], ... }
+lap_time_history = {}
+
 # Specific state stores easily accessible by callbacks
 track_status_data = {} # Holds latest TrackStatus (Status, Message)
 session_details = {}   # Holds latest SessionInfo/SessionData (Meeting, Circuit, Name, Year, Status, etc.)
