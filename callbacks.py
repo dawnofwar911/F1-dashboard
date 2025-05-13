@@ -171,15 +171,13 @@ def update_main_data_displays(n):
     other_elements = []
     table_data = []
     timestamp_text = "Waiting..."
-    start_time = time.monotonic()  # Time the callback
+    start_time = time.monotonic()
 
     try:
         with app_state.app_state_lock:
-            # Copy only needed states under lock
             timing_state_copy = app_state.timing_state.copy()
-            # No need to copy if only reading specific keys
-            data_store_copy = app_state.data_store
-
+            data_store_copy = app_state.data_store # Read only, direct access okay
+            
         # --- Other Data Display (Keep previous logic) ---
         excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
                             'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat']
@@ -188,34 +186,55 @@ def update_main_data_displays(n):
         for stream in sorted_streams:
             value = data_store_copy.get(stream, {})
             data_payload = value.get('data', 'N/A')
-            timestamp_str = value.get('timestamp', 'N/A')
+            timestamp_str_val = value.get('timestamp', 'N/A') # Renamed to avoid conflict
             try:
                 data_str = json.dumps(data_payload, indent=2)
             except TypeError:
                 data_str = str(data_payload)
             if len(data_str) > 500:
                 data_str = data_str[:500] + "\n...(truncated)"
-            other_elements.append(html.Details([html.Summary(f"{stream} ({timestamp_str})"), html.Pre(data_str, style={
+            other_elements.append(html.Details([html.Summary(f"{stream} ({timestamp_str_val})"), html.Pre(data_str, style={
                                   'marginLeft': '15px', 'maxHeight': '200px', 'overflowY': 'auto'})], open=(stream == "LapCount")))
 
         # --- Timing Table Timestamp ---
-        timing_data_entry = data_store_copy.get(
-            'TimingData', {})  # Read from non-copied dict
+        timing_data_entry = data_store_copy.get('TimingData', {})
         timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else "Waiting..."
 
         # --- Generate Timing Table Data (Optimized Loop) ---
-        if timing_state_copy:  # Process the copied timing state
+        if timing_state_copy:
             processed_table_data = []
-            # No need to sort keys here if sorting the final list later
             for car_num, driver_state in timing_state_copy.items():
-                # Use .get() with defaults directly where possible
-                # Use car_num as fallback for Car column
-                tla = driver_state.get("Tla", car_num)
+                # --- Driver Number and TLA ---
+                racing_no = driver_state.get("RacingNumber", car_num) # Fallback to car_num if no RacingNumber
+                tla = driver_state.get("Tla", "N/A") # TLA for 'Car' column
+
                 pos = driver_state.get('Position', '-')
-                compound = driver_state.get('TyreCompound', '-')
-                age = driver_state.get('TyreAge', '?')
-                tyre = f"{compound}({age}L)" if compound != '-' else '-'
-                time_val = driver_state.get('Time', '-')
+                
+                # --- Tyre Information Formatting ---
+                compound = driver_state.get('TyreCompound', '-') 
+                age = driver_state.get('TyreAge', '?')      
+                is_new = driver_state.get('IsNewTyre', False) 
+                compound_short = ""
+                known_compounds = ["SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"]
+                if compound and compound.upper() in known_compounds:
+                    compound_short = compound[0].upper()
+                elif compound and compound != '-': 
+                    compound_short = "?" 
+                tyre_display_parts = []
+                if compound_short: 
+                    tyre_display_parts.append(compound_short)
+                if age != '?': 
+                    age_str = str(age) 
+                    tyre_display_parts.append(f"{age_str}L")
+                tyre_base = " ".join(tyre_display_parts) if tyre_display_parts else "-"
+                new_tyre_indicator = ""
+                if compound_short and compound_short != '?' and not is_new: 
+                    new_tyre_indicator = "*"
+                tyre = f"{tyre_base}{new_tyre_indicator}"
+                if tyre_base == "-": 
+                    tyre = "-"
+
+                time_val = driver_state.get('Time', '-') # This is 'Lap Time'
                 gap = driver_state.get('GapToLeader', '-')
                 interval = utils.get_nested_state(
                     driver_state, 'IntervalToPositionAhead', 'Value', default='-')
@@ -229,33 +248,54 @@ def update_main_data_displays(n):
                     driver_state, 'Sectors', '1', 'Value', default='-')
                 s3 = utils.get_nested_state(
                     driver_state, 'Sectors', '2', 'Value', default='-')
+                
+                # --- Pit Stops ---
+                reliable_stops = driver_state.get('ReliablePitStops', 0)
+                timing_data_stops = driver_state.get('NumberOfPitStops', 0)
+                
+                pits_display_val = '0' # Default to 0
+                if reliable_stops > 0:
+                    pits_display_val = str(reliable_stops)
+                elif timing_data_stops > 0: # Only if reliable_stops is 0, consider timing_data_stops
+                    pits_display_val = str(timing_data_stops)
+                # If both are 0, it remains '0'.
+                # If StintsData has been processed and ReliablePitStops is correctly 0 (e.g. first stint),
+                # it will correctly show 0, even if TimingData_NumberOfPitStops is momentarily 1.
+
                 status = driver_state.get('Status', 'N/A')
-                # Access CarData sub-dict, default to empty dict if not present
+                
                 car_data = driver_state.get('CarData', {})
                 speed = car_data.get('Speed', '-')
                 gear = car_data.get('Gear', '-')
                 rpm = car_data.get('RPM', '-')
                 drs_val = car_data.get('DRS')
-                drs_map = {8: "E", 10: "On", 12: "On", 14: "ON"}
-                drs = drs_map.get(
-                    drs_val, 'Off') if drs_val is not None else 'Off'
+                drs_map = {8: "E", 10: "On", 12: "On", 14: "ON"} # Eligible, On
+                drs = drs_map.get(drs_val, 'Off') if drs_val is not None else 'Off'
 
-                row = {'Car': tla, 'Pos': pos, 'Tyre': tyre, 'Time': time_val, 'Gap': gap,
-                       'Interval': interval, 'Last Lap': last_lap, 'Best Lap': best_lap,
-                       'S1': s1, 'S2': s2, 'S3': s3, 'Status': status,
-                       'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs}
+                row = {
+                    'No.': racing_no, # Populate 'No.' column
+                    'Car': tla,       # Populate 'Car' (TLA) column
+                    'Pos': pos,
+                    'Tyre': tyre,     # Updated tyre display
+                    'Time': time_val, # This is 'Lap Time'
+                    'Gap': gap,
+                    'Interval': interval,
+                    'Last Lap': last_lap,
+                    'Best Lap': best_lap,
+                    'S1': s1, 'S2': s2, 'S3': s3,
+                    'Pits': pits_display_val,     # Populate 'Pits' column
+                    'Status': status,
+                    'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs
+                }
                 processed_table_data.append(row)
 
-            # Sort the final list once
             processed_table_data.sort(key=utils.pos_sort_key)
             table_data = processed_table_data
         else:
             timestamp_text = "Waiting for DriverList..."
 
         end_time = time.monotonic()
-        # Log execution time
-        # logger.debug(
-            # f"update_main_data_displays took {end_time - start_time:.4f}s")
+        # logger.debug(f"update_main_data_displays took {end_time - start_time:.4f}s")
 
         return other_elements, table_data, timestamp_text
 

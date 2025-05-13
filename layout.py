@@ -28,12 +28,20 @@ def create_layout():
 
     # --- Define DataTable Columns Locally ---
     timing_table_columns = [
-        {"name": "Car", "id": "Car"}, {"name": "Pos", "id": "Pos"}, {"name": "Tyre", "id": "Tyre"},
-        {"name": "Time", "id": "Time"}, {"name": "Interval", "id": "Interval"}, {"name": "Gap", "id": "Gap"},
-        {"name": "Last Lap", "id": "Last Lap"}, {"name": "Best Lap", "id": "Best Lap"},
-        {"name": "S1", "id": "S1"}, {"name": "S2", "id": "S2"}, {"name": "S3", "id": "S3"},
+        {"name": "No.", "id": "No."}, # <<< ADDED Driver Number
+        {"name": "Car", "id": "Car"},
+        {"name": "Pos", "id": "Pos"},
+        {"name": "Tyre", "id": "Tyre"}, # Tyre compound and age
+        {"name": "Lap Time", "id": "Time"}, # Renamed for clarity from "Time"
+        {"name": "Interval", "id": "Interval"},
+        {"name": "Gap", "id": "Gap"},
+        {"name": "Last Lap", "id": "Last Lap"},
+        {"name": "Best Lap", "id": "Best Lap"},
+        {"name": "S1", "id": "S1"},
+        {"name": "S2", "id": "S2"},
+        {"name": "S3", "id": "S3"},
+        {"name": "Pits", "id": "Pits"}, # <<< ADDED Pit Stops
         {"name": "Status", "id": "Status"},
-        # Added telemetry columns
         {'name': 'Speed', 'id': 'Speed', 'type': 'numeric'},
         {'name': 'Gear', 'id': 'Gear', 'type': 'numeric'},
         {'name': 'RPM', 'id': 'RPM', 'type': 'numeric'},
@@ -41,47 +49,43 @@ def create_layout():
     ]
     # --- End Column Definition ---
     
-    track_map_config = {
-        'staticPlot': False,  # True would make it a static image, but False allows hover, Plotly.animate etc.
-        'displayModeBar': False, # This is the most effective way to remove all buttons and interactions tied to them
-        'scrollZoom': False, # Explicitly disable scroll to zoom
-        # The following are often defaults when displayModeBar is false, but let's be explicit
-        'editable': False,
-        'edits': {
-            'annotationPosition': False,
-            'annotationTail': False,
-            'annotationText': False,
-            'axisTitleText': False,
-            'colorbarLabel': False,
-            'colorbarTitleText': False,
-            'legendPosition': False,
-            'legendText': False,
-            'shapePosition': False,
-            'titleText': False
-        },
-        'autosizable': True, # Let graph resize with its container
-        'responsive': True,  # Make it responsive to window size changes
-        'displaylogo': False # Hides the Plotly logo
+    tyre_style_base = { # Base style for tyre cells
+        'textAlign': 'center',
+        'fontWeight': 'bold',
+        'border': '1px solid #444', # Add a subtle border to colored cells
+        # 'borderRadius': '5px', # Slightly rounded corners for the cell
+        # 'padding': '2px 4px',
+        # 'minWidth': '60px', # Ensure enough width for "S 12L"
     }
     
-    # BEGIN MODIFICATIONS FOR CLIENTSIDE ANIMATION
+    track_map_config = {
+        'staticPlot': False,
+        'displayModeBar': False,
+        'scrollZoom': False,
+        'editable': False,
+        'edits': {
+            'annotationPosition': False, 'annotationTail': False, 'annotationText': False,
+            'axisTitleText': False, 'colorbarLabel': False, 'colorbarTitleText': False,
+            'legendPosition': False, 'legendText': False, 'shapePosition': False, 'titleText': False
+        },
+        'autosizable': True,
+        'responsive': True,
+        'displaylogo': False
+    }
+    
+   
     stores_and_intervals_for_clientside = [
         dcc.Store(id='car-positions-store'),
         dcc.Store(id='current-track-layout-cache-key-store'),
-        # Optional: Store for track layout if we want to pass it explicitly to JS,
-        # but for now, the initial figure load can handle it.
-        # dcc.Store(id='track-layout-store'),
         dcc.Interval(
             id='clientside-update-interval',
-            interval=1250,  # Update car data for JS every 1000 ms (1 second)
+            interval=1250, 
             n_intervals=0,
-            disabled=True # Initially disabled, enable when session starts
+            disabled=True
         )
     ]
-    # END MODIFICATIONS FOR CLIENTSIDE ANIMATION
 
     layout = dbc.Container([
-        # --- Added Interval Components ---
         dcc.Interval(id='interval-component-map-animation', interval=100, n_intervals=0),
         dcc.Interval(id='interval-component-timing', interval=300, n_intervals=0),
         dcc.Interval(id='interval-component-fast', interval=500, n_intervals=0),
@@ -92,100 +96,106 @@ def create_layout():
         html.Div(children=stores_and_intervals_for_clientside),
 
         dbc.Row(dbc.Col(html.H1("F1 Live Timing SignalR Viewer"), width=12), className="mb-3"),
-
-        # Session Details Row (Keep as is)
+        dbc.Row([dbc.Col(html.Div(id='session-info-display'), width=12)], className="mb-3", id='session-details-row'),
         dbc.Row([
-            dbc.Col(html.Div(id='session-info-display'), width=12)
-        ], className="mb-3", id='session-details-row'),
-
-        # Status Row (Keep as is)
-        dbc.Row([
-             # Use the IDs from the callbacks file ('connection-status', 'track-status-display')
             dbc.Col(html.Div(id='connection-status', children="Status: Initializing..."), width="auto"),
             dbc.Col(html.Div(id='track-status-display', children="Track: Unknown"), width="auto", style={'marginLeft': '20px'}),
-            # Remove heartbeat display for now unless needed
-            # dbc.Col(html.Div(id='heartbeat-display'), width="auto", style={'marginLeft': '20px'}),
-        ], className="mb-3 align-items-center"), # Added align-items-center
-
-        # Control Row (Keep structure, ensure IDs match callbacks.py)
+        ], className="mb-3 align-items-center"),
         dbc.Row([
-            dbc.Col(dbc.Button("Connect", id="connect-button", color="success"), width="auto", className="mb-1"), # Added margin bottom
-            dbc.Col(dbc.Button("Disconnect", id="disconnect-button", color="warning"), width="auto", className="mb-1 me-3"), # Added margin bottom/end
-            dbc.Col(dbc.Checkbox(id='record-data-checkbox', label="Record Live Data", value=False, className="form-check-inline"), width="auto", className="mb-1 align-self-center"), # Align checkbox
-            dbc.Col(dcc.Dropdown(id='replay-file-selector', options=replay_file_options, placeholder="Select replay file...", style={'minWidth': '200px', 'color': '#333'}), width=True, className="mb-1"), # Let dropdown take available width
-            dbc.Col(dcc.Slider(id='replay-speed-slider', min=0.0, max=10, step=0.5, value=1.0, marks={1:'1x', 5:'5x', 10:'10x'}), width=2, className="mb-1 align-self-center", style={'minWidth':'150px'}), # Give slider some minimum width
+            dbc.Col(dbc.Button("Connect", id="connect-button", color="success"), width="auto", className="mb-1"),
+            dbc.Col(dbc.Button("Disconnect", id="disconnect-button", color="warning"), width="auto", className="mb-1 me-3"),
+            dbc.Col(dbc.Checkbox(id='record-data-checkbox', label="Record Live Data", value=False, className="form-check-inline"), width="auto", className="mb-1 align-self-center"),
+            dbc.Col(dcc.Dropdown(id='replay-file-selector', options=replay_file_options, placeholder="Select replay file...", style={'minWidth': '200px', 'color': '#333'}), width=True, className="mb-1"),
+            dbc.Col(dcc.Slider(id='replay-speed-slider', min=0.0, max=10, step=0.5, value=1.0, marks={1:'1x', 5:'5x', 10:'10x'}), width=2, className="mb-1 align-self-center", style={'minWidth':'150px'}),
             dbc.Col(dbc.Button("Replay", id="replay-button", color="primary"), width="auto", className="mb-1"),
             dbc.Col(dbc.Button("Stop Replay", id="stop-replay-button", color="danger"), width="auto", className="mb-1"),
-        ], className="mb-3 align-items-center g-1"), # Use g-1 for smaller gutters between columns
+        ], className="mb-3 align-items-center g-1"),
         
-        # --- >>> RESTRUCTURED DATA AREA <<< ---
         dbc.Row([
-            # --- Left Column ---
             dbc.Col([
                 html.H4("Live Timing"),
-                # Use timing-data-timestamp ID from callbacks
                 html.P(id='timing-data-timestamp', children="Waiting...", style={'fontSize':'small', 'color':'grey'}),
                 dash_table.DataTable(
                     id='timing-data-actual-table', columns=timing_table_columns, data=[],
                     fixed_rows={'headers': True},
-                    style_table={'height': '65vh', 'overflowY': 'auto', 'overflowX': 'auto'}, # Adjusted height
-                    # Keep styling...
-                    style_cell={'minWidth': '50px', 'width': '80px', 'maxWidth': '120px','overflow': 'hidden','textOverflow': 'ellipsis','textAlign': 'left','padding': '5px','backgroundColor': 'rgb(50, 50, 50)','color': 'white'},
-                    style_header={'backgroundColor': 'rgb(30, 30, 30)','fontWeight': 'bold','border': '1px solid grey'},
+                    style_table={'height': '65vh', 'overflowY': 'auto', 'overflowX': 'auto'},
+                    style_cell={ # Default cell style
+                        'minWidth': '40px', 'width': '70px', 'maxWidth': '150px', # Adjusted widths
+                        'overflow': 'hidden', 'textOverflow': 'ellipsis',
+                        'textAlign': 'left', 'padding': '5px',
+                        'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white'
+                    },
+                    style_header={
+                        'backgroundColor': 'rgb(30, 30, 30)', 'fontWeight': 'bold',
+                        'border': '1px solid grey'
+                    },
                     style_data={'borderBottom': '1px solid grey'},
-                    style_data_conditional=[ {'if': {'row_index': 'odd'},'backgroundColor': 'rgb(60, 60, 60)'}, {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "SOFT"'},'backgroundColor': '#FF3333', 'color': 'black', 'fontWeight': 'bold'}, {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "MEDIUM"'},'backgroundColor': '#FFF333', 'color': 'black', 'fontWeight': 'bold'}, {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "HARD"'},'backgroundColor': '#FFFFFF', 'color': 'black', 'fontWeight': 'bold'}, {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "INTERMEDIATE"'},'backgroundColor': '#33FF33', 'color': 'black', 'fontWeight': 'bold'}, {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "WET"'},'backgroundColor': '#3333FF', 'color': 'white', 'fontWeight': 'bold'}, {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} = "-"'},'backgroundColor': 'inherit', 'color': 'grey'}, ],
+                    style_data_conditional=[
+                        {'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(60, 60, 60)'},
+                        # --- MODIFIED TYRE STYLES ---
+                        # Soft Tyre (Red)
+                        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "S " || {Tyre} = "S"'}, # Match "S " or just "S"
+                         'backgroundColor': '#D90000', 'color': 'white', **tyre_style_base},
+                        # Medium Tyre (Yellow)
+                        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "M " || {Tyre} = "M"'},
+                         'backgroundColor': '#EBC000', 'color': '#383838', **tyre_style_base}, # Darker text for yellow
+                        # Hard Tyre (White/Light Grey)
+                        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "H " || {Tyre} = "H"'},
+                         'backgroundColor': '#E0E0E0', 'color': '#383838', **tyre_style_base}, # Darker text for light grey
+                        # Intermediate Tyre (Green)
+                        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "I " || {Tyre} = "I"'},
+                         'backgroundColor': '#00A300', 'color': 'white', **tyre_style_base},
+                        # Wet Tyre (Blue)
+                        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "W " || {Tyre} = "W"'},
+                         'backgroundColor': '#0077FF', 'color': 'white', **tyre_style_base},
+                        # Unknown/No Tyre
+                        {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} = "-"'},
+                         'backgroundColor': 'inherit', 'color': 'grey', 'textAlign': 'center'},
+                        # Style for Position column
+                        {'if': {'column_id': 'Pos'}, 'textAlign': 'center', 'fontWeight': 'bold', 'width': '40px', 'minWidth':'40px'},
+                        # Style for Driver Number column
+                        {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '40px', 'minWidth':'40px', 'paddingRight':'2px'},
+                         # Style for Car (TLA) column
+                        {'if': {'column_id': 'Car'}, 'textAlign': 'left', 'width': '50px', 'minWidth':'50px'},
+                        # Style for Pits column
+                        {'if': {'column_id': 'Pits'}, 'textAlign': 'center', 'width': '40px', 'minWidth':'40px'},
+                    ],
                     tooltip_duration=None
                 ),
                 html.Hr(),
                 html.H4("Other Data Streams"),
-                # Use other-data-display ID from callbacks
-                html.Div(id='other-data-display', style={'maxHeight': '20vh', 'overflowY': 'auto', 'border': '1px solid grey', 'padding': '10px', 'fontSize': 'small'}), # Adjusted height
+                html.Div(id='other-data-display', style={'maxHeight': '20vh', 'overflowY': 'auto', 'border': '1px solid grey', 'padding': '10px', 'fontSize': 'small'}),
                 html.H4("Race Control Messages"),
-                # Use race-control-log-display ID from callbacks
                 dcc.Textarea(id='race-control-log-display', value='Waiting...', style={
                              'width': '100%', 'height': '15vh', 'backgroundColor': '#333', 'color': '#DDD', 'border': '1px solid grey', 'fontFamily': 'monospace'}, readOnly=True)
-            ], md=7), # 7 columns for timing/other
+            ], md=7),
 
-            # --- Right Column ---
             dbc.Col([
                 html.H4("Track Map"),
                 dcc.Graph(id='track-map-graph', style={'height': '450px', 'marginBottom': '10px'},config={
-                'displayModeBar': False, # Completely hide the modebar
-                'scrollZoom': False,     # Disable zooming with mouse scroll
-                'dragmode': False        # Disable drag modes (pan, zoom box)
-            }), # Adjusted height
-                html.Div(id='dummy-cache-output', style={'display': 'none'}), # Add this hidden Div
+                    'displayModeBar': False, 'scrollZoom': False, 'dragmode': False }),
+                html.Div(id='dummy-cache-output', style={'display': 'none'}),
                 html.H4("Driver Details & Telemetry"),
                 dcc.Dropdown(
-                    id='driver-select-dropdown', # <<< DRIVER SELECTOR
-                    options=[], # Populated by callback
-                    placeholder="Select Driver...",
+                    id='driver-select-dropdown', options=[], placeholder="Select Driver...",
                     style={'color': '#333', 'marginBottom':'10px'}
                 ),
-                # --- >>> ADDED Lap Selector and Telemetry Graph <<< ---
                 dbc.Row([
                      dbc.Col(html.Label("Lap:"), width="auto", className="pe-0 align-self-center"),
                      dbc.Col(
                           dcc.Dropdown(
-                               id='lap-selector-dropdown', # <<< LAP SELECTOR
-                               options=[], placeholder="Lap",
+                               id='lap-selector-dropdown', options=[], placeholder="Lap",
                                style={'minWidth': '80px', 'color': '#333'},
                                clearable=False, searchable=False, disabled=True
-                          ), width=3 # Adjust width
+                          ), width=3
                      )
                 ], className="mb-2 align-items-center"),
-                dcc.Graph(id='telemetry-graph', style={'height': '25vh'}), # <<< TELEMETRY GRAPH AREA
-                # --- >>> END ADDED <<< ---
-                html.Div(id='driver-details-output', style={'maxHeight': '15vh', 'overflowY': 'auto', 'border': '1px solid #444', 'padding': '5px', 'fontSize': 'small', 'marginTop':'10px'}), # Area for other details
+                dcc.Graph(id='telemetry-graph', style={'height': '25vh'}),
+                html.Div(id='driver-details-output', style={'maxHeight': '15vh', 'overflowY': 'auto', 'border': '1px solid #444', 'padding': '5px', 'fontSize': 'small', 'marginTop':'10px'}),
                 html.Hr()
-            ], md=5) # 5 columns for map/details/rc
+            ], md=5)
         ])
-        # --- >>> END RESTRUCTURED DATA AREA <<< ---
-
-    ], fluid=True) # Use fluid container
+    ], fluid=True)
 
     logger.info("Layout creation finished.")
     return layout
-
-# The following line is typically NOT needed if layout is imported by main.py/app_instance.py
-# print("DEBUG: layout module loaded")
