@@ -71,29 +71,42 @@ def _process_weather_data(data):
 
 def _process_timing_app_data(data):
     """ Helper function to process TimingAppData stream data (contains Stint/Tyre info) """
-    # global timing_state # Removed global
-    if not app_state.timing_state: # Use app_state.timing_state
+    if not app_state.timing_state:
         return
 
     if isinstance(data, dict) and 'Lines' in data and isinstance(data['Lines'], dict):
         for car_num_str, line_data in data['Lines'].items():
-            # Use app_state.timing_state
             driver_current_state = app_state.timing_state.get(car_num_str)
             if driver_current_state and isinstance(line_data, dict):
-                # ... (rest of tyre/stint processing logic is the same,
-                #      as it modifies the driver_current_state dictionary directly,
-                #      which is already retrieved from app_state.timing_state) ...
-                current_compound = driver_current_state.get('TyreCompound', '-')
-                current_age = driver_current_state.get('TyreAge', '?')
-                stints_data = line_data.get('Stints')
-                if isinstance(stints_data, dict) and stints_data:
+                # Store the raw stints data if available
+                stints_payload = line_data.get('Stints')
+                if isinstance(stints_payload, dict) and stints_payload:
+                    # Store the new raw stints data
+                    driver_current_state['StintsData'] = stints_payload
+                    
+                    # Update ReliablePitStops based on the new StintsData
+                    driver_current_state['ReliablePitStops'] = max(0, len(stints_payload) - 1)
+                    
+                    # --- Derive current compound, age, and new status from this new stints_payload ---
+                    # Initialize with current state to persist if specific details are missing in this stint
+                    current_compound = driver_current_state.get('TyreCompound', '-')
+                    current_age = driver_current_state.get('TyreAge', '?')
+                    is_new_tyre = driver_current_state.get('IsNewTyre', False) # Persist previous 'new' status
+
                     try:
-                        latest_stint_key = sorted(stints_data.keys(), key=int)[-1]
-                        latest_stint_info = stints_data[latest_stint_key]
+                        latest_stint_key = sorted(stints_payload.keys(), key=int)[-1]
+                        latest_stint_info = stints_payload[latest_stint_key]
+
                         if isinstance(latest_stint_info, dict):
                             compound_value = latest_stint_info.get('Compound')
-                            if isinstance(compound_value, str):
+                            if isinstance(compound_value, str) and compound_value:
                                 current_compound = compound_value.upper()
+                            # else: current_compound (from previous state) persists
+
+                            new_status_str = latest_stint_info.get('New')
+                            if isinstance(new_status_str, str): # Explicitly check for "true"
+                                is_new_tyre = new_status_str.lower() == 'true'
+                            # else: is_new_tyre (from previous state) persists
 
                             age_determined = False
                             total_laps_value = latest_stint_info.get('TotalLaps')
@@ -102,30 +115,43 @@ def _process_timing_app_data(data):
                                     current_age = int(total_laps_value)
                                     age_determined = True
                                 except (ValueError, TypeError):
-                                    main_logger.warning(f"Driver {car_num_str}: Could not convert TotalLaps '{total_laps_value}' to int.")
-
+                                    main_logger.warning(f"Driver {car_num_str}: Could not convert TotalLaps '{total_laps_value}' to int for Stint {latest_stint_key}.")
+                                    # current_age (from previous state) persists if conversion fails
+                            
                             if not age_determined:
                                 start_laps_value = latest_stint_info.get('StartLaps')
-                                num_laps_value = driver_current_state.get('NumberOfLaps')
+                                num_laps_value = driver_current_state.get('NumberOfLaps') # From TimingData
                                 if start_laps_value is not None and num_laps_value is not None:
                                     try:
                                         start_lap = int(start_laps_value)
                                         current_lap_completed = int(num_laps_value)
                                         age_calc = current_lap_completed - start_lap + 1
                                         current_age = age_calc if age_calc >= 0 else '?'
-                                        age_determined = True
                                     except (ValueError, TypeError) as e:
-                                         main_logger.warning(f"Driver {car_num_str}: Error converting StartLaps/NumberOfLaps for age calculation: {e}")
-                        else:
+                                         main_logger.warning(f"Driver {car_num_str}: Error converting StartLaps/NumberOfLaps for age calculation: {e}. Stint: {latest_stint_key}")
+                                         # current_age (from previous state) persists
+                                # else: current_age (from previous state) persists if StartLaps/NumberOfLaps missing
+                        else: # latest_stint_info is not a dict
                             main_logger.warning(f"Driver {car_num_str}: Data for Stint {latest_stint_key} is not a dictionary: {type(latest_stint_info)}")
+                            # Tyre info (compound, age, is_new_tyre) will persist from previous state
                     except (ValueError, IndexError, KeyError, TypeError) as e:
-                         main_logger.error(f"Driver {car_num_str}: Error processing Stints data in TimingAppData: {e} - Data was: {stints_data}", exc_info=False)
+                         main_logger.error(f"Driver {car_num_str}: Error processing Stints data in TimingAppData: {e} - Data was: {stints_payload}", exc_info=False)
+                         # Tyre info (compound, age, is_new_tyre) will persist from previous state
+                    
+                    # Update state with newly derived or persisted previous values
+                    driver_current_state['TyreCompound'] = current_compound
+                    driver_current_state['TyreAge'] = current_age
+                    driver_current_state['IsNewTyre'] = is_new_tyre
+                # else:
+                    # stints_payload is missing or empty in this specific message for this driver.
+                    # In this case, we DO NOT update 'StintsData', 'ReliablePitStops', 
+                    # 'TyreCompound', 'TyreAge', or 'IsNewTyre'. They will retain their
+                    # values from the last valid TimingAppData message that contained stint info.
+                    pass # Explicitly do nothing to these fields if no new stint data
 
-                driver_current_state['TyreCompound'] = current_compound
-                driver_current_state['TyreAge'] = current_age
-
-    elif data:
+    elif data: # an `else` for `if isinstance(data, dict) ...`
          main_logger.warning(f"Unexpected TimingAppData format received: {type(data)}")
+
 
 def _process_driver_list(data):
     """ Helper to process DriverList data ONLY from the stream """
@@ -150,7 +176,11 @@ def _process_driver_list(data):
                 app_state.timing_state[driver_num_str] = {
                     # ... (all fields as before) ...
                     "RacingNumber": driver_info.get("RacingNumber", driver_num_str), "Tla": tla_from_stream, "FullName": driver_info.get("FullName", "N/A"), "TeamName": driver_info.get("TeamName", "N/A"), "Line": driver_info.get("Line", "-"), "TeamColour": driver_info.get("TeamColour", "FFFFFF"), "FirstName": driver_info.get("FirstName", ""), "LastName": driver_info.get("LastName", ""), "Reference": driver_info.get("Reference", ""), "CountryCode": driver_info.get("CountryCode", ""),
-                    "Position": "-", "Time": "-", "GapToLeader": "-", "IntervalToPositionAhead": {"Value": "-"}, "LastLapTime": {}, "BestLapTime": {}, "Sectors": {}, "Status": "On Track", "InPit": False, "Retired": False, "Stopped": False, "PitOut": False
+                    "Position": "-", "Time": "-", "GapToLeader": "-", "IntervalToPositionAhead": {"Value": "-"}, "LastLapTime": {}, "BestLapTime": {}, "Sectors": {}, "Status": "On Track", "InPit": False, "Retired": False, "Stopped": False, "PitOut": False,"TyreCompound": "-",
+                    "TyreAge": "?",
+                    "IsNewTyre": False, # Or True, depending on preferred default display
+                    "StintsData": {},   # Initialize as empty dict
+                    "NumberOfPitStops": 0 # From TimingData, init to 0
                 }
                 added_count += 1
             else:
@@ -164,6 +194,11 @@ def _process_driver_list(data):
                      if key in driver_info and driver_info[key] is not None: current_driver_state[key] = driver_info[key]
                 default_timing_values = { "Position": "-", "Time": "-", "GapToLeader": "-", "IntervalToPositionAhead": {"Value": "-"}, "LastLapTime": {}, "BestLapTime": {}, "Sectors": {}, "Status": "On Track", "InPit": False, "Retired": False, "Stopped": False, "PitOut": False }
                 for key, default_val in default_timing_values.items(): current_driver_state.setdefault(key, default_val)
+                current_driver_state.setdefault("TyreCompound", "-")
+                current_driver_state.setdefault("TyreAge", "?")
+                current_driver_state.setdefault("IsNewTyre", False)
+                current_driver_state.setdefault("StintsData", {})
+                current_driver_state.setdefault("NumberOfPitStops", 0) # Unlikely to be missing if driver exists
                 updated_count += 1
 
         main_logger.debug(f"Processed DriverList message ({processed_count} entries). Added: {added_count}, Updated: {updated_count}. Total drivers now: {len(app_state.timing_state)}")
