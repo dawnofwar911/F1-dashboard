@@ -3,6 +3,7 @@
 Contains all the Dash callback functions for the application.
 Handles UI updates, user actions, and plot generation.
 """
+from dash.dependencies import Input, Output, State # Ensure State is imported
 import datetime
 import pytz
 import logging
@@ -483,6 +484,18 @@ def update_replay_options(n_intervals):
      """Updates the replay file dropdown options periodically."""
      # logger.debug("Updating replay file options...")
      return replay.get_replay_files(config.REPLAY_DIR)
+
+
+@app.callback(
+    Output("collapse-controls", "is_open"),
+    [Input("collapse-controls-button", "n_clicks")],
+    [State("collapse-controls", "is_open")],
+    prevent_initial_call=True,
+)
+def toggle_controls_collapse(n, is_open):
+    if n:
+        return not is_open
+    return is_open
 
 # --- >>> NEW/MODIFIED: Driver Details & Telemetry Callback <<< ---
 @app.callback(
