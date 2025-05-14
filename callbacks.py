@@ -44,6 +44,41 @@ logger = logging.getLogger("F1App.Callbacks") # Use consistent logger name
 
 # --- Core Display Update Callbacks ---
 
+# --- Constants for initial figure uirevisions (MUST MATCH layout.py) ---
+# These are the uirevisions you set in the initial go.Figure() in layout.py
+INITIAL_TRACK_MAP_UIREVISION = 'track_map_main_layout'
+INITIAL_TELEMETRY_UIREVISION = 'telemetry_main_layout'
+INITIAL_LAP_PROG_UIREVISION = 'lap_prog_main_layout'
+
+# --- Heights from layout.py wrapper divs (MUST MATCH layout.py) ---
+TRACK_MAP_WRAPPER_HEIGHT = 360 # From your provided layout.py
+TELEMETRY_WRAPPER_HEIGHT = 320 # From your provided layout.py
+LAP_PROG_WRAPPER_HEIGHT = 320  # From your provided layout.py
+# Driver details div height is also relevant for overall column space
+DRIVER_DETAILS_HEIGHT = 80
+
+# --- Margins for consistency (MUST MATCH layout.py for initial figures) ---
+TRACK_MAP_MARGINS = {'l': 2, 'r': 2, 't': 2, 'b': 2}
+TELEMETRY_MARGINS_EMPTY = {'l': 30, 'r': 5, 't': 10, 'b': 20} # For "Select driver" state
+TELEMETRY_MARGINS_DATA = {'l': 35, 'r': 10, 't': 30, 'b': 30}  # When data is plotted (can allow more for titles/axes)
+LAP_PROG_MARGINS_EMPTY = {'l': 35, 'r': 5, 't': 20, 'b': 30}
+LAP_PROG_MARGINS_DATA = {'l': 40, 'r': 10, 't': 30, 'b': 40}
+
+
+def create_empty_figure_with_message(height, uirevision, message, margins):
+    """Helper to create a consistent empty figure."""
+    return go.Figure(layout={
+        'template': 'plotly_dark',
+        'height': height,
+        'margin': margins,
+        'uirevision': uirevision, # Use the specific uirevision for empty states
+        'xaxis': {'visible': False, 'range': [0,1]}, # Dummy axis
+        'yaxis': {'visible': False, 'range': [0,1]}, # Dummy axis
+        'annotations': [{'text': message, 'xref': 'paper', 'yref': 'paper',
+                         'showarrow': False, 'font': {'size': 12}}]
+    })
+
+
 @app.callback(
     Output('connection-status', 'children'),
     Output('connection-status', 'style'),
@@ -499,149 +534,152 @@ def toggle_controls_collapse(n, is_open):
 
 # --- >>> NEW/MODIFIED: Driver Details & Telemetry Callback <<< ---
 @app.callback(
-    # Outputs
-    Output('driver-details-output', 'children'),    # Basic info display area
-    Output('lap-selector-dropdown', 'options'),     # Lap dropdown options
-    Output('lap-selector-dropdown', 'value'),       # Selected lap value
-    Output('lap-selector-dropdown', 'disabled'),    # Enable/disable lap dropdown
-    Output('telemetry-graph', 'figure'),           # Telemetry plot
-    # Inputs
-    Input('driver-select-dropdown', 'value'),      # Trigger on driver change
-    Input('lap-selector-dropdown', 'value'),       # Trigger on lap change
-    # Use interval for potential updates while selection is static? Optional.
-    # Input('interval-component-medium', 'n_intervals'),
-    prevent_initial_call=True
+    Output('driver-details-output', 'children'),
+    Output('lap-selector-dropdown', 'options'),
+    Output('lap-selector-dropdown', 'value'),
+    Output('lap-selector-dropdown', 'disabled'),
+    Output('telemetry-graph', 'figure'),
+    Input('driver-select-dropdown', 'value'),
+    Input('lap-selector-dropdown', 'value'),
+    State('telemetry-graph', 'figure'), # Get current figure to check uirevision
+    prevent_initial_call=True 
 )
-def display_driver_details(selected_driver_number, selected_lap): # Removed n_intervals if not needed
-    """Displays detailed data and telemetry plots for the selected driver and lap."""
+def display_driver_details(selected_driver_number, selected_lap, current_telemetry_figure):
     ctx = dash.callback_context
-    triggered_id = ctx.triggered_id if ctx.triggered_id else 'N/A'
-    logger.debug(f"display_driver_details triggered by: {triggered_id}")
+    triggered_id = ctx.triggered_id if ctx.triggered else 'N/A'
+    logger.debug(f"Telemetry Update: Trigger={triggered_id}, Driver={selected_driver_number}, Lap={selected_lap}")
 
-    # Default outputs
-    details_children = [html.P("Select a driver.")]
-    lap_options = []
-    lap_value = None
+    details_children = [html.P("Select a driver.", style={'fontSize':'0.8rem', 'padding':'5px'})]
+    lap_options = [{'label': 'No Laps', 'value': ''}]
+    current_lap_value_for_dropdown = None
     lap_disabled = True
-    telemetry_layout_uirevision = f"{selected_driver_number or 'none'}_{selected_lap or 'none'}"
-    telemetry_figure = go.Figure(layout={'template': 'plotly_dark', 'height': 400, 'margin': dict(
-        t=20, b=30, l=40, r=10), 'title_text': "Select Driver/Lap for Telemetry", 'uirevision': telemetry_layout_uirevision})  # Empty placeholder
+    
+    # Default empty figure using the INITIAL uirevision (from layout.py)
+    fig_empty_telemetry = create_empty_figure_with_message(
+        TELEMETRY_WRAPPER_HEIGHT, INITIAL_TELEMETRY_UIREVISION, 
+        "Select driver & lap", TELEMETRY_MARGINS_EMPTY
+    )
 
     if not selected_driver_number:
-        return details_children, lap_options, lap_value, lap_disabled, telemetry_figure
+        # If already showing the initial empty state, no update
+        if current_telemetry_figure and \
+           current_telemetry_figure.get('layout', {}).get('uirevision') == INITIAL_TELEMETRY_UIREVISION:
+            return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, no_update
+        return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_empty_telemetry
 
     driver_num_str = str(selected_driver_number)
-    driver_changed = triggered_id == 'driver-select-dropdown'
+    
+    with app_state.app_state_lock:
+        available_laps = sorted(app_state.telemetry_data.get(driver_num_str, {}).keys())
+        driver_info_state = app_state.timing_state.get(driver_num_str, {}).copy()
+        
+    # Update driver details text part (as in Response 18)
+    if driver_info_state:
+        tla = driver_info_state.get('Tla', '?'); num = driver_info_state.get('RacingNumber', driver_num_str)
+        name = driver_info_state.get('FullName', 'Unknown'); team = driver_info_state.get('TeamName', '?')
+        details_children = [html.H5(f"#{num} {tla} - {name} ({team})", style={'marginTop': '5px', 'marginBottom':'5px', 'fontSize':'0.9rem'})]
+        ll = utils.get_nested_state(driver_info_state, 'LastLapTime', 'Value', default='-')
+        bl = utils.get_nested_state(driver_info_state, 'BestLapTime', 'Value', default='-')
+        tyre_str = f"{driver_info_state.get('TyreCompound','-')} ({driver_info_state.get('TyreAge','?')}L)" if driver_info_state.get('TyreCompound','-') != '-' else '-'
+        details_children.append(html.P(f"Last: {ll} | Best: {bl} | Tyre: {tyre_str}", style={'fontSize':'0.75rem', 'marginBottom':'0px'}))
 
-    # --- Get available laps ---
-    available_laps = []
-    try:
-        with app_state.app_state_lock:
-            # Check if driver exists and has laps recorded
-            if driver_num_str in app_state.telemetry_data and app_state.telemetry_data[driver_num_str]:
-                available_laps = sorted(app_state.telemetry_data[driver_num_str].keys())
-    except Exception as e: logger.error(f"Error retrieving laps for driver {driver_num_str}: {e}", exc_info=True)
+    # UIRevision for a state where a driver is selected, but lap might not be, or no laps exist
+    driver_selected_uirevision = f"telemetry_{driver_num_str}_pendinglap"
 
-    # --- Update Lap Selector ---
     if available_laps:
         lap_options = [{'label': f'Lap {l}', 'value': l} for l in available_laps]
         lap_disabled = False
-        # Determine which lap value to show
-        if driver_changed: # Driver just selected, default to latest lap
-            lap_value = available_laps[-1]
-        elif selected_lap in available_laps: # Lap was selected by user
-            lap_value = selected_lap
-        else: # Fallback (e.g., interval trigger, invalid previous selection)
-             lap_value = available_laps[-1] if available_laps else None
-    else: # No lap data found
-        lap_options = [{'label': 'No Lap Data', 'value': ''}]
-        lap_value = '' # Clear selection
-        lap_disabled = True
+        if triggered_id == 'driver-select-dropdown' or not selected_lap or selected_lap not in available_laps:
+            current_lap_value_for_dropdown = available_laps[-1]
+        else:
+            current_lap_value_for_dropdown = selected_lap
+    else: # No laps for this driver
+        no_laps_message = f"No lap data for {driver_info_state.get('Tla', driver_num_str)}."
+        # If already showing this specific "no laps" message for this driver, no update
+        if current_telemetry_figure and \
+           current_telemetry_figure.get('layout', {}).get('uirevision') == driver_selected_uirevision and \
+           current_telemetry_figure.get('layout',{}).get('annotations',[{}])[0].get('text','') == no_laps_message:
+            return details_children, lap_options, None, True, no_update
+            
+        fig_no_laps = create_empty_figure_with_message(
+            TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision, no_laps_message, TELEMETRY_MARGINS_EMPTY
+        )
+        return details_children, lap_options, None, True, fig_no_laps
 
-    # --- Generate Basic Driver Details ---
-    details_components = []
-    tla = '?' # Default TLA
-    try:
-        with app_state.app_state_lock: driver_info = app_state.timing_state.get(driver_num_str, {})
-        if driver_info:
-            tla = driver_info.get('Tla', '?'); num = driver_info.get('RacingNumber', driver_num_str)
-            name = driver_info.get('FullName', 'Unknown'); team = driver_info.get('TeamName', '?')
-            details_components.append(html.H5(f"#{num} {tla} - {name} ({team})", style={'marginTop': '10px'}))
-            # Add other info if needed
-            ll = utils.get_nested_state(driver_info, 'LastLapTime', 'Value', default='-')
-            bl = utils.get_nested_state(driver_info, 'BestLapTime', 'Value', default='-')
-            tyre = f"{driver_info.get('TyreCompound','-')} ({driver_info.get('TyreAge','?')}L)" if driver_info.get('TyreCompound','-') != '-' else '-'
-            details_components.append(html.P(f"Last Lap: {ll} | Best Lap: {bl} | Tyre: {tyre}", style={'fontSize':'small'}))
-        else: details_components.append(html.P(f"Driver {driver_num_str} info not found."))
-        details_children = html.Div(details_components)
-    except Exception as e: logger.error(f"Error generating driver details: {e}"); details_children = html.P("Error loading driver details.")
+    if not current_lap_value_for_dropdown: # No valid lap selected yet (e.g. after driver change, before auto-select if needed)
+        select_lap_message = f"Select a lap for {driver_info_state.get('Tla', driver_num_str)}."
+        if current_telemetry_figure and \
+           current_telemetry_figure.get('layout', {}).get('uirevision') == driver_selected_uirevision and \
+           current_telemetry_figure.get('layout',{}).get('annotations',[{}])[0].get('text','') == select_lap_message:
+             return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, no_update
 
+        fig_select_lap = create_empty_figure_with_message(
+            TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision, select_lap_message, TELEMETRY_MARGINS_EMPTY
+        )
+        return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_select_lap
 
     # --- Generate Telemetry Plot ---
-    if lap_value and lap_value in available_laps:
-        logger.debug(f"Generating telemetry plot for Driver {driver_num_str}, Lap {lap_value}")
-        try:
-            with app_state.app_state_lock: lap_data = app_state.telemetry_data.get(driver_num_str, {}).get(lap_value, {})
+    # UIRevision for a plot with specific driver and lap data
+    data_plot_uirevision = f"telemetry_data_{driver_num_str}_{current_lap_value_for_dropdown}"
 
-            timestamps_str = lap_data.get('Timestamps', [])
-            timestamps_dt = [utils.parse_iso_timestamp_safe(ts) for ts in timestamps_str]
-
-            # Find valid indices where timestamp parsing worked
-            valid_indices = [i for i, dt in enumerate(timestamps_dt) if dt is not None]
-
-            if valid_indices:
-                timestamps_plot = [timestamps_dt[i] for i in valid_indices]
-
-                # Define channels and create subplots
-                channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
-                fig = make_subplots(rows=len(channels), cols=1, shared_xaxes=True, subplot_titles=channels, vertical_spacing=0.02)
-                fig.update_layout(template='plotly_dark', height=100*len(channels), hovermode="x unified", showlegend=False, margin=dict(t=40, b=30, l=50, r=10), uirevision=telemetry_layout_uirevision)
-
-                for i, channel in enumerate(channels):
-                    y_data_raw = lap_data.get(channel, [])
-                    # Filter Y data using only valid indices, propagating None gaps
-                    y_data_plot = [(y_data_raw[idx] if idx < len(y_data_raw) else None) for idx in valid_indices]
-                    
-                    if channel == 'DRS':
-                        # Convert DRS states (e.g., 10, 12, 14 = ON=1, others=OFF=0)
-                        drs_plot_values = []
-                        for val in y_data_plot:
-                            if val in [10, 12, 14]: # DRS flap open state values
-                                drs_plot_values.append(1)
-                            # elif val == 8: # Optionally show 'Eligible' state
-                            #    drs_plot_values.append(0.5)
-                            else: # Off, Ineligible, Error, None
-                                drs_plot_values.append(0)
-                        y_data_plot = drs_plot_values # Use the converted values
-
-                        fig.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel,
-                                                   line_shape='hv', # Use step shape for on/off
-                                                   connectgaps=False), row=i+1, col=1)
-                        # Customize Y axis ticks for DRS
-                        fig.update_yaxes(tickvals=[0, 1], ticktext=['Off', 'On'], range=[-0.1, 1.1], row=i+1, col=1)
-                    # --- >>> End DRS Handling <<< ---
-                    else: # Plot other channels normally
-                         fig.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel, connectgaps=False), row=i+1, col=1)
-                         
-                    # Potentially add axis title to yaxis
-                    fig.update_yaxes(title_text=channel, row=i+1, col=1)
-
-                fig.update_layout(title=f"Driver {driver_num_str} ({tla}) - Lap {lap_value} Telemetry")
-                fig.update_xaxes(title_text="Time", row=len(channels), col=1) # Title only on bottom axis
-
-                telemetry_figure = fig # Assign the generated figure
-            else:
-                logger.warning(f"No valid plot data found for Lap {lap_value}, Driver {driver_num_str}")
-                telemetry_figure.update_layout(title=f"Lap {lap_value}: No telemetry data with valid timestamps")
+    # Fix for telemetry not displaying on first click:
+    # If the callback was triggered by something other than explicit driver/lap selection AND
+    # the graph already shows this data, then no_update.
+    # This helps if an interval is also an Input to this callback.
+    if current_telemetry_figure and \
+       current_telemetry_figure.get('layout',{}).get('uirevision') == data_plot_uirevision and \
+       triggered_id not in ['driver-select-dropdown', 'lap-selector-dropdown']:
+        logger.debug("Telemetry already showing correct data, non-user trigger.")
+        return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, no_update
 
 
-        except Exception as plot_err:
-             logger.error(f"Error generating telemetry plot: {plot_err}", exc_info=True)
-             telemetry_figure.update_layout(title=f"Error generating plot for Lap {lap_value}")
+    try:
+        with app_state.app_state_lock:
+            lap_data = app_state.telemetry_data.get(driver_num_str, {}).get(current_lap_value_for_dropdown, {})
+        # ... (Your existing logic for timestamps_str, timestamps_dt, valid_indices)
+        timestamps_str = lap_data.get('Timestamps', [])
+        timestamps_dt = [utils.parse_iso_timestamp_safe(ts) for ts in timestamps_str]
+        valid_indices = [i for i, dt_obj in enumerate(timestamps_dt) if dt_obj is not None]
 
-    # Return all outputs in the correct order
-    return details_children, lap_options, lap_value, lap_disabled, telemetry_figure
+        if valid_indices:
+            # ... (Your existing logic for plotting channels with make_subplots)
+            timestamps_plot = [timestamps_dt[i] for i in valid_indices]
+            channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
+            fig_with_data = make_subplots(rows=len(channels), cols=1, shared_xaxes=True, 
+                                          subplot_titles=[c[:10] for c in channels], vertical_spacing=0.04)
+            for i, channel in enumerate(channels):
+                y_data_raw = lap_data.get(channel, [])
+                y_data_plot = [(y_data_raw[idx] if idx < len(y_data_raw) else None) for idx in valid_indices]
+                if channel == 'DRS':
+                    drs_plot = [1 if val in [10, 12, 14] else 0 for val in y_data_plot]
+                    fig_with_data.add_trace(go.Scattergl(x=timestamps_plot, y=drs_plot, mode='lines', name=channel, line_shape='hv', connectgaps=False), row=i+1, col=1)
+                    fig_with_data.update_yaxes(tickvals=[0,1], ticktext=['Off','On'], range=[-0.1,1.1], row=i+1, col=1, title_text=channel[:3], title_standoff=0, title_font_size=9, tickfont_size=9)
+                else:
+                    fig_with_data.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel, connectgaps=False), row=i+1, col=1)
+                    fig_with_data.update_yaxes(title_text=channel[:3], row=i+1, col=1, title_standoff=0, title_font_size=9, tickfont_size=9)
+            
+            fig_with_data.update_layout(
+                template='plotly_dark', height=TELEMETRY_WRAPPER_HEIGHT,
+                hovermode="x unified", showlegend=False, 
+                margin=TELEMETRY_MARGINS_DATA, # Use specific margins for data plots
+                title_text=f"{driver_info_state.get('Tla', driver_num_str)} - Lap {current_lap_value_for_dropdown}", 
+                title_x=0.5, title_font_size=10,
+                uirevision=data_plot_uirevision, # Crucial: set the dynamic uirevision
+                annotations=[] # CRITICAL: Clear any old annotations
+            )
+            for i_ax in range(len(channels)): # Ensure x-axis labels are handled correctly
+                 fig_with_data.update_xaxes(showline=(i_ax == len(channels)-1), zeroline=False, showticklabels=(i_ax == len(channels)-1), row=i_ax+1, col=1, tickfont_size=9)
 
+            return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_with_data
+        else: # No valid plot data for this specific lap
+            fig_empty_telemetry.layout.annotations[0].text = f"No plot data for Lap {current_lap_value_for_dropdown}."
+            fig_empty_telemetry.layout.uirevision = data_plot_uirevision # Still use dynamic uirevision for this state
+            return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_empty_telemetry
+    except Exception as plot_err:
+        logger.error(f"Error in telemetry plot: {plot_err}", exc_info=True)
+        fig_empty_telemetry.layout.annotations[0].text = "Error loading telemetry."
+        fig_empty_telemetry.layout.uirevision = data_plot_uirevision # Use dynamic uirevision on error
+        return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_empty_telemetry
 
 @app.callback(
     # This store will hold the YYYY_CircuitKey string
@@ -816,143 +854,94 @@ def update_clientside_interval_speed(replay_speed, interval_disabled):
     # --- Trigger Change ---
     Input('interval-component-medium', 'n_intervals'), # Trigger periodically (e.g., every 1 sec)
     # --- State Inputs ---
-    State('current-track-layout-cache-key-store', 'data'), # Get the expected session ID
+    Input('current-track-layout-cache-key-store', 'data'), # Get the expected session ID
     State('track-map-graph', 'figure'), # Get the CURRENT figure shown in the graph.
     prevent_initial_call='initial_duplicate'
 )
-def initialize_track_map(n_intervals, expected_session_id, current_figure):
-    # <<< START MODIFIED LOGIC >>>
-    if not expected_session_id:
-        # If no session is active, return an empty/waiting map only if graph isn't already showing that
-        # This prevents unnecessary updates when idle. Check if current figure exists and maybe has a specific title.
-        # For simplicity, we can just return no_update if no session ID is expected.
-        # logger.debug("Initialize Map check: No expected session ID.")
-        return dash.no_update
+def initialize_track_map(n_intervals, expected_session_id, current_track_map_figure):
+    logger.debug(f"Track Map Update: Triggered. Expected Session ID = {expected_session_id}")
 
-    # --- Check if the CURRENTLY displayed figure is already correct ---
-    # We use the uirevision we set previously ('tracklayout_YYYY_CircuitKey')
-    expected_uirevision = f"tracklayout_{expected_session_id}"
-    if current_figure and isinstance(current_figure, dict) and \
-       current_figure.get('layout', {}).get('uirevision') == expected_uirevision:
-        # The correct map for the current session is already displayed. Do nothing.
-        # logger.debug(f"Initialize Map check: Correct uirevision '{expected_uirevision}' already shown. No update.")
-        return dash.no_update
-    # --- End uirevision check ---
-
-    # If we reach here, either no map is shown, or it's the wrong one, or it's the waiting one.
-    # Proceed with checking the cache for the expected session ID.
-    logger.info(f"--- initialize_track_map [Interval Trigger]. Expected: '{expected_session_id}'. Current uirevision: {current_figure.get('layout', {}).get('uirevision') if current_figure else 'None'} ---")
-    start_time_callback = time.monotonic()
-
-    # --- Cache checking logic remains the same ---
-    track_x_coords, track_y_coords, x_range, y_range = None, None, None, None
-    cache_is_valid_for_expected_session = False
-    session_key_in_cache = None
-
-    with app_state.app_state_lock:
-        cached_data_dict = app_state.track_coordinates_cache
-        # Need driver list only if check passes
-        driver_numbers_in_session = list(app_state.timing_state.keys()) if app_state.timing_state else []
-        all_driver_details_snapshot = app_state.timing_state.copy() if app_state.timing_state else {}
-        if not driver_numbers_in_session and app_state.driver_info:
-             driver_numbers_in_session = list(app_state.driver_info.keys())
-             all_driver_details_snapshot = app_state.driver_info.copy()
-
-
-    # logger.debug(f"Initialize Map: Type of cache = {type(cached_data_dict)}")
-    if isinstance(cached_data_dict, dict):
-        session_key_in_cache = cached_data_dict.get('session_key')
-        # logger.info(f"Initialize Map: Session Key FOUND in Cache: '{session_key_in_cache}'")
-        if session_key_in_cache == expected_session_id:
-            # logger.info(f"Initialize Map: CACHE HIT!")
-            track_x_coords = cached_data_dict.get('x')
-            track_y_coords = cached_data_dict.get('y')
-            x_range = cached_data_dict.get('range_x')
-            y_range = cached_data_dict.get('range_y')
-            if track_x_coords and track_y_coords:
-                cache_is_valid_for_expected_session = True
-                # logger.info("Initialize Map: Track coordinates look valid.")
-            # else: logger.warning("Initialize Map: Cache key matches, but track coordinates missing!")
-        # else: logger.warning(f"Initialize Map: CACHE MISS/MISMATCH. Expected '{expected_session_id}', Cache has '{session_key_in_cache}'.")
-    # else: logger.warning("Initialize Map: app_state.track_coordinates_cache is empty or not a dict.")
-
-    if not cache_is_valid_for_expected_session:
-        logger.info("Initialize Map: Cache invalid or mismatch. Returning 'Waiting for Layout' figure (again).")
-        # Return the waiting figure, ensure IT DOES NOT have the target uirevision
-        return go.Figure(layout={'template': 'plotly_dark', 'height': 450,
-                                 'title_text': f"Track Map: Waiting ({expected_session_id})",
-                                 'xaxis': {'visible': False}, 'yaxis': {'visible': False},
-                                 'uirevision': f"waiting_{expected_session_id}" # Use a different uirevision for waiting state
-                                 })
-
-    # --- If cache check passed, create the actual figure ---
-    logger.info("Initialize Map: Cache check PASSED, creating figure with traces...")
-    fig_data = []
-    if track_x_coords and track_y_coords:
-        fig_data.append(go.Scatter(
-            x=list(track_x_coords), y=list(track_y_coords),
-            mode='lines', line=dict(color='grey', width=2),
-            name='Track', hoverinfo='none'
-        ))
-    logger.info(
-        f"Initialize Map: Preparing placeholder traces for {len(driver_numbers_in_session)} drivers for session '{expected_session_id}'.")
-    # The loop to add car Scatter traces with uid=car_num_str
-    for car_num_str in driver_numbers_in_session:
-        driver_detail = all_driver_details_snapshot.get(car_num_str, {})
-        tla = driver_detail.get('Tla', car_num_str)
-        team_colour = driver_detail.get('TeamColour', '808080')
-        if isinstance(team_colour, str) and not team_colour.startswith('#'):  # Ensure # prefix
-            team_colour = '#' + team_colour
-
-        fig_data.append(go.Scatter(
-            x=[], y=[],
-            mode='markers+text',  # JS will update this
-            marker=dict(size=10, color=team_colour,
-                        line=dict(width=1, color='Black')),
-            textfont=dict(size=9, color='white'),
-            textposition='middle right',
-            name=tla,
-            uid=car_num_str,  # CRUCIAL: Unique ID for JavaScript to target this trace
-            hoverinfo='text',
-            text=tla
-        ))
-
-    if not fig_data: # Should at least have track trace
-         logger.error("Initialize Map: fig_data list is empty after trace creation loops!")
-         return go.Figure(layout={'template': 'plotly_dark', 'title_text': "Error: Failed to create traces"})
-    
-    xaxis_cfg = dict(visible=False, showgrid=False, zeroline=False, showticklabels=False,
-                     range=x_range, autorange=False if x_range else True)
-    yaxis_cfg = dict(visible=False, showgrid=False, zeroline=False, showticklabels=False,
-                     range=y_range, autorange=False if y_range else True)
-    if x_range and y_range:
-        yaxis_cfg['scaleanchor'] = "x"
-        yaxis_cfg['scaleratio'] = 1
-
-    if x_range and y_range:
-        logger.info(
-            f"Initialize Map: Calculated axis ranges: X={x_range}, Y={y_range}")
-    else:
-        logger.warning(
-            "Initialize Map: Axis ranges (x_range/y_range) were not calculated!")
-
-
-    layout = go.Layout(
-        xaxis=xaxis_cfg, yaxis=yaxis_cfg, showlegend=False,
-        # uirevision tied to the specific session ID
-        uirevision=f"tracklayout_{expected_session_id}",
-        plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='white'), margin=dict(l=5, r=5, t=30, b=5), height=450,
-        title_text=f"Track Map ({expected_session_id})"
+    # Default empty/loading figure, using the INITIAL uirevision
+    fig_empty_or_loading_map = create_empty_figure_with_message(
+        TRACK_MAP_WRAPPER_HEIGHT, INITIAL_TRACK_MAP_UIREVISION, 
+        "Loading track data...", TRACK_MAP_MARGINS
     )
 
-    final_figure = go.Figure(data=fig_data, layout=layout)
-    elapsed_time = time.monotonic() - start_time_callback
-    logger.info(
-        f"Initialize Map: Final figure object created. Number of traces in data: {len(final_figure.data)}")
-    logger.info(
-        f"Map initialization for session '{expected_session_id}' took {elapsed_time:.4f}s. Figure has {len(fig_data)} traces.")
-    return final_figure
+    if not expected_session_id:
+        logger.debug("Track Map Update: No expected_session_id. Returning empty map if not already shown.")
+        if current_track_map_figure and \
+           current_track_map_figure.get('layout', {}).get('uirevision') == INITIAL_TRACK_MAP_UIREVISION:
+            return no_update
+        return fig_empty_or_loading_map
+
+    # UIRevision for a map WITH a specific track loaded
+    data_loaded_uirevision = f"tracklayout_{expected_session_id}"
+
+    # If the map is already showing the correct track, no need to update the base map
+    if current_track_map_figure and \
+       current_track_map_figure.get('layout', {}).get('uirevision') == data_loaded_uirevision:
+        logger.debug(f"Track map already displaying correct layout uirevision: {data_loaded_uirevision}")
+        return no_update 
+
+    # --- Read from cache ---
+    # Critical: Ensure this read happens correctly and sees the updated cache
+    with app_state.app_state_lock:
+        # Make a deep copy if there's any chance of modification, otherwise direct access is fine for read
+        cached_data = app_state.track_coordinates_cache.copy() 
+        driver_list_snapshot = app_state.timing_state.copy() 
+
+    logger.debug(f"Track Map Update: Cache Read. Cached session_key='{cached_data.get('session_key')}', Expected='{expected_session_id}'")
+
+    if cached_data.get('session_key') == expected_session_id and \
+       cached_data.get('x') and cached_data.get('y'):
+        logger.info(f"Track map: Cache HIT for {expected_session_id}. Drawing track.")
+        
+        fig_data = [
+            go.Scatter(x=list(cached_data['x']), y=list(cached_data['y']), mode='lines', 
+                       line=dict(color='grey', width=2), name='Track', hoverinfo='none')
+        ]
+        for car_num, driver_state in driver_list_snapshot.items():
+            tla = driver_state.get('Tla', car_num)
+            team_color = driver_state.get('TeamColour', '808080')
+            if not team_color.startswith('#'): team_color = '#' + team_color
+            fig_data.append(go.Scatter(
+                x=[], y=[], mode='markers+text', name=tla, uid=car_num,
+                marker=dict(size=8, color=team_color, line=dict(width=1, color='Black')),
+                textfont=dict(size=8, color='white'), textposition='middle right',
+                hoverinfo='text', text=tla 
+            ))
+
+        fig_layout = go.Layout(
+            template='plotly_dark',
+            uirevision=data_loaded_uirevision, # <<< Use the new dynamic uirevision FOR THIS DATA
+            xaxis=dict(visible=False, showgrid=False, zeroline=False, showticklabels=False, 
+                       range=cached_data.get('range_x'), autorange=False if cached_data.get('range_x') else True),
+            yaxis=dict(visible=False, showgrid=False, zeroline=False, showticklabels=False, 
+                       range=cached_data.get('range_y'), autorange=False if cached_data.get('range_y') else True, 
+                       scaleanchor="x" if cached_data.get('range_x') and cached_data.get('range_y') else None, 
+                       scaleratio=1 if cached_data.get('range_x') and cached_data.get('range_y') else None),
+            showlegend=False, plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white'), 
+            margin=TRACK_MAP_MARGINS, 
+            height=TRACK_MAP_WRAPPER_HEIGHT,
+            annotations=[] # Ensure no "loading" annotation when track is drawn
+        )
+        return go.Figure(data=fig_data, layout=fig_layout)
+    else: # Cache miss or incomplete data
+        logger.info(f"Track map: Cache MISS or data incomplete for {expected_session_id}. Current cache key: {cached_data.get('session_key')}")
+        # If already showing the "loading" map for this specific ID, don't keep re-sending it
+        current_text = ""
+        if current_track_map_figure and current_track_map_figure.get('layout', {}).get('annotations'):
+            current_text = current_track_map_figure['layout']['annotations'][0].get('text', '')
+        
+        expected_loading_text = f"Track data loading for {expected_session_id}..."
+        if current_track_map_figure and \
+           current_track_map_figure.get('layout', {}).get('uirevision') == INITIAL_TRACK_MAP_UIREVISION and \
+           current_text == expected_loading_text:
+            return no_update
+
+        fig_empty_or_loading_map.layout.annotations[0].text = expected_loading_text
+        return fig_empty_or_loading_map
 
 app.clientside_callback(
     ClientsideFunction(
@@ -1011,106 +1000,94 @@ def update_lap_chart_driver_options(n_intervals):
 
 @app.callback(
     Output('lap-time-progression-graph', 'figure'),
-    [Input('lap-time-driver-selector', 'value'),
-     Input('interval-component-medium', 'n_intervals')] # Refresh graph periodically or on selection change
+    Input('lap-time-driver-selector', 'value'), # Renamed to selected_drivers_for_lap_chart
+    Input('interval-component-medium', 'n_intervals')
 )
 def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
-    ''' selected_drivers_rnos will be a list of driver numbers (strings, e.g., ["44", "1"])'''
-    current_uirevision = f"lap_prog_{'_'.join(sorted(selected_drivers_rnos)) if selected_drivers_rnos else 'none'}"
+    fig_empty_lap_prog = create_empty_figure_with_message(
+        LAP_PROG_WRAPPER_HEIGHT, INITIAL_LAP_PROG_UIREVISION,
+        "Select drivers for lap progression", LAP_PROG_MARGINS_EMPTY
+    )
 
-    fig = go.Figure(layout={
-        'template': 'plotly_dark',
-        'title_text': 'Lap Time Progression' if selected_drivers_rnos else '',
-        'xaxis_title': 'Lap Number',
-        'yaxis_title': 'Lap Time (seconds)',
-        'height': 330, # Match style height
-        'margin': {'l': 40, 'r': 10, 't': 30, 'b': 40}, # Consistent margins
-        'hovermode': 'x unified',
-        'uirevision': current_uirevision # <<< KEY
-    })
-    
     if not selected_drivers_rnos:
-        fig.update_layout(
-            annotations=[{'text': "Select drivers to display their lap times.", 
-                          'xref': 'paper', 'yref': 'paper', 'showarrow': False, 'font': {'size': 12}}],
-            xaxis={'visible': False}, yaxis={'visible': False} # Hide axes for empty state
-        )
-        return fig
+        return fig_empty_lap_prog
 
-    # Access lap_time_history safely
+    sorted_selection_key = "_".join(sorted(list(set(selected_drivers_rnos))))
+    data_plot_uirevision = f"lap_prog_data_{sorted_selection_key}"
+
     with app_state.app_state_lock:
-        # Create a deep copy if modifying, or iterate carefully if just reading
-        lap_history_snapshot = {
-            rno: list(laps) for rno, laps in app_state.lap_time_history.items()
-        }
-        # Also get team colors for traces
+        lap_history_snapshot = {rno: list(laps) for rno, laps in app_state.lap_time_history.items()}
         timing_state_snapshot = app_state.timing_state.copy()
 
-    min_time = float('inf')
-    max_time = float('-inf')
+    # Start with a layout that has the correct uirevision and properties for a data plot
+    fig_with_data = go.Figure(layout={
+        'template': 'plotly_dark', 'uirevision': data_plot_uirevision,
+        'height': LAP_PROG_WRAPPER_HEIGHT, 'margin': LAP_PROG_MARGINS_DATA,
+        'xaxis_title': 'Lap Number', 'yaxis_title': 'Lap Time (s)',
+        'hovermode': 'x unified', 'title_text':'Lap Time Progression', 'title_x':0.5, 'title_font_size':14,
+        'showlegend':True, 'legend_title_text':'Drivers', 'legend_font_size':10,
+        'annotations': [] # CRITICAL: Start with no annotations for data plots
+    })
+    
+    data_actually_plotted = False # Flag to check if any traces were added
+    min_time_overall, max_time_overall, max_laps_overall = float('inf'), float('-inf'), 0
 
     for driver_rno in selected_drivers_rnos:
+        # ... (your existing logic for fetching tla, team_color, lap_numbers, lap_times_sec, hover_texts)
         driver_laps = lap_history_snapshot.get(driver_rno, [])
-        if not driver_laps:
-            continue
-
-        # Get driver TLA and team color for the legend
+        if not driver_laps: continue
         driver_info = timing_state_snapshot.get(driver_rno, {})
         tla = driver_info.get('Tla', driver_rno)
-        team_color_hex = driver_info.get('TeamColour', 'FFFFFF') # Default to white
-        if not team_color_hex.startswith('#'):
-            team_color_hex = '#' + team_color_hex
-
-        lap_numbers = [lap['lap_number'] for lap in driver_laps if lap.get('is_valid', True)]
-        lap_times_sec = [lap['lap_time_seconds'] for lap in driver_laps if lap.get('is_valid', True)]
+        team_color_hex = driver_info.get('TeamColour', 'FFFFFF')
+        if not team_color_hex.startswith('#'): team_color_hex = '#' + team_color_hex
+        valid_laps = [lap for lap in driver_laps if lap.get('is_valid', True)]
+        if not valid_laps: continue
         
-        # For y-axis range calculation
+        data_actually_plotted = True
+        lap_numbers = [lap['lap_number'] for lap in valid_laps]
+        lap_times_sec = [lap['lap_time_seconds'] for lap in valid_laps]
+        
+        if lap_numbers: max_laps_overall = max(max_laps_overall, max(lap_numbers))
         if lap_times_sec:
-            min_time = min(min_time, min(lap_times_sec))
-            max_time = max(max_time, max(lap_times_sec))
+            min_time_overall = min(min_time_overall, min(lap_times_sec))
+            max_time_overall = max(max_time_overall, max(lap_times_sec))
 
-        # Custom hover text
-        hover_texts = []
-        for lap in driver_laps:
-            if lap.get('is_valid', True):
-                time_formatted = str(datetime.timedelta(seconds=lap['lap_time_seconds'])).split('.')[0][2:] # Format as MM:SS
-                if lap['lap_time_seconds'] < 60: # if under a minute, format as SS.mmm
-                     time_formatted = f"{lap['lap_time_seconds']:.3f}"
-                else: # format as M:SS.mmm, but timedelta might give H:MM:SS.
-                     total_seconds = lap['lap_time_seconds']
-                     minutes = int(total_seconds // 60)
-                     seconds = total_seconds % 60
-                     time_formatted = f"{minutes}:{seconds:06.3f}"
-
-
-                hover_texts.append(
-                    f"<b>{tla}</b><br>Lap: {lap['lap_number']}<br>Time: {time_formatted}<br>Compound: {lap['compound']}<extra></extra>"
-                )
-
-
-        fig.add_trace(go.Scatter(
-            x=lap_numbers,
-            y=lap_times_sec,
-            mode='lines+markers',
-            name=tla, # For legend
-            marker=dict(color=team_color_hex, size=6),
-            line=dict(color=team_color_hex, width=2),
-            hovertext=hover_texts,
-            hoverinfo='text' # Use custom hover text
+        hover_texts = [] # Rebuild hover texts
+        for lap in valid_laps:
+            total_seconds = lap['lap_time_seconds']
+            minutes = int(total_seconds // 60)
+            seconds_part = total_seconds % 60 # Use seconds_part for clarity
+            time_formatted = f"{minutes}:{seconds_part:06.3f}" if minutes > 0 else f"{seconds_part:.3f}"
+            hover_texts.append(f"<b>{tla}</b><br>Lap: {lap['lap_number']}<br>Time: {time_formatted}<br>Tyre: {lap['compound']}<extra></extra>")
+        
+        fig_with_data.add_trace(go.Scatter(
+            x=lap_numbers, y=lap_times_sec, mode='lines+markers', name=tla,
+            marker=dict(color=team_color_hex, size=5), line=dict(color=team_color_hex, width=1.5),
+            hovertext=hover_texts, hoverinfo='text'
         ))
 
-    # Adjust y-axis range for better visualization
-    if min_time != float('inf') and max_time != float('-inf'):
-        padding = (max_time - min_time) * 0.05 # 5% padding
-        fig.update_yaxes(range=[min_time - padding, max_time + padding])
-    
-    # Format y-axis ticks to show M:SS.mmm
-    # This is a bit tricky as y-axis values are floats (seconds)
-    # We can show them as seconds and let hover text show formatted time.
-    # Or attempt to format ticks (more complex, might need specific tickvals and ticktext)
-    
-    fig.update_layout(legend_title_text='Drivers')
-    return fig
+    if not data_actually_plotted:
+        # If drivers were selected but no data was plotted (e.g., no valid laps for any of them)
+        # Return the standard empty figure with a message
+        fig_empty_lap_prog.layout.annotations[0].text = "No lap data for selected driver(s)."
+        # Important: The uirevision for this state should be dynamic based on selection,
+        # so it doesn't revert to the absolute initial if the selection itself changes.
+        fig_empty_lap_prog.layout.uirevision = data_plot_uirevision # Or a specific "no_data_for_selection" uirevision
+        return fig_empty_lap_prog
+
+    # Configure axes for the data plot
+    if min_time_overall != float('inf') and max_time_overall != float('-inf'):
+        padding = (max_time_overall - min_time_overall) * 0.05 if max_time_overall > min_time_overall else 0.5
+        fig_with_data.update_yaxes(visible=True, range=[min_time_overall - padding, max_time_overall + padding])
+    else:
+        fig_with_data.update_yaxes(visible=False) # Hide if no valid range (should be caught by data_actually_plotted)
+
+    if max_laps_overall > 0:
+        fig_with_data.update_xaxes(visible=True, range=[0.5, max_laps_overall + 0.5])
+    else:
+        fig_with_data.update_xaxes(visible=False) # Hide if no laps
+
+    return fig_with_data
 
 # --- Final Log ---
 logger.info("Callback definitions processed.")
