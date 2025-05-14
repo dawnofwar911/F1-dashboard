@@ -28,7 +28,7 @@ except ImportError:
 logger = logging.getLogger("F1App.Utils")
 main_logger = logging.getLogger("F1App.Utils")
 
-def parse_lap_time_to_seconds(time_str: str) -> float | None:
+def parse_lap_time_to_seconds(time_str: str):
     """
     Parses an F1 lap time string (e.g., "1:23.456" or "58.789") into total seconds.
     Returns float if successful, None otherwise.
@@ -99,7 +99,7 @@ def _fetch_track_data_for_cache(session_key, year, circuit_key):
         None]*5
     try:
         response = requests.get(
-            api_url, headers={'User-Agent': 'F1-Dash/0.4'}, timeout=15)
+            api_url, headers={'User-Agent': 'F1-Dash/0.4'}, timeout=15, verify=False)
         response.raise_for_status()
         map_api_data = response.json()
         temp_x_api = [float(p) for p in map_api_data.get('x', [])]
