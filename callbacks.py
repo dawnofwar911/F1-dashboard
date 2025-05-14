@@ -1015,23 +1015,25 @@ def update_lap_chart_driver_options(n_intervals):
      Input('interval-component-medium', 'n_intervals')] # Refresh graph periodically or on selection change
 )
 def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
-    # selected_drivers_rnos will be a list of driver numbers (strings, e.g., ["44", "1"])
-    
+    ''' selected_drivers_rnos will be a list of driver numbers (strings, e.g., ["44", "1"])'''
+    current_uirevision = f"lap_prog_{'_'.join(sorted(selected_drivers_rnos)) if selected_drivers_rnos else 'none'}"
+
     fig = go.Figure(layout={
         'template': 'plotly_dark',
-        'title_text': 'Lap Time Progression',
+        'title_text': 'Lap Time Progression' if selected_drivers_rnos else '',
         'xaxis_title': 'Lap Number',
         'yaxis_title': 'Lap Time (seconds)',
-        'hovermode': 'x unified' # Or 'closest'
+        'height': 330, # Match style height
+        'margin': {'l': 40, 'r': 10, 't': 30, 'b': 40}, # Consistent margins
+        'hovermode': 'x unified',
+        'uirevision': current_uirevision # <<< KEY
     })
     
-    if not selected_drivers_rnos: # If no drivers are selected
+    if not selected_drivers_rnos:
         fig.update_layout(
-            annotations=[{
-                'text': "Select drivers to display their lap times.",
-                'xref': 'paper', 'yref': 'paper',
-                'showarrow': False, 'font': {'size': 14}
-            }]
+            annotations=[{'text': "Select drivers to display their lap times.", 
+                          'xref': 'paper', 'yref': 'paper', 'showarrow': False, 'font': {'size': 12}}],
+            xaxis={'visible': False}, yaxis={'visible': False} # Hide axes for empty state
         )
         return fig
 
