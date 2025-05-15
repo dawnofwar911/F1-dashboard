@@ -122,14 +122,40 @@ def create_layout():
             dash_table.DataTable(
                 id='timing-data-actual-table', columns=timing_table_columns, data=[],
                 fixed_rows={'headers': True},
-                style_table={'minHeight': '50vh', 'height': 'calc(70vh - 120px)', 'maxHeight': '60vh', # Adjusted calc
-                             'overflowY': 'auto', 'overflowX': 'auto'},
-                style_cell={'minWidth': '35px', 'width': '60px', 'maxWidth': '120px',
-                            'overflow': 'hidden', 'textOverflow': 'ellipsis',
-                            'textAlign': 'left', 'padding': '4px', 'fontSize':'0.85rem',
-                            'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white'},
-                style_header={'backgroundColor': 'rgb(30, 30, 30)', 'fontWeight': 'bold', 
-                              'border': '1px solid grey', 'padding': '4px', 'fontSize':'0.9rem'},
+                style_table={
+                    # Try a larger fixed height first to see if it fills the space
+                    'height': '720px', # Example: Increased from 600px or vh calculations
+                    'minHeight': '650px', # A decent minimum
+                                        # Adjust this value based on your screen to fit ~20-21 rows
+                    # 'minHeight': '650px', # If using vh, a minHeight is good. With fixed height, this is less critical.
+                    # 'maxHeight': '85vh', # Can still use maxHeight with fixed height to limit on huge screens
+                    'overflowY': 'auto', 
+                    'overflowX': 'auto'
+                },
+                style_cell={
+                    'minWidth': '30px',  # Can be slightly smaller for very narrow columns
+                    'width': '60px',   # Default initial width - many will be overridden
+                    'maxWidth': '170px', 
+                    'overflow': 'hidden', 
+                    'textOverflow': 'ellipsis',
+                    'textAlign': 'left', 
+                    'padding': '3px 5px', # Slightly adjusted padding
+                    'fontSize':'0.8rem', # Slightly smaller font for more density
+                    'backgroundColor': 'rgb(50, 50, 50)', 
+                    'color': 'white',
+                    'whiteSpace': 'normal', # Allow text to wrap in cell if really needed (for headers)
+                    'height': 'auto'        # Allow cell height to adjust to wrapped text
+                },
+                style_header={
+                    'backgroundColor': 'rgb(30, 30, 30)', 
+                    'fontWeight': 'bold', 
+                    'border': '1px solid #444', # Darker border for header
+                    'padding': '6px', 
+                    'fontSize':'0.85rem', # Slightly smaller header font
+                    'textAlign': 'center', # Center header text
+                    'whiteSpace': 'normal', # Allow header text to wrap
+                    'height': 'auto'        # Allow header row height to adjust
+                },
                 style_data={'borderBottom': '1px solid grey'},
                 style_data_conditional=[
                     {'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(60, 60, 60)'},
@@ -142,10 +168,16 @@ def create_layout():
                     {'if': {'column_id': 'Pos'}, 'textAlign': 'center', 'fontWeight': 'bold', 'width': '35px', 'minWidth':'35px'},
                     {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '35px', 'minWidth':'35px', 'paddingRight':'2px'},
                     {'if': {'column_id': 'Car'}, 'textAlign': 'left', 'width': '45px', 'minWidth':'45px'},
-                    {'if': {'column_id': 'Pits'}, 'textAlign': 'center', 'width': '35px', 'minWidth':'35px'},
-                    {'if': {'column_id': 'Last Lap'}, 'minWidth': '70px'},
-                    {'if': {'column_id': 'Best Lap'}, 'minWidth': '70px'},
-                    {'if': {'column_id': 'Lap Time'}, 'minWidth': '70px'},
+                    {'if': {'column_id': 'Pits'}, 'textAlign': 'center', 'width': '45px', 'minWidth':'35px'},
+                    {'if': {'column_id': 'Lap Time'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
+                    {'if': {'column_id': 'Interval'}, 'width': '75px', 'minWidth': '65px', 'maxWidth': '80px', 'textAlign': 'right', 'paddingRight':'5px'},
+                    {'if': {'column_id': 'Gap'},      'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
+                    {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
+                    {'if': {'column_id': 'Best Lap'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
+                    {'if': {'column_id': 'S1'},       'width': '55px', 'minWidth': '55px', 'maxWidth': '65px', 'textAlign': 'right', 'paddingRight':'5px'},
+                    {'if': {'column_id': 'S2'},       'width': '55px', 'minWidth': '55px', 'maxWidth': '65px', 'textAlign': 'right', 'paddingRight':'5px'},
+                    {'if': {'column_id': 'S3'},       'width': '55px', 'minWidth': '55px', 'maxWidth': '65px', 'textAlign': 'right', 'paddingRight':'5px'},
+                    {'if': {'column_id': 'Status'},   'width': '80px', 'minWidth': '80px', 'maxWidth': '100px'},
                 ],
                 tooltip_duration=None
             ),
