@@ -1188,6 +1188,25 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
         fig_with_data.update_xaxes(visible=False) # Hide if no laps
 
     return fig_with_data
+
+
+@app.callback(
+    # Target className to hide/show
+    Output("debug-data-accordion-item", "className"),
+    # "value" is True or False for dbc.Switch
+    Input("debug-mode-switch", "value"),
+    # prevent_initial_call=True # Allow to run on load to set initial state
+)
+def toggle_debug_data_visibility(debug_mode_enabled):
+    if debug_mode_enabled:
+        logger.info("Debug mode enabled: Showing 'Other Data Streams'.")
+        # Return its normal className (or "" if no other classes)
+        return "mt-1"
+        # "mt-1" was in the Accordion, so keeping it or similar.
+        # If your AccordionItem has other classes, include them here.
+    else:
+        logger.info("Debug mode disabled: Hiding 'Other Data Streams'.")
+        return "d-none"  # Bootstrap class to hide the element
     
 app.clientside_callback(
     ClientsideFunction(

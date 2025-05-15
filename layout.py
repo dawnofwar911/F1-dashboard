@@ -191,13 +191,15 @@ def create_layout():
                     title="Race Control Messages", item_id="rcm-accordion"
                 ),
                 dbc.AccordionItem(
-                    children=[html.Div(id='other-data-display', 
-                             style={'maxHeight': '140px', 'overflowY': 'auto', 
-                                    'border': '1px solid #444', 'padding': '8px', 
-                                    'fontSize': '0.7rem', 'backgroundColor': '#2B2B2B'})],
-                    title="Other Data Streams (Debug)", item_id="other-data-accordion"
+                    children=[html.Div(id='other-data-display',  # Content is updated by existing callback
+                                       style={'maxHeight': '140px', 'overflowY': 'auto',
+                                              'border': '1px solid #444', 'padding': '8px',
+                                              'fontSize': '0.7rem', 'backgroundColor': '#2B2B2B'})],
+                    title="Other Data Streams (Debug)",
+                    item_id="other-data-accordion",
+                    id="debug-data-accordion-item"  # <<< NEW ID FOR VISIBILITY CONTROL
                 )
-            ], start_collapsed=True, flush=True, className="mt-3", active_item=None)
+            ], start_collapsed=True, flush=True, className="mt-3", active_item="rcm-accordion")
         ], lg=7, md=12, id='main-timing-col', className="mb-3 mb-lg-0"),
 
         # --- >>> Right Column: Focusing on vertical space and graph containers <<< ---
@@ -314,6 +316,22 @@ def create_layout():
         ], md=12)
     ], className="mt-2 mb-3", id='analysis-zone') # Adjusted margins
 
+    # --- Footer with Debug Switch ---
+    app_footer = html.Footer(
+        dbc.Row([
+            dbc.Col(html.Small("F1 Dashboard", className="text-muted"),
+                    width="auto", className="me-auto align-self-center"),
+            dbc.Col(
+                dbc.Switch(
+                    id="debug-mode-switch",  # Same ID as before
+                    label="Debug Streams",   # Shorter label for footer
+                    value=False,
+                    className="form-check-inline"  # Standard Bootstrap class for alignment
+                ), width="auto", className="align-self-center"
+            )
+        ], className="text-center py-2 mt-3 border-top", justify="between")  # justify="between"
+    )
+
     app_layout = dbc.Container([
         stores_and_intervals, # Back to being a direct child
         header_zone,
@@ -321,7 +339,7 @@ def create_layout():
         status_weather_bar,
         main_data_zone,
         analysis_zone,
-        html.Footer(dbc.Row(dbc.Col(html.Small("F1 Dashboard",className="text-muted"), className="text-center py-3")))
+        app_footer
     ], fluid=True, className="dbc dbc-slate p-2")
 
     logger.info("Layout based on R8 with refined graph stability applied.")
