@@ -1,8 +1,12 @@
 // In assets/custom_script.js
 
 if (!window.dash_clientside) { window.dash_clientside = {}; }
+
 window.dash_clientside.clientside = {
     plotlyReactedMap: {},
+    // Flag to indicate a resize just happened
+    _trackMapResizedRecently: false, 
+    _resizeTimeoutId: null,
 
     animateCarMarkers: function (newCarData, existingFigure, graphDivId, updateIntervalDuration) {
         if (!newCarData || Object.keys(newCarData).length === 0) {
@@ -62,7 +66,7 @@ window.dash_clientside.clientside = {
                 'dragmode': false,
                 'xaxis.fixedrange': true, // Disables zoom/pan on x-axis
                 'yaxis.fixedrange': true,  // Disables zoom/pan on y-axis
-                'modebar': false
+                'modebar': false, 'autosizable': true, 'responsive': true
             });
         }
 
@@ -147,37 +151,96 @@ window.dash_clientside.clientside = {
             'marker.opacity': restyle_marker_opacity,
             'textfont.color': restyle_textfont_color // <<< ADDED
         };
-
-        if (updateIntervalDuration && updateIntervalDuration > DURATION_THRESHOLD_MS) {
-            // Low frequency updates: Use Plotly.animate for smooth transitions
-            const animationDuration = Math.max(50, updateIntervalDuration * 0.95); // e.g., 90% of interval
-            // console.log(`Using Plotly.animate, duration: ${animationDuration}ms`);
-
-            try {
-                Plotly.animate(gd, {
-                    data: animateDataUpdates, // Array of update objects, one per trace
-                    traces: traceIndicesToUpdate // Indices of traces to apply these updates to
-                }, {
-                    transition: { duration: animationDuration, easing: 'linear' },
-                    frame: { duration: animationDuration, redraw: false }
-                });
-            } catch (e) {
-                console.error('Error during Plotly.animate:', e);
+        
+        let animationDuration = 0; 
+        if (window.dash_clientside.clientside._trackMapResizedRecently) {
+            animationDuration = 0;
+            // console.log("animateCarMarkers: Snapping due to recent resize.");
+            // Reset the flag after using it for one update cycle
+            // Use a timeout to ensure it's reset after this update might have processed
+            if(window.dash_clientside.clientside._resizeTimeoutId) {
+                clearTimeout(window.dash_clientside.clientside._resizeTimeoutId);
             }
-        } else {
-            // High frequency updates: Use Plotly.restyle for directness
-            // console.log(`Using Plotly.restyle, interval: ${updateIntervalDuration}ms`);
-            try {
-                 // Plotly.restyle expects update payload structured by attribute
-                 // and the final argument is an array of trace indices to apply to.
-                 // The restyleUpdatePayload is already structured by attribute,
-                 // and each attribute's array of values should map to traceIndicesToUpdate.
-                Plotly.restyle(gd, finalRestylePayload, traceIndicesToUpdate);
-            } catch (e) {
-                console.error('Error during Plotly.restyle:', e);
-            }
+            window.dash_clientside.clientside._resizeTimeoutId = setTimeout(() => {
+                window.dash_clientside.clientside._trackMapResizedRecently = false;
+            }, 100); // Reset after a short delay
+        } else if (updateIntervalDuration && updateIntervalDuration > DURATION_THRESHOLD_MS) {
+            animationDuration = Math.max(50, updateIntervalDuration * 0.90); 
+        } else if (updateIntervalDuration) { 
+            animationDuration = Math.min(50, updateIntervalDuration * 0.5); 
         }
 
+        if (animationDuration > 0) {
+            try {
+                Plotly.animate(gd, 
+                    { data: animateDataUpdates, traces: traceIndicesToUpdate }, 
+                    {
+                        transition: { duration: animationDuration, easing: 'linear' },
+                        frame: { duration: animationDuration, redraw: false }
+                    }
+                );
+            } catch (e) { console.error('Error during Plotly.animate:', e); }
+        } else { 
+            try {
+                Plotly.restyle(gd, finalRestylePayload, traceIndicesToUpdate);
+            } catch (e) { console.error('Error during Plotly.restyle:', e); }
+        }
         return window.dash_clientside.no_update;
+    },
+    
+    setupTrackMapResizeListener: function(figure) { 
+        const graphDivId = 'track-map-graph'; 
+        const graphDiv = document.getElementById(graphDivId);
+
+        if (typeof Plotly === 'undefined') {
+            console.warn('Plotly object not found for resize listener.');
+            return dash_clientside.no_update;
+        }
+
+        if (graphDiv && !window.dash_clientside.clientside._trackMapResizeObserver) { 
+            console.log('Attaching ResizeObserver to track map container\'s parent.');
+            try {
+                const resizeObserver = new ResizeObserver(entries => {
+                    const currentGraphDiv = document.getElementById(graphDivId);
+                    if (currentGraphDiv && currentGraphDiv.offsetParent !== null) { 
+                        Plotly.Plots.resize(currentGraphDiv); 
+                        // console.log("ResizeObserver: Called Plotly.Plots.resize.");
+                        
+                        // --- Option C from previous response for autoranging ---
+                        Plotly.relayout(currentGraphDiv, {
+                             'xaxis.autorange': true,
+                             'yaxis.autorange': true
+                        });
+                        // console.log("ResizeObserver: Forced autorange after resize.");
+
+                        // Set a flag that a resize occurred, for animateCarMarkers
+                        window.dash_clientside.clientside._trackMapResizedRecently = true;
+                        // console.log("ResizeObserver: _trackMapResizedRecently = true");
+
+                        // Clear any pending timeout to reset the flag (safety)
+                        if(window.dash_clientside.clientside._resizeTimeoutId) {
+                            clearTimeout(window.dash_clientside.clientside._resizeTimeoutId);
+                        }
+                        // Automatically reset the flag after a short period,
+                        // in case animateCarMarkers doesn't run immediately or misses it.
+                        window.dash_clientside.clientside._resizeTimeoutId = setTimeout(() => {
+                            window.dash_clientside.clientside._trackMapResizedRecently = false;
+                            // console.log("ResizeObserver: Timeout reset _trackMapResizedRecently = false");
+                        }, 500); // Reset after 500ms
+                    }
+                });
+                
+                const wrapperDiv = graphDiv.parentElement; 
+                if (wrapperDiv) {
+                    resizeObserver.observe(wrapperDiv); 
+                    window.dash_clientside.clientside._trackMapResizeObserver = resizeObserver;
+                } else {
+                    console.warn('Could not find wrapper div for track map for ResizeObserver.');
+                }
+            } catch (e) {
+                console.error("Error setting up ResizeObserver for track map:", e);
+            }
+        }
+        return dash_clientside.no_update;
     }
 };
