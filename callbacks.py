@@ -736,30 +736,50 @@ def display_driver_details(selected_driver_number, selected_lap, current_telemet
             timestamps_plot = [timestamps_dt[i] for i in valid_indices]
             channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
             fig_with_data = make_subplots(rows=len(channels), cols=1, shared_xaxes=True, 
-                                          subplot_titles=[c[:10] for c in channels], vertical_spacing=0.04)
+                                          subplot_titles=[c[:10] for c in channels], vertical_spacing=0.06)
             for i, channel in enumerate(channels):
                 y_data_raw = lap_data.get(channel, [])
                 y_data_plot = [(y_data_raw[idx] if idx < len(y_data_raw) else None) for idx in valid_indices]
                 if channel == 'DRS':
                     drs_plot = [1 if val in [10, 12, 14] else 0 for val in y_data_plot]
                     fig_with_data.add_trace(go.Scattergl(x=timestamps_plot, y=drs_plot, mode='lines', name=channel, line_shape='hv', connectgaps=False), row=i+1, col=1)
-                    fig_with_data.update_yaxes(tickvals=[0,1], ticktext=['Off','On'], range=[-0.1,1.1], row=i+1, col=1, title_text=channel[:3], title_standoff=0, title_font_size=9, tickfont_size=9)
+                    fig_with_data.update_yaxes(fixedrange=True, tickvals=[0,1], ticktext=['Off','On'], range=[-0.1,1.1], row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8) # Remove y-axis title text, use subplot title
                 else:
                     fig_with_data.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel, connectgaps=False), row=i+1, col=1)
-                    fig_with_data.update_yaxes(title_text=channel[:3], row=i+1, col=1, title_standoff=0, title_font_size=9, tickfont_size=9)
+                    fig_with_data.update_yaxes(fixedrange=True, row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8) # Remove y-axis title text
             
             fig_with_data.update_layout(
-                template='plotly_dark', height=TELEMETRY_WRAPPER_HEIGHT,
-                hovermode="x unified", showlegend=False, 
-                margin=TELEMETRY_MARGINS_DATA, # Use specific margins for data plots
-                title_text=f"{driver_info_state.get('Tla', driver_num_str)} - Lap {current_lap_value_for_dropdown}", 
-                title_x=0.5, title_font_size=10,
-                uirevision=data_plot_uirevision, # Crucial: set the dynamic uirevision
-                annotations=[] # CRITICAL: Clear any old annotations
-            )
-            for i_ax in range(len(channels)): # Ensure x-axis labels are handled correctly
-                 fig_with_data.update_xaxes(showline=(i_ax == len(channels)-1), zeroline=False, showticklabels=(i_ax == len(channels)-1), row=i_ax+1, col=1, tickfont_size=9)
+                template='plotly_dark',
+                height=TELEMETRY_WRAPPER_HEIGHT,  # Use constant for wrapper height
+                hovermode="x unified",
+                showlegend=False,
+                # Margins: t(top) needs space for main title, l(left) for y-axis ticks if they had text
+                margin=TELEMETRY_MARGINS_DATA,  # Use specific margins for data plots
 
+                # Main Title for the whole telemetry plot
+                title_text=f"<b>{driver_info_state.get('Tla', driver_num_str)} - Lap {current_lap_value_for_dropdown} Telemetry</b>",
+                title_x=0.5,  # Center title
+                title_y=0.98,  # Position title at the top, adjust as needed
+                title_font_size=12,  # Slightly smaller main title
+
+                uirevision=data_plot_uirevision,
+                annotations=[]  # Clear any previous "Select driver/lap" annotations
+            )
+
+            for i, annot in enumerate(fig_with_data.layout.annotations):
+                annot.font.size = 9  # Smaller subplot titles
+                annot.yanchor = 'bottom'
+                annot.y = annot.y  # Slight nudge up if needed based on vertical_spacing
+
+            for i_ax in range(len(channels)):
+                fig_with_data.update_xaxes(
+                    showline=(i_ax == len(channels)-1),
+                    zeroline=False,
+                    showticklabels=(i_ax == len(channels)-1),
+                    row=i_ax+1, col=1,
+                    tickfont_size=8
+                )
+            
             return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_with_data
         else: # No valid plot data for this specific lap
             fig_empty_telemetry.layout.annotations[0].text = f"No plot data for Lap {current_lap_value_for_dropdown}."
