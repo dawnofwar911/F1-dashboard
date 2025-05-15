@@ -64,6 +64,28 @@ TELEMETRY_MARGINS_DATA = {'l': 35, 'r': 10, 't': 30, 'b': 30}  # When data is pl
 LAP_PROG_MARGINS_EMPTY = {'l': 35, 'r': 5, 't': 20, 'b': 30}
 LAP_PROG_MARGINS_DATA = {'l': 40, 'r': 10, 't': 30, 'b': 40}
 
+# --- Track Status and Weather specific styling maps ---
+TRACK_STATUS_STYLES = {
+    '1': {"label": "CLEAR", "card_color": "success", "text_color": "white"}, # Clear
+    '2': {"label": "YELLOW", "card_color": "warning", "text_color": "black"}, # Yellow
+    '3': {"label": "SC DEPLOYED?", "card_color": "warning", "text_color": "black"}, # SC Expected / Deployed
+    '4': {"label": "SAFETY CAR", "card_color": "warning", "text_color": "black"}, # Safety Car
+    '5': {"label": "RED FLAG", "card_color": "danger", "text_color": "white"},   # Red Flag
+    '6': {"label": "VSC DEPLOYED", "card_color": "info", "text_color": "white"},# VSC Deployed
+    '7': {"label": "VSC ENDING", "card_color": "info", "text_color": "white"}, # VSC Ending
+    'DEFAULT': {"label": "UNKNOWN", "card_color": "secondary", "text_color": "white"}
+}
+
+# --- Weather Icon Mapping (using simple text/emoji for now, can be Bootstrap Icon classes) ---
+WEATHER_ICON_MAP = {
+    "sunny": "☀️",
+    "cloudy": "☁️",
+    "overcast": "🌥️", # Or same as cloudy
+    "rain": "🌧️",
+    "drizzle": "🌦️",
+    "windy": "💨",
+    "default": "🌡️" # Default temperature icon
+}
 
 def create_empty_figure_with_message(height, uirevision, message, margins):
     """Helper to create a consistent empty figure."""
@@ -138,63 +160,131 @@ def update_connection_status(n):
     return status_text, status_style
 
 @app.callback(
-    Output('track-status-display', 'children'),
-    Input('interval-component-medium', 'n_intervals')
-)
-def update_track_status_display(n):
-    """Updates the track status display."""
-    with app_state.app_state_lock:
-        track_status_code = app_state.track_status_data.get('Status', '0')
-        track_message = app_state.track_status_data.get('Message', '')
-    track_status_map = {'1':"Clear",'2':"Yellow",'3':"SC?",'4':"SC",'5':"Red",'6':"VSC",'7':"VSC End"}
-    track_status_label = track_status_map.get(track_status_code, f'? ({track_status_code})')
-    display_text = f"Track: {track_status_label}"
-    if track_message and track_message != 'AllClear': display_text += f" ({track_message})"
-    return display_text
-
-@app.callback(
-    Output('session-info-display', 'children'),
+    Output('session-info-display', 'children'), 
+    Output('prominent-weather-display', 'children'),
+    Output('weather-main-icon', 'children'), # <<< NEW Output for the icon
+    Output('prominent-weather-card', 'color'), # <<< NEW Output for card color
+    Output('prominent-weather-card', 'inverse'), # Ensure text is readable
     Input('interval-component-slow', 'n_intervals')
 )
-def update_session_info_display(n):
-    """Updates the session info and weather display."""
-    # (Logic from Response 22/24, using app_state)
-    session_info_str = "Session: N/A"; weather_string = "Weather: N/A"
+def update_session_and_weather_info(n):
+    session_info_str = "Session Info: Awaiting data..."
+    # Weather display elements
+    weather_details_spans = []
+    main_weather_icon = WEATHER_ICON_MAP["default"]
+    weather_card_color = "light" # Default card color
+    weather_card_inverse = False # Default: light card, dark text
+
     try:
         with app_state.app_state_lock:
             local_session_details = app_state.session_details.copy()
-            local_weather_data = app_state.data_store.get('WeatherData', {}).get('data', {})
-            if not isinstance(local_weather_data, dict): local_weather_data = {}
+            raw_weather_payload = app_state.data_store.get('WeatherData', {}) 
+            local_weather_data = raw_weather_payload.get('data', {}) if isinstance(raw_weather_payload, dict) else {}
+            if not isinstance(local_weather_data, dict): 
+                local_weather_data = {}
 
+        # --- Session Name, Circuit etc. (for original 'session-info-display') ---
+        # (Your existing logic for session_info_str from Response 22)
         meeting = local_session_details.get('Meeting', {}).get('Name', '?')
-        session = local_session_details.get('Name', '?')
+        session_name = local_session_details.get('Name', '?') 
         circuit = local_session_details.get('Circuit', {}).get('ShortName', '?')
-        country = local_session_details.get('Country', {}).get('Name', '')
-
-        parts = [];
+        parts = []
         if circuit != '?': parts.append(f"{circuit}")
-        if country: parts.append(f"({country})")
         if meeting != '?': parts.append(f"{meeting}")
-        if session != '?': parts.append(f"Session: {session}")
+        if session_name != '?': parts.append(f"Session: {session_name}")
         if parts: session_info_str = " | ".join(parts)
 
-        elements = [];
-        air = local_weather_data.get('AirTemp'); track = local_weather_data.get('TrackTemp')
-        hum = local_weather_data.get('Humidity'); press = local_weather_data.get('Pressure')
-        wind_s = local_weather_data.get('WindSpeed'); wind_d = local_weather_data.get('WindDirection')
-        rain = local_weather_data.get('Rainfall')
 
-        if air is not None: elements.append(f"Air: {air}°C")
-        if track is not None: elements.append(f"Track: {track}°C")
-        if hum is not None: elements.append(f"Hum: {hum}%")
-        if press is not None: elements.append(f"Press: {press} hPa")
-        if wind_s is not None: w_str=f"Wind: {wind_s} m/s"; w_str += f" ({wind_d}°)" if wind_d is not None else ""; elements.append(w_str)
-        if rain == '1' or rain == 1: elements.append("RAIN")
-        if elements: weather_string = " | ".join(elements)
+        # --- Weather Data ---
+        # Helper to safely convert to float, returns None if not possible
+        def safe_float(value, default=None):
+            if value is None: return default
+            try: return float(value)
+            except (ValueError, TypeError): return default
 
-        combined = dbc.Row([ dbc.Col(session_info_str, width="auto", style={'paddingRight': '15px'}), dbc.Col(weather_string, width="auto") ], justify="start", className="ms-1")
-        return combined
-    except Exception as e: logger.error(f"Session/Weather Display Error: {e}", exc_info=True); return "Error loading session info..."
+        air_temp = safe_float(local_weather_data.get('AirTemp'))
+        track_temp = safe_float(local_weather_data.get('TrackTemp'))
+        humidity = safe_float(local_weather_data.get('Humidity'))
+        pressure = safe_float(local_weather_data.get('Pressure'))
+        wind_speed = safe_float(local_weather_data.get('WindSpeed'))
+        wind_direction = local_weather_data.get('WindDirection') # Often a string or number
+        rainfall_val = local_weather_data.get('Rainfall') # Can be '0', '1', 0, 1
+        is_raining = rainfall_val == '1' or rainfall_val == 1
+
+        overall_condition = "default" # Start with default
+        weather_card_color = "light"  # Default to light
+        weather_card_inverse = False
+        
+        if is_raining:
+            overall_condition = "rain"
+            weather_card_color = "info" 
+            weather_card_inverse = True
+        elif air_temp is not None and humidity is not None: # Only do temp/hum based if we have both
+            if air_temp > 25 and humidity < 60 : # Adjusted humidity threshold for "sunny"
+                overall_condition = "sunny"
+                weather_card_color = "warning" 
+                weather_card_inverse = False # Black text on yellow
+            elif humidity >= 75 or air_temp < 15: # Example: cloudy/cool/damp
+                overall_condition = "cloudy" # Could be more specific if more data points
+                weather_card_color = "secondary" # Greyish for cloudy
+                weather_card_inverse = True
+            # You can add more elif conditions here based on combinations of data
+        elif air_temp is not None: # If only air_temp is available
+             if air_temp > 28: overall_condition = "sunny" # Hot implies sun
+             elif air_temp < 10: overall_condition = "cloudy" # Cool implies clouds
+
+        main_weather_icon = WEATHER_ICON_MAP.get(overall_condition, WEATHER_ICON_MAP["default"])
+
+        # Build the detailed weather string
+        if air_temp is not None: weather_details_spans.append(html.Span(f"Air: {air_temp:.1f}°C", className="me-3"))
+        if track_temp is not None: weather_details_spans.append(html.Span(f"Track: {track_temp:.1f}°C", className="me-3"))
+        if humidity is not None: weather_details_spans.append(html.Span(f"Hum: {humidity:.0f}%", className="me-3"))
+        if pressure is not None: weather_details_spans.append(html.Span(f"Press: {pressure:.0f}hPa", className="me-3"))
+        if wind_speed is not None:
+            wind_str = f"Wind: {wind_speed:.1f}m/s"
+            if wind_direction is not None: # Wind direction can be numeric or sometimes 'Variable'
+                 try: wind_str += f" ({int(wind_direction)}°)"
+                 except (ValueError, TypeError): wind_str += f" ({wind_direction})" # If not int, show as is
+            weather_details_spans.append(html.Span(wind_str, className="me-3"))
+        
+        # Add RAIN text prominently if it's raining and not already clear from icon/card
+        if is_raining and overall_condition != "rain": 
+            weather_details_spans.append(html.Span("RAIN", className="me-2 fw-bold", 
+                                         style={'color':'#007bff'})) # Blue rain text
+
+        if not weather_details_spans and overall_condition == "default":
+            final_weather_display_children = [html.Em("Weather data unavailable")]
+        elif not weather_details_spans and overall_condition != "default":
+             final_weather_display_children = [html.Em(f"{overall_condition.capitalize()} conditions")]
+        else:
+            final_weather_display_children = weather_details_spans
+            
+        return session_info_str, html.Div(children=final_weather_display_children), main_weather_icon, weather_card_color, weather_card_inverse
+
+    except Exception as e:
+        logger.error(f"Session/Weather Display Error in callback: {e}", exc_info=True)
+        return "Error: Session Info", "Error: Weather", WEATHER_ICON_MAP["default"], "light", False
+
+@app.callback(
+    Output('prominent-track-status-text', 'children'),
+    Output('prominent-track-status-card', 'color'), # To change card background
+    Output('prominent-track-status-text', 'style'), # To change text color for contrast
+    Input('interval-component-medium', 'n_intervals') # Or fast, depending on desired reactivity
+)
+def update_prominent_track_status(n):
+    with app_state.app_state_lock:
+        track_status_code = str(app_state.track_status_data.get('Status', '0')) # Ensure string
+        # track_message = app_state.track_status_data.get('Message', '') # We might add this back later
+
+    status_info = TRACK_STATUS_STYLES.get(track_status_code, TRACK_STATUS_STYLES['DEFAULT'])
+    
+    label_to_display = status_info["label"]
+    # if track_message and track_message != 'AllClear' and track_status_code != '1':
+    #     label_to_display += f" ({track_message})" # Optionally add message
+
+    text_style = {'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px', 'color': status_info["text_color"]}
+    
+    return label_to_display, status_info["card_color"], text_style
 
 @app.callback(
     Output('other-data-display', 'children'),
@@ -866,6 +956,9 @@ def initialize_track_map(n_intervals, expected_session_id, current_track_map_fig
         TRACK_MAP_WRAPPER_HEIGHT, INITIAL_TRACK_MAP_UIREVISION, 
         "Loading track data...", TRACK_MAP_MARGINS
     )
+    
+    fig_empty_or_loading_map.layout.plot_bgcolor = 'rgb(30,30,30)'
+    fig_empty_or_loading_map.layout.paper_bgcolor = 'rgba(0,0,0,0)'
 
     if not expected_session_id:
         logger.debug("Track Map Update: No expected_session_id. Returning empty map if not already shown.")
@@ -920,7 +1013,9 @@ def initialize_track_map(n_intervals, expected_session_id, current_track_map_fig
                        range=cached_data.get('range_y'), autorange=False if cached_data.get('range_y') else True, 
                        scaleanchor="x" if cached_data.get('range_x') and cached_data.get('range_y') else None, 
                        scaleratio=1 if cached_data.get('range_x') and cached_data.get('range_y') else None),
-            showlegend=False, plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)',
+            showlegend=False, 
+            plot_bgcolor='rgb(30,30,30)', 
+            paper_bgcolor='rgba(0,0,0,0)',
             font=dict(color='white'), 
             margin=TRACK_MAP_MARGINS, 
             height=TRACK_MAP_WRAPPER_HEIGHT,
@@ -942,21 +1037,6 @@ def initialize_track_map(n_intervals, expected_session_id, current_track_map_fig
 
         fig_empty_or_loading_map.layout.annotations[0].text = expected_loading_text
         return fig_empty_or_loading_map
-
-app.clientside_callback(
-    ClientsideFunction(
-        namespace='clientside',  # Matches window.dash_clientside.clientside
-        function_name='animateCarMarkers'  # Matches the function name in custom_script.js
-    ),
-    # Still need an Output, though JS modifies in place
-    Output('track-map-graph', 'figure'),
-    Input('car-positions-store', 'data'),
-    # Passes the current figure as 'existingFigure' to JS
-    State('track-map-graph', 'figure'),
-    # Passes the graph's div ID as 'graphDivId' to JS
-    State('track-map-graph', 'id'),
-    State('clientside-update-interval', 'interval')
-)
 
 # --- >>> ADDED: Driver Dropdown Update Callback <<< ---
 @app.callback(
@@ -1088,6 +1168,31 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
         fig_with_data.update_xaxes(visible=False) # Hide if no laps
 
     return fig_with_data
+    
+app.clientside_callback(
+    ClientsideFunction(
+        namespace='clientside',  # Matches window.dash_clientside.clientside
+        function_name='animateCarMarkers'  # Matches the function name in custom_script.js
+    ),
+    # Still need an Output, though JS modifies in place
+    Output('track-map-graph', 'figure'),
+    Input('car-positions-store', 'data'),
+    # Passes the current figure as 'existingFigure' to JS
+    State('track-map-graph', 'figure'),
+    # Passes the graph's div ID as 'graphDivId' to JS
+    State('track-map-graph', 'id'),
+    State('clientside-update-interval', 'interval')
+)
+
+app.clientside_callback(
+    ClientsideFunction(
+        namespace='clientside',
+        function_name='setupTrackMapResizeListener'
+    ),
+    Output('track-map-graph', 'figure', allow_duplicate=True), # Dummy output, but must exist
+    Input('track-map-graph', 'figure'), # Trigger when the figure is first set or updated
+    prevent_initial_call='initial_duplicate'# Allow to run on initial load
+)
 
 # --- Final Log ---
 logger.info("Callback definitions processed.")

@@ -42,13 +42,12 @@ def create_layout():
 
     header_zone = dbc.Row([
         dbc.Col(html.H2("F1 Live Dashboard", className="mb-0"), width="auto", lg=4),
-        dbc.Col(html.Div(id='session-info-display', style={'fontSize': '0.9rem'}), 
-                lg=5, className="text-center align-self-center"),
-        dbc.Col([
-            html.Div(id='connection-status', children="Status: Initializing...", style={'fontSize': '0.8rem'}),
-            html.Div(id='track-status-display', children="Track: Unknown", style={'fontSize': '0.8rem'})
-        ], lg=3, className="text-end align-self-center")
-    ], className="mb-3 p-2 bg-dark text-white rounded", id='header-zone', align="center")
+        dbc.Col(html.Div(id='session-info-display'), # <<< This will now mainly show Session Name, Circuit
+                lg=5, className="text-center align-self-center" # Keep style if desired
+               ), 
+        dbc.Col(html.Div(id='connection-status', children="Status: Initializing..."), # Connection status can stay here
+                lg=3, className="text-end align-self-center")
+    ], className="mb-2 p-2 bg-dark text-white rounded", id='header-zone', align="center") # Reduced mb slightly
 
     control_card_content_list = [ # Ensuring this is a list for CardBody
         dbc.Row([
@@ -77,6 +76,44 @@ def create_layout():
             is_open=True, 
         )
     ], className="mb-3", id='control-zone-wrapper')
+    
+    # --- >>> NEW: Prominent Status & Weather Bar <<< ---
+    status_weather_bar = dbc.Row([
+        dbc.Col(
+            dbc.Card(
+                dbc.CardBody(
+                    html.Div([
+                        html.Strong("Track Status: ", style={'marginRight':'5px'}),
+                        html.Span(id='prominent-track-status-text', children="CLEAR", 
+                                  style={'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px'}) 
+                        # Styling for text color/background will be via callback
+                    ]),
+                    className="p-2 text-center", # Compact padding
+                    style={'minHeight':'55px', 'display':'flex', 'alignItems':'center', 'justifyContent':'center'}
+                ), 
+                id='prominent-track-status-card', # ID for callback styling
+                color="secondary", # Default, will change with status
+                inverse=True # For dark themes if card color is dark
+            ), 
+            lg=3, md=4, sm=6, xs=12, className="mb-2 mb-lg-0" # Responsive
+        ),
+        dbc.Col(
+            dbc.Card(
+                dbc.CardBody(
+                    html.Div([ # Wrapper for icon and text
+                    html.Span(id='weather-main-icon', className="me-2", style={'fontSize': '1.5rem'}), # Larger icon
+                    html.Div(id='prominent-weather-display', children="Weather: Loading...",
+                             style={'fontSize':'0.8rem', 'lineHeight':'1.2'}) # Adjusted line height
+                ], style={'display': 'flex', 'alignItems': 'center'}),
+                className="p-2" 
+            ),
+            id='prominent-weather-card', # ID for potential card styling
+            color="light", 
+            style={'minHeight':'55px'}
+        ),
+        lg=9, md=8, sm=6, xs=12
+    )
+], className="mb-3", id='status-weather-bar')
     
     main_data_zone = dbc.Row([
         dbc.Col([ # Left Column (Structure from Response 8)
@@ -137,7 +174,7 @@ def create_layout():
                 dbc.CardBody([
                     html.H5("Track Map", className="card-title mb-2"),
                     html.Div( # Explicitly sized wrapper for the graph
-                        style={'height': '360px'}, # *** ADJUSTED HEIGHT *
+                        style={'height': '360px', 'width': '100%'}, # *** ADJUSTED HEIGHT *
                         children=[
                             dcc.Graph(
                                 id='track-map-graph',
@@ -146,17 +183,24 @@ def create_layout():
                                     'template': 'plotly_dark', 'uirevision': 'track_map_main_layout', # Unique uirevision
                                     'xaxis': {'visible': False, 'range': [0,1]}, 
                                     'yaxis': {'visible': False, 'range': [0,1], 'scaleanchor':'x', 'scaleratio':1},
-                                    'margin': {'l': 2, 'r': 2, 't': 2, 'b': 2} # Minimal margins
+                                    'margin': {'l': 2, 'r': 2, 't': 2, 'b': 2}, # Minimal margins
+                                    'plot_bgcolor': 'rgb(30,30,30)', # Explicitly set for empty state too
+                                    'paper_bgcolor': 'rgba(0,0,0,0)' # Consistent with data state
                                 }),
-                                config={'displayModeBar': False, 'scrollZoom': False, 'dragmode': False, 
-                                        'autosizable': True, 'responsive': True}
+                                config={
+                                    'displayModeBar': False, 
+                                    'scrollZoom': False, 
+                                    'dragmode': False, 
+                                    'autosizable': True,  # <<< Try False, let responsive and JS handle it
+                                    'responsive': True     # <<< This is key for window resize
+                                }
                             )
                         ]
                     )
                 ]), className="mb-2" # Reduced margin-bottom for tighter packing
             ),
             # html.Div(id='dummy-cache-output', style={'display': 'none'}), # Already in Response 8
-
+    
             dbc.Card( # Card for Driver Focus
                 dbc.CardBody([
                     html.H5("Driver Focus", className="card-title mb-2"),
@@ -242,6 +286,7 @@ def create_layout():
         stores_and_intervals, # Back to being a direct child
         header_zone,
         control_zone,
+        status_weather_bar,
         main_data_zone,
         analysis_zone,
         html.Footer(dbc.Row(dbc.Col(html.Small("F1 Dashboard",className="text-muted"), className="text-center py-3")))
