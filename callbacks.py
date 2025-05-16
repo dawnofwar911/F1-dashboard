@@ -467,7 +467,8 @@ def update_replay_speed_state(new_speed):
 
 @app.callback(
     [Output('dummy-output-for-controls', 'children', allow_duplicate=True),
-     Output('track-map-graph', 'figure', allow_duplicate=True)],
+     Output('track-map-graph', 'figure', allow_duplicate=True),
+     Output('car-positions-store', 'data', allow_duplicate=True)], # <<< ADDED Output
     Input('connect-button', 'n_clicks'),
     # Input('disconnect-button', 'n_clicks'), # Assuming removed as per your request
     Input('replay-button', 'n_clicks'),
@@ -478,38 +479,30 @@ def update_replay_speed_state(new_speed):
     State('record-data-checkbox', 'value'),
     prevent_initial_call=True
 )
-def handle_control_clicks(connect_clicks, # disconnect_clicks,
-                          replay_clicks, # stop_replay_clicks,
-                          stop_reset_clicks,
+def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
                           selected_replay_file, replay_speed,
                           record_checkbox_value):
     ctx = dash.callback_context
     button_id = ctx.triggered_id if ctx.triggered else None
 
     dummy_output = no_update
-    track_map_figure_output = no_update 
+    track_map_figure_output = no_update
+    car_positions_store_output = no_update # <<< Initialize new output value
 
     if not button_id:
-        return dummy_output, track_map_figure_output
+        return dummy_output, track_map_figure_output, car_positions_store_output # Return all outputs
 
     logger.info(f"Control button clicked: {button_id}")
 
     def generate_reset_track_map_figure():
-        # --- MODIFICATION: Use a unique uirevision for each reset ---
         unique_reset_uirevision = f"reset_map_rev_{time.time()}" 
         logger.debug(f"Generating reset track map with unique uirevision: {unique_reset_uirevision}")
-        # --- END MODIFICATION ---
-
-        fig = create_empty_figure_with_message( # Your existing generic helper
-            height=TRACK_MAP_WRAPPER_HEIGHT,
-            uirevision=unique_reset_uirevision, # Use the new unique uirevision
-            message="Track data will load when session is active.", 
-            margins=TRACK_MAP_MARGINS
+        fig = create_empty_figure_with_message(
+            height=TRACK_MAP_WRAPPER_HEIGHT, uirevision=unique_reset_uirevision,
+            message="Track data will load when session is active.", margins=TRACK_MAP_MARGINS
         )
-        fig.update_layout(
-            yaxis_scaleanchor='x', yaxis_scaleratio=1,
-            plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)'
-        )
+        fig.update_layout(yaxis_scaleanchor='x', yaxis_scaleratio=1,
+                          plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)')
         if fig.layout.annotations: fig.layout.annotations[0].font.size = 10
         return fig
 
@@ -569,44 +562,47 @@ def handle_control_clicks(connect_clicks, # disconnect_clicks,
         logger.info("Stop & Reset Session button clicked.")
         any_action_failed = False
         
-        logger.info("Stop & Reset: Stopping SignalR connection (if any)...")
-        try: signalr_client.stop_connection(); logger.info("Stop & Reset: SignalR stop_connection completed.")
-        except Exception as e: logger.error(f"Stop & Reset: Error stopping SignalR: {e}", exc_info=True); any_action_failed = True
+        logger.info("Stop & Reset: Attempting to stop SignalR connection (if any)...")
+        try: signalr_client.stop_connection(); logger.info("Stop & Reset: signalr_client.stop_connection() completed.")
+        except Exception as e: logger.error(f"Stop & Reset: Error during signalr_client.stop_connection(): {e}", exc_info=True); any_action_failed = True
         
-        logger.info("Stop & Reset: Stopping replay (if any)...")
-        try: replay.stop_replay(); logger.info("Stop & Reset: Replay stop_replay completed.")
-        except Exception as e: logger.error(f"Stop & Reset: Error stopping replay: {e}", exc_info=True); any_action_failed = True
+        logger.info("Stop & Reset: Attempting to stop replay (if any)...")
+        try: replay.stop_replay(); logger.info("Stop & Reset: replay.stop_replay() completed.")
+        except Exception as e: logger.error(f"Stop & Reset: Error during replay.stop_replay(): {e}", exc_info=True); any_action_failed = True
         
         logger.debug("Stop & Reset: Pausing (0.3s) for stop signals...")
         time.sleep(0.3)
 
         logger.info("Stop & Reset: Resetting application state...")
         try:
-            app_state.reset_to_default_state()
-            track_map_figure_output = generate_reset_track_map_figure() # <<< RESET TRACK MAP
-            logger.info("Stop & Reset: Application state reset completed and track map set to empty.")
+            app_state.reset_to_default_state() 
+            track_map_figure_output = generate_reset_track_map_figure() 
+            # --- MODIFICATION: Trigger car-positions-store to run animateCarMarkers ---
+            car_positions_store_output = {'status': 'reset_map_display', 'timestamp': time.time()} 
+            # --- END MODIFICATION ---
+            logger.info("Stop & Reset: State reset; track map set to empty; car_positions_store signaled.")
         except Exception as e:
-            logger.error(f"Stop & Reset: Error resetting state: {e}", exc_info=True); any_action_failed = True
+            logger.error(f"Stop & Reset: Error during reset_to_default_state: {e}", exc_info=True); any_action_failed = True
         
         logger.info("Stop & Reset: Finalizing stop_event and app status...")
         with app_state.app_state_lock:
             current_status = app_state.app_status.get("state")
-            logger.info(f"Stop & Reset: State before final stop_event clear: '{current_status}'. Action failed: {any_action_failed}")
+            logger.info(f"Stop & Reset: State before final stop_event clear: '{current_status}'. Actions failed: {any_action_failed}")
             if app_state.stop_event.is_set(): logger.info("Stop & Reset: Global stop_event is SET. Clearing now."); app_state.stop_event.clear()
             else: logger.info("Stop & Reset: Global stop_event was already clear.")
             if any_action_failed and current_status != "Error":
                 logger.warning("Stop & Reset: Forcing app status to 'Error' due to failures.")
                 app_state.app_status["state"] = "Error"; app_state.app_status["connection"] = "Reset failed"
             elif not any_action_failed and current_status != "Idle":
-                 logger.warning(f"Stop & Reset: Actions succeeded but state is '{current_status}', expected 'Idle'. Forcing to Idle.")
+                 logger.info(f"Stop & Reset: Actions succeeded. Current state '{current_status}' (expected Idle). Ensuring Idle.")
                  app_state.app_status["state"] = "Idle"; app_state.app_status["connection"] = "Disconnected"
         logger.info("Stop & Reset Session processing finished.")
     
-    else: # Handles removed buttons if they were somehow still triggered
-        logger.warning(f"Button ID '{button_id}' not explicitly handled or was removed. No action taken.")
+    else:
+        logger.warning(f"Button ID '{button_id}' not handled by handle_control_clicks.")
 
+    return dummy_output, track_map_figure_output, car_positions_store_output # <<< Return all three
 
-    return dummy_output, track_map_figure_output
 
 @app.callback(
     Output('record-data-checkbox', 'id', allow_duplicate=True),

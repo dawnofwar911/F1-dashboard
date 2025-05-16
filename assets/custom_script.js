@@ -9,11 +9,9 @@ window.dash_clientside.clientside = {
     _resizeTimeoutId: null,
 
     animateCarMarkers: function (newCarData, existingFigure, graphDivId, updateIntervalDuration) {
-        // Add console logs you had before for debugging these values:
-        console.log("[JS animateCarMarkers] Python existingFigure uirevision:", existingFigure?.layout?.uirevision);
-        console.log("[JS animateCarMarkers] JS reactedUiRevision cache:", window.dash_clientside.clientside.plotlyReactedMap[graphDivId]);
-        console.log("[JS animateCarMarkers] newCarData present:", !!newCarData && Object.keys(newCarData).length > 0);
-
+        console.log("[JS animateCarMarkers] Triggered. Python uirevision:", existingFigure?.layout?.uirevision, 
+                    "JS Cache uirevision:", window.dash_clientside.clientside.plotlyReactedMap[graphDivId]);
+        console.log("[JS animateCarMarkers] newCarData:", newCarData); // Log incoming newCarData
 
         const gd = document.getElementById(graphDivId);
         if (!gd) {
@@ -24,43 +22,57 @@ window.dash_clientside.clientside = {
         const currentUiRevision = existingFigure?.layout?.uirevision;
         const reactedUiRevision = window.dash_clientside.clientside.plotlyReactedMap[graphDivId];
 
-        if  (currentUiRevision && reactedUiRevision !== currentUiRevision) {
-            console.log("[JS animateCarMarkers] uirevision changed. Python:", currentUiRevision, "JS Cache:", reactedUiRevision);
-            if (existingFigure?.layout) {
-                console.log("[JS animateCarMarkers] Attempting Plotly.react to update to new figure structure/layout.");
-                try {
-                    Plotly.react(gd, existingFigure.data, existingFigure.layout, existingFigure.config);
-                    window.dash_clientside.clientside.plotlyReactedMap[graphDivId] = currentUiRevision;
-                    console.log("[JS animateCarMarkers] Plotly.react successful. Updated JS reactedUiRevision cache to:", currentUiRevision);
-                } catch (e) {
-                    console.error('[JS animateCarMarkers] Error during Plotly.react:', e);
-                    // If react fails, maybe the old graph is still there.
-                    // We might not want to proceed with animation if the base figure is wrong.
-                    return window.dash_clientside.no_update; 
+        // Condition to call Plotly.react:
+        // - currentUiRevision must exist.
+        // - currentUiRevision must be different from what JS last fully rendered.
+        // - existingFigure.layout must exist (as Plotly.react needs it).
+        if (currentUiRevision && reactedUiRevision !== currentUiRevision && existingFigure?.layout) {
+            console.log("[JS animateCarMarkers] Uirevision changed OR first load with uirevision. Python:", currentUiRevision, "JS Cache:", reactedUiRevision);
+            console.log("[JS animateCarMarkers] Attempting Plotly.react. existingFigure.data:", existingFigure.data); // Log what data is
+            
+            try {
+                // Use existingFigure.data directly. For an empty map from Python (go.Figure with no traces), 
+                // existingFigure.data should serialize to an empty array [].
+                Plotly.react(gd, existingFigure.data, existingFigure.layout, existingFigure.config); 
+                
+                window.dash_clientside.clientside.plotlyReactedMap[graphDivId] = currentUiRevision;
+                console.log("[JS animateCarMarkers] Plotly.react call successful. Updated JS reactedUiRevision cache to:", currentUiRevision);
+
+                // For debugging: Log structure after react
+                const postReactGd = document.getElementById(graphDivId);
+                console.log("[JS animateCarMarkers] gd.data after Plotly.react (trace count):", postReactGd.data ? postReactGd.data.length : 'undefined');
+                if (postReactGd.data && postReactGd.data.length === 0) {
+                     console.log("[JS animateCarMarkers] Map appears empty after react (0 data traces). Annotation should be visible.");
                 }
-            } else {
-                console.warn("[JS animateCarMarkers] uirevision changed, but existingFigure.data or .layout is missing. Cannot call Plotly.react.");
-                return window.dash_clientside.no_update;
+
+            } catch (e) {
+                console.error('[JS animateCarMarkers] Error during Plotly.react:', e, 'Figure data:', existingFigure.data, 'Figure layout:', existingFigure.layout);
+                return window.dash_clientside.no_update; 
             }
-        } else if (currentUiRevision && reactedUiRevision === currentUiRevision) {
-            console.log("[JS animateCarMarkers] uirevision from Python matches JS cache. No Plotly.react needed. Python/Cache:", currentUiRevision);
-        } else if (!currentUiRevision) {
-            console.warn("[JS animateCarMarkers] currentUiRevision from Python's existingFigure is undefined. Cannot determine if Plotly.react is needed.");
-            // This might happen if the very first figure hasn't loaded yet, or if reset figure has no uirevision
+        } else {
+            if (!currentUiRevision) console.log("[JS animateCarMarkers] Plotly.react NOT called: currentUiRevision is missing.");
+            else if (reactedUiRevision === currentUiRevision) console.log("[JS animateCarMarkers] Plotly.react NOT called: uirevision from Python matches JS cache.");
+            else if (!existingFigure?.layout) console.log("[JS animateCarMarkers] Plotly.react NOT called: existingFigure.layout is missing.");
         }
-        // --- END MODIFIED CONDITION ---
+        
+        if (newCarData && newCarData.status === 'reset_map_display') {
+            console.log("[JS animateCarMarkers] Received 'reset_map_display' signal. Map should have been reset by Plotly.react if uirevision changed. Skipping car animation.");
+            return window.dash_clientside.no_update; // Don't try to animate with this signal data
+        }
 
-
-        // Abort if no car data for animation after potential react
+        // --- Animation/Restyle Logic ---
+        // This part should only run if the map has traces for cars
+        
         if (!newCarData || Object.keys(newCarData).length === 0) {
-            // console.log("[JS animateCarMarkers] No newCarData to animate after react check.");
+            // console.log("[JS animateCarMarkers] No newCarData to animate.");
             return window.dash_clientside.no_update;
         }
         
-        if (!gd.data || !gd.layout) {
-            console.warn("[JS animateCarMarkers] gd.data or gd.layout still not populated after react check. Cannot animate.");
-            return window.dash_clientside.no_update; 
-        }
+        const currentGraphData = gd.data;
+        if (!currentGraphData && Object.keys(newCarData).length > 0 ) { // if gd.data is null/undefined but we have car data, something is wrong after react
+             console.warn("[JS animateCarMarkers] gd.data is null/undefined after react block, but received newCarData. Aborting animation for this cycle.");
+             return window.dash_clientside.no_update;
+        };
         
         const dataArray = gd.data || gd._fullData; // Use DOM's current data
         if (!dataArray || !Array.isArray(dataArray) || dataArray.length === 0) {
