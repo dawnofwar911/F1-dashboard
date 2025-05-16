@@ -467,125 +467,300 @@ def update_replay_speed_state(new_speed):
 # --- >>> END ADDED CALLBACK <<< ---
 
 
+# callbacks.py
+
+import logging
+import json
+import time
+import threading # Ensure threading is imported
+from pathlib import Path
+
+import dash
+from dash.dependencies import Input, Output, State, ClientsideFunction
+from dash import dcc, html, dash_table, no_update
+import dash_bootstrap_components as dbc
+# ... other specific imports like plotly, numpy, requests etc. ...
+
+try:
+    from app_instance import app
+except ImportError:
+    print("ERROR: Could not import 'app' for callbacks.")
+    raise
+
 @app.callback(
-    Output('dummy-output-for-controls', 'children'),
-    Input('connect-button', 'n_clicks'), Input('disconnect-button', 'n_clicks'),
-    Input('replay-button', 'n_clicks'), Input('stop-replay-button', 'n_clicks'),
+    Output('dummy-output-for-controls', 'children'), # Main dummy output for this callback
+    Input('connect-button', 'n_clicks'),
+    Input('disconnect-button', 'n_clicks'),
+    Input('replay-button', 'n_clicks'),
+    Input('stop-replay-button', 'n_clicks'),
+    Input('stop-reset-button', 'n_clicks'), # Added in previous responses
     State('replay-file-selector', 'value'),
-    State('replay-speed-slider', 'value'),   # <<< CORRECTED ID
+    State('replay-speed-slider', 'value'),
     State('record-data-checkbox', 'value'),
     prevent_initial_call=True
 )
 def handle_control_clicks(connect_clicks, disconnect_clicks,
                           replay_clicks, stop_replay_clicks,
+                          stop_reset_clicks,
                           selected_replay_file, replay_speed,
                           record_checkbox_value):
-    # (Combined Logic from Response 33)    
-    ctx = dash.callback_context; button_id = ctx.triggered_id
-    if not button_id: return no_update
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        logger.debug("handle_control_clicks triggered with no context (e.g., initial load with prevent_initial_call=True)")
+        return no_update
+        
+    button_id = ctx.triggered_id
+    if not button_id: # Should not happen if ctx.triggered is true, but as a safeguard
+        logger.warning("handle_control_clicks: No button_id in triggered context.")
+        return no_update
+
     logger.info(f"Control button clicked: {button_id}")
-    should_record = bool(record_checkbox_value)
 
+    # --- Connect Button Logic ---
     if button_id == 'connect-button':
-        should_record = False # Default
+        logger.info("Connect Live button clicked.")
         with app_state.app_state_lock:
-            state = app_state.app_status["state"]
-            # Read the flag set by the separate record_checkbox_callback
-            should_record = app_state.record_live_data
+            current_app_s = app_state.app_status["state"]
+            if current_app_s not in ["Idle", "Stopped", "Error", "Playback Complete"]:
+                logger.warning(f"Connect button ignored. App not in a connectable state (current: {current_app_s})")
+                return no_update
+            
+            # Clear stop_event FOR THE NEW SESSION
+            if app_state.stop_event.is_set():
+                logger.info("Connect Live: Clearing pre-existing global stop_event.")
+                app_state.stop_event.clear()
+            else:
+                logger.info("Connect Live: Global stop_event was already clear.")
+            
+            # Update app_state.record_live_data based on checkbox (already handled by record_checkbox_callback)
+            # but good to log the decision point
+            should_record_live = app_state.record_live_data 
+            logger.info(f"Connect Live: Recording decision based on app_state.record_live_data: {should_record_live}")
 
-        if state not in ["Idle", "Stopped", "Error", "Playback Complete"]:
-            logger.warning(f"Connect ignored ({state})"); return no_update
-
-        logger.info(f"Initiating connection sequence... Recording state from app_state: {should_record}")
-
-        # --- Integrate Negotiation and Thread Start (from old start_live_callback) ---
+        # Proceed with connection (websocket negotiation, thread start)
         websocket_url, ws_headers = None, None
         try:
             with app_state.app_state_lock:
                  app_state.app_status.update({"state": "Initializing", "connection": "Negotiating..."})
-                 app_state.stop_event.clear()
-
-            # Call build_connection_url from signalr_client
+            
             websocket_url, ws_headers = signalr_client.build_connection_url(
                 config.NEGOTIATE_URL_BASE, config.HUB_NAME
             )
             if not websocket_url or not ws_headers:
                  raise ConnectionError("Negotiation failed to return URL or Headers.")
-
+            logger.info("Negotiation successful.")
         except Exception as e:
-            logger.error(f"Error during negotiation/setup: {e}", exc_info=True)
+            logger.error(f"Error during negotiation/setup for Connect Live: {e}", exc_info=True)
             with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Negotiation Failed"})
-            return no_update # Error handled, update status via interval
+            return no_update
 
-        # --- Start Connection Thread ---
         if websocket_url and ws_headers:
-            if should_record:
-                logger.info("Recording enabled, initializing live file state...")
-                if not replay.init_live_file(): # Calls the state-setting version
-                    logger.error("Failed to initialize recording state. Proceeding without recording.")
-                    # Update app_state flags if init failed? init_live_file should do this.
+            if should_record_live: # Use the value retrieved under lock
+                logger.info("Recording enabled for live session, initializing live file state...")
+                if not replay.init_live_file(): # This sets app_state flags for recording
+                    logger.error("Failed to initialize recording state for live session. Proceeding without recording.")
             else:
-                logger.info("Recording disabled, clearing recording state...")
-                replay.close_live_file() # Ensure state is cleared
+                logger.info("Recording disabled for live session, ensuring recording state is cleared.")
+                replay.close_live_file() # Clears recording flags and closes file if any
 
-            logger.info("Starting connection thread...")
+            logger.info("Starting SignalR connection thread...")
             thread_obj = threading.Thread(
-                target=signalr_client.run_connection_manual_neg, # Target the existing function
+                target=signalr_client.run_connection_manual_neg,
                 args=(websocket_url, ws_headers),
                 name="SignalRConnectionThread", daemon=True)
-
-            # Manage thread reference within signalr_client
-            signalr_client.connection_thread = thread_obj
+            signalr_client.connection_thread = thread_obj # Store thread reference
             thread_obj.start()
-            logger.info("Connection thread started.")
-            # Status will update via interval based on app_state changes made by the thread
+            logger.info("SignalR connection thread initiated.")
         else:
-             logger.error("Cannot start connection thread: URL or Headers missing after negotiation.")
-             with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Internal Setup Error"})
-        # --- End Integrated Connection Logic ---
+             logger.error("Cannot start SignalR connection thread: URL or Headers missing after negotiation.")
+             with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Internal Setup Error (SignalR)"})
 
-    # --- Disconnect Logic ---
+    # --- Disconnect Button Logic ---
     elif button_id == 'disconnect-button':
-        logger.info("Disconnect button clicked")
-        signalr_client.stop_connection() # Handles stopping thread and clearing recording state
-        with app_state.app_state_lock: state = app_state.app_status["state"]
-        if state == "Replaying": logger.info("Stopping replay due to disconnect click."); replay.stop_replay()
+        logger.info("Disconnect Live button clicked.")
+        action_failed = False
+        try:
+            signalr_client.stop_connection() # This function sets app_state.stop_event
+            logger.info("signalr_client.stop_connection() called successfully.")
+        except Exception as e:
+            logger.error(f"Error during 'disconnect-button' -> signalr_client.stop_connection(): {e}", exc_info=True)
+            action_failed = True
+        
+        # Logic to clear stop_event if app is to remain running and Idle
+        with app_state.app_state_lock:
+            current_main_state_after_disconnect = app_state.app_status.get("state", "Unknown")
+            # stop_connection should put state to "Stopped" or "Idle"
+            if not action_failed and current_main_state_after_disconnect in ["Stopped", "Idle"]:
+                 if app_state.stop_event.is_set(): # Check if stop_connection actually set it
+                    logger.info(f"Disconnect Live: State is '{current_main_state_after_disconnect}'. Clearing global stop_event to keep app running.")
+                    app_state.stop_event.clear()
+                 else:
+                    logger.info(f"Disconnect Live: State is '{current_main_state_after_disconnect}'. Global stop_event was already clear or not set by stop_connection.")
+            elif app_state.stop_event.is_set(): 
+                logger.warning(f"Disconnect Live: State is '{current_main_state_after_disconnect}', Action Failed: {action_failed}. Global stop_event was set but conditions not met to clear it.")
+            
+            if action_failed: # Ensure UI reflects error if stop_connection itself failed critically
+                app_state.app_status["state"] = "Error"
+                app_state.app_status["connection"] = "Disconnect Failed"
+        logger.info("Disconnect Live button processing finished.")
+
+    # --- Replay Button Logic ---
     elif button_id == 'replay-button':
+        logger.info("Start Replay button clicked.")
         if selected_replay_file:
-            with app_state.app_state_lock: state = app_state.app_status["state"]
-            if state in ["Live", "Connecting"]: logger.info("Stopping live feed before replay."); signalr_client.stop_connection(); time.sleep(0.5)
-            with app_state.app_state_lock: current_state_after_stop = app_state.app_status["state"]
-            if current_state_after_stop != "Replaying":
+            active_live_session = False
+            with app_state.app_state_lock: # Check if live session is running
+                current_app_s_for_replay = app_state.app_status["state"]
+                if current_app_s_for_replay in ["Live", "Connecting"]:
+                    active_live_session = True
+                elif current_app_s_for_replay == "Replaying":
+                    logger.warning("Start Replay ignored: Another replay is already in progress. Please stop it first.")
+                    return no_update
+                elif current_app_s_for_replay not in ["Idle", "Stopped", "Error", "Playback Complete"]:
+                    logger.warning(f"Start Replay ignored: App not in a suitable state (current: {current_app_s_for_replay})")
+                    return no_update
+
+            if active_live_session: # If live, stop it first
+                logger.info("Live session is active. Stopping live feed before starting replay...")
                 try:
-                    speed_float = float(replay_speed); speed_float = max(0.1, speed_float)
-                    full_replay_path = config.REPLAY_DIR / selected_replay_file
-                    logger.info(f"Attempting replay: {full_replay_path}, Initial Speed: {speed_float}")
-                    with app_state.app_state_lock: app_state.replay_speed = speed_float
+                    signalr_client.stop_connection() # This sets stop_event
+                    logger.info("signalr_client.stop_connection() called to make way for replay.")
+                    # Brief pause for live connection thread to react to stop_event
+                    time.sleep(0.3) 
+                    # The stop_event set by stop_connection will be cleared by replay_from_file
+                except Exception as e:
+                    logger.error(f"Error stopping live feed prior to replay: {e}", exc_info=True)
+                    with app_state.app_state_lock:
+                        app_state.app_status["state"] = "Error"
+                        app_state.app_status["connection"] = "Failed to stop live feed for replay"
+                    return no_update
+            
+            # Proceed with replay (replay_from_file handles its own stop_event.clear())
+            try:
+                speed_float = float(replay_speed); speed_float = max(0.1, speed_float) # Validate speed
+                full_replay_path = Path(config.REPLAY_DIR) / selected_replay_file # Use Path object
+                logger.info(f"Attempting to start replay: {full_replay_path}, Initial Speed: {speed_float}x")
+                
+                # replay_from_file clears stop_event, sets up state, and starts thread
+                replay_started_ok = replay.replay_from_file(full_replay_path, speed_float) 
 
-                    replay_started_ok = replay.replay_from_file(full_replay_path, speed_float)
-                    logger.debug(f"replay.replay_from_file returned: {replay_started_ok}") # Keep debug log
+                if replay_started_ok:
+                    logger.info(f"Replay initiated successfully for {full_replay_path.name}.")
+                else:
+                    logger.error(f"replay.replay_from_file reported failure to start replay for {full_replay_path.name}.")
+                    # State should have been set to Error or similar by replay_from_file if it failed early
+            except (ValueError, TypeError) as ve:
+                 logger.error(f"Invalid initial replay speed value from slider: '{replay_speed}'. Error: {ve}. Cannot start replay.")
+                 with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Invalid Replay Speed"})
+            except Exception as e_replay_start:
+                 logger.error(f"Unexpected error trying to start replay: {e_replay_start}", exc_info=True)
+                 with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Replay Start Failed"})
+        else:
+            logger.warning("Start Replay clicked, but no replay file was selected.")
+        logger.info("Start Replay button processing finished.")
 
-                    if replay_started_ok:
-                        # Read state immediately after successful start attempt
-                        with app_state.app_state_lock: current_state = app_state.app_status["state"]; current_conn = app_state.app_status["connection"]
-                        status_text_update = f"State: {current_state} | Conn: {current_conn}" # Should be Initializing or Replaying
-                        status_style_update = {'color': 'blue', 'fontWeight': 'bold'} # Style for replaying
-                    else:
-                        logger.error("replay.replay_from_file reported failure.")
-                        # Update UI to reflect failure (likely already set to Error in replay_from_file)
-                        with app_state.app_state_lock: current_state = app_state.app_status["state"]; current_conn = app_state.app_status["connection"]
-                        status_text_update = f"State: {current_state} | Conn: {current_conn}"
-                        status_style_update = {'color': 'purple', 'fontWeight': 'bold'}
+    # --- Stop Replay Button Logic ---
+    elif button_id == 'stop-replay-button':
+        logger.info("Stop Replay button clicked.")
+        action_failed = False
+        try:
+            replay.stop_replay() # This function sets app_state.stop_event
+            logger.info("replay.stop_replay() called successfully.")
+        except Exception as e:
+            logger.error(f"Error during 'stop-replay-button' -> replay.stop_replay(): {e}", exc_info=True)
+            action_failed = True
+        
+        # Logic to clear stop_event if app is to remain running and Idle
+        with app_state.app_state_lock:
+            current_main_state_after_stop_replay = app_state.app_status.get("state", "Unknown")
+            # stop_replay should put state to "Stopped", "Idle", or "Playback Complete"
+            if not action_failed and current_main_state_after_stop_replay in ["Stopped", "Idle", "Playback Complete"]:
+                if app_state.stop_event.is_set(): # Check if stop_replay actually set it
+                    logger.info(f"Stop Replay: State is '{current_main_state_after_stop_replay}'. Clearing global stop_event to keep app running.")
+                    app_state.stop_event.clear()
+                else:
+                    logger.info(f"Stop Replay: State is '{current_main_state_after_stop_replay}'. Global stop_event was already clear or not set by stop_replay.")
+            elif app_state.stop_event.is_set():
+                 logger.warning(f"Stop Replay: State is '{current_main_state_after_stop_replay}', Action Failed: {action_failed}. Global stop_event was set but conditions not met to clear it.")
 
-                except (ValueError, TypeError):
-                     logger.error(f"Invalid initial replay speed value from slider: '{replay_speed}'. Cannot start replay.")
-                     with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Invalid Replay Speed"})
-                     status_text_update = "State: Error | Conn: Invalid Replay Speed"
-                     status_style_update = {'color': 'purple', 'fontWeight': 'bold'}
-            else: logger.warning("Replay already in progress."); status_text_update = no_update; status_style_update = no_update
-        else: logger.warning("Replay clicked, but no file selected."); status_text_update = no_update; status_style_update = no_update
-    elif button_id == 'stop-replay-button': logger.info("Stop Replay button clicked"); replay.stop_replay()
-    return no_update
+            if action_failed: # Ensure UI reflects error if stop_replay itself failed critically
+                app_state.app_status["state"] = "Error"
+                app_state.app_status["connection"] = "Stop Replay Failed"
+        logger.info("Stop Replay button processing finished.")
+
+    # --- Stop & Reset Session Button Logic ---
+    elif button_id == 'stop-reset-button':
+        logger.info("Stop & Reset Session button clicked.")
+        any_action_failed = False # Flag to track if any step had an issue
+
+        # Step 1: Stop SignalR connection
+        logger.info("Stop & Reset: Executing signalr_client.stop_connection()...")
+        try:
+            signalr_client.stop_connection() # This will set app_state.stop_event
+            logger.info("Stop & Reset: Completed signalr_client.stop_connection().")
+        except Exception as e:
+            logger.error(f"Stop & Reset: Error during signalr_client.stop_connection(): {e}", exc_info=True)
+            any_action_failed = True
+
+        # Step 2: Stop Replay
+        logger.info("Stop & Reset: Executing replay.stop_replay()...")
+        try:
+            replay.stop_replay() # This will also set/confirm app_state.stop_event
+            logger.info("Stop & Reset: Completed replay.stop_replay().")
+        except Exception as e:
+            logger.error(f"Stop & Reset: Error during replay.stop_replay(): {e}", exc_info=True)
+            any_action_failed = True
+
+        # Brief pause for threads to acknowledge stop signals and potentially release locks
+        logger.debug("Stop & Reset: Pausing for 0.3s for threads to process stop signals...")
+        time.sleep(0.3)
+
+        # Step 3: Reset application state to default
+        # This function sets app_status["state"] to "Idle" among other things
+        logger.info("Stop & Reset: Executing app_state.reset_to_default_state()...")
+        try:
+            app_state.reset_to_default_state()
+            logger.info("Stop & Reset: Completed app_state.reset_to_default_state(). State should now be 'Idle'.")
+        except Exception as e:
+            logger.error(f"Stop & Reset: Error during app_state.reset_to_default_state(): {e}", exc_info=True)
+            any_action_failed = True
+            # If reset fails, app state might be inconsistent. app_status["state"] might not be "Idle".
+
+        # Step 4: Ensure global stop_event is cleared so the main application loop in main.py continues
+        logger.info("Stop & Reset: Checking and clearing global stop_event to allow application to continue...")
+        try:
+            with app_state.app_state_lock:
+                current_status_after_reset = app_state.app_status.get("state", "Unknown")
+                logger.info(f"Stop & Reset: Application state before final stop_event clear: '{current_status_after_reset}'. Prior actions failed: {any_action_failed}")
+                
+                if app_state.stop_event.is_set():
+                    logger.info("Stop & Reset: Global stop_event is currently SET. Clearing it now.")
+                    app_state.stop_event.clear()
+                else:
+                    logger.info("Stop & Reset: Global stop_event was already CLEAR.")
+                
+                # If any action failed AND the state isn't already Error, set it to Error for clear UI feedback.
+                if any_action_failed and current_status_after_reset != "Error":
+                    logger.warning("Stop & Reset: One or more actions failed. Forcing app_status to 'Error'.")
+                    app_state.app_status["state"] = "Error"
+                    app_state.app_status["connection"] = "Stop/Reset failed"
+                elif not any_action_failed and current_status_after_reset != "Idle":
+                    logger.warning(f"Stop & Reset: Actions reported success, but state is '{current_status_after_reset}' not 'Idle'. This is unexpected.")
+                    # Optionally force to Idle if all actions appeared successful
+                    # app_state.app_status["state"] = "Idle"
+                    # app_state.app_status["connection"] = "Disconnected"
+
+
+        except Exception as e:
+            logger.error(f"Stop & Reset: Critical error during stop_event clear or final state adjustment: {e}", exc_info=True)
+            # If this block fails, the app might still exit if stop_event was set and not cleared.
+
+        logger.info("Stop & Reset Session button processing finished.")
+
+    else:
+        logger.warning(f"Button ID '{button_id}' not explicitly handled in handle_control_clicks.")
+
+    return no_update # Default return for the dummy output
 
 @app.callback(
     Output('record-data-checkbox', 'id', allow_duplicate=True),

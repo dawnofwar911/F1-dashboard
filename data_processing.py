@@ -552,10 +552,42 @@ def data_processing_loop():
 
     main_logger.info("Data processing thread started.")
 
-    while not app_state.stop_event.is_set(): # Use app_state.stop_event
+    while True: # Outer loop for the thread
         loop_counter += 1
-        # ... (Periodic logging using app_state.data_queue.qsize()) ...
-        if loop_counter % 50 == 0: main_logger.debug(f"Data processing loop is running (Iteration {loop_counter})...")
+
+        # --- TARGETED MODIFICATION FOR STOP CONDITION ---
+        if app_state.stop_event.is_set():
+            with app_state.app_state_lock: # Ensure thread-safe access to app_status
+                current_app_overall_state = app_state.app_status.get("state")
+            
+            main_logger.debug(f"DataProcessingLoop: stop_event is set. Current app state: {current_app_overall_state}")
+
+            # If the app state suggests it's transitioning or idle (meaning stop_event might be cleared soon by a callback)
+            if current_app_overall_state in ["Idle", "Initializing", "Connecting", "Live", "Replaying", "Stopping", "Stopped"]:
+                main_logger.info(f"DataProcessingLoop: stop_event is set, but app state is '{current_app_overall_state}'. "
+                            "Pausing briefly (0.75s) to allow event to be cleared if it's a transient stop.")
+                time.sleep(0.75) # Adjust timeout as necessary
+
+                if not app_state.stop_event.is_set(): # Re-check the event
+                    main_logger.info("DataProcessingLoop: stop_event was cleared by another process. Continuing loop.")
+                    continue  # Go to the start of the while True loop
+                else:
+                    main_logger.info("DataProcessingLoop: stop_event remains set after pause. Proceeding to exit data processing.")
+                    break # Exit the while True loop (data processing stops)
+            else:
+                # If app state is "Stopped", "Error", "Playback Complete" or unknown, and stop_event is set, then it's likely a real shutdown.
+                main_logger.info(f"DataProcessingLoop: stop_event is set and app state ('{current_app_overall_state}') "
+                            "suggests processing should stop. Exiting data processing.")
+                break # Exit the while True loop
+        # --- END TARGETED MODIFICATION ---
+
+        # Your periodic logging logic
+        if loop_counter % 50 == 0: 
+             # Added safety for qsize if queue is not yet fully initialized in some rare startup cases
+             try: q_s = app_state.data_queue.qsize()
+             except NotImplementedError: q_s = 'N/A (Not Implemented on this platform for this queue type)'
+             main_logger.debug(f"Data processing loop is running (Iteration {loop_counter}). Queue: {q_s}")
+        
         current_time = time.monotonic()
         if (current_time - last_log_time > log_interval_seconds) or \
            (processed_count > 0 and processed_count % log_interval_items == 0):
@@ -564,66 +596,75 @@ def data_processing_loop():
                 main_logger.debug(f"Data processing loop status: Processed={processed_count}, Queue Size={qsize}")
                 last_log_time = current_time
             except Exception as q_err:
-                 main_logger.warning(f"Could not get queue size: {q_err}")
+                main_logger.warning(f"Could not get queue size for periodic log: {q_err}")
 
         item = None
         try:
             item = app_state.data_queue.get(block=True, timeout=0.2) # Use app_state.data_queue
+            processed_count +=1 # Increment after successfully getting an item
 
-            # --- Optional: Add structured data writing here if desired ---
-            # try:
-            #     if app_state.is_saving_active and app_state.live_data_file: # Check flags/handle
-            #         json.dump(item, app_state.live_data_file)
-            #         app_state.live_data_file.write('\n')
-            # except Exception as write_err:
-            #      main_logger.error(f"Error writing processed item to file: {write_err}", exc_info=False)
-            # --- End optional writing ---
-
+            
             if not isinstance(item, dict) or 'stream' not in item or 'data' not in item:
                 main_logger.warning(f"Skipping queue item with unexpected structure: {type(item)}")
-                if item is not None: app_state.data_queue.task_done()
+                if item is not None and hasattr(app_state.data_queue, 'task_done'): app_state.data_queue.task_done()
                 continue
 
             stream_name = item['stream']
             actual_data = item['data']
-            timestamp = item.get('timestamp')
+            timestamp = item.get('timestamp') # Timestamp from the message itself
 
             # Acquire lock from app_state
             with app_state.app_state_lock:
                 # Update data_store in app_state
                 app_state.data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
 
-                # Call specific processing functions (which modify app_state variables)
+                # Call specific processing functions (THESE MUST BE DEFINED/IMPORTED IN THIS FILE'S SCOPE)
                 try:
-                    if stream_name == "Heartbeat":
-                         app_state.app_status["last_heartbeat"] = timestamp # Update dict in app_state
-                    elif stream_name == "DriverList": _process_driver_list(actual_data)
-                    elif stream_name == "TimingData": _process_timing_data(actual_data)
-                    elif stream_name == "SessionInfo": _process_session_info(actual_data, app_state)
-                    elif stream_name == "SessionData": _process_session_data(actual_data)
-                    elif stream_name == "TimingAppData": _process_timing_app_data(actual_data)
-                    elif stream_name == "TrackStatus": _process_track_status(actual_data)
-                    elif stream_name == "CarData": _process_car_data(actual_data)
-                    elif stream_name == "Position": _process_position_data(actual_data)
-                    elif stream_name == "WeatherData": _process_weather_data(actual_data)
-                    elif stream_name == "RaceControlMessages": _process_race_control(actual_data)
-                    # Add LapCount if needed
-                    # elif stream_name == "LapCount": _process_lap_count(actual_data) # Need to create this handler
-                    else: main_logger.debug(f"No specific handler for stream: {stream_name}")
-                except Exception as proc_ex:
-                     main_logger.error(f"  ERROR processing stream '{stream_name}': {proc_ex}", exc_info=True)
 
-            app_state.data_queue.task_done() # Use app_state.data_queue
+                    if stream_name == "Heartbeat":
+                        
+                        app_state.app_status["last_heartbeat"] = timestamp
+                        
+                    elif stream_name == "DriverList":                 _process_driver_list(actual_data)
+
+                    elif stream_name == "TimingData": _process_timing_data(actual_data)
+
+                    elif stream_name == "SessionInfo": _process_session_info(actual_data, app_state)
+
+                    elif stream_name == "SessionData": _process_session_data(actual_data)
+
+                    elif stream_name == "TimingAppData": _process_timing_app_data(actual_data)
+
+
+                    elif stream_name == "TrackStatus": _process_track_status(actual_data)
+
+                    elif stream_name == "CarData": _process_car_data(actual_data)
+
+
+                    elif stream_name == "Position": _process_position_data(actual_data)
+
+
+                    elif stream_name == "WeatherData": _process_weather_data(actual_data)
+                    
+                    elif stream_name == "RaceControlMessages": _process_race_control(actual_data)
+
+
+                    else: main_logger.debug(f"No specific handler for stream: {stream_name}")
+
+                except Exception as proc_ex:
+                    main_logger.error(f"  ERROR processing stream '{stream_name}': {proc_ex}", exc_info=True)
+            
+            if hasattr(app_state.data_queue, 'task_done'): app_state.data_queue.task_done()
 
         except queue.Empty:
-            continue
+            continue # Go to the top of the while True loop, will check stop_event
         except Exception as e:
-            main_logger.error(f"!!! Unhandled exception in data_processing_loop !!! Error: {e}", exc_info=True)
-            if item is not None:
+            main_logger.error(f"!!! Unhandled exception in data_processing_loop main try-except !!! Error: {e}", exc_info=True)
+            if item is not None and hasattr(app_state.data_queue, 'task_done'):
                 try: app_state.data_queue.task_done()
-                except: pass
-            time.sleep(0.5)
+                except: pass # Ignore error on task_done during exception handling
+            time.sleep(0.5) # Prevent rapid error looping
 
-    main_logger.info("Data processing thread finished cleanly (stop_event set).")
+    main_logger.info(f"Data processing thread finished. Final app_state.stop_event status: {app_state.stop_event.is_set()}")
 
 print("DEBUG: data_processing module loaded")

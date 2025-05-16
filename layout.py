@@ -49,31 +49,37 @@ def create_layout():
                 lg=3, className="text-end align-self-center")
     ], className="mb-2 p-2 bg-dark text-white rounded", id='header-zone', align="center") # Reduced mb slightly
 
-    control_card_content_list = [ # Ensuring this is a list for CardBody
+    control_card_content_list = [
         dbc.Row([
-            dbc.Col(dbc.Button("Connect", id="connect-button", color="success", size="sm"), width="auto", className="me-1"),
-            dbc.Col(dbc.Button("Disconnect", id="disconnect-button", color="warning", size="sm"), width="auto"),
-            dbc.Col(dbc.Checkbox(id='record-data-checkbox', label="Record Live Data", value=False, 
-                                 className="form-check-inline ms-md-3"), width="auto", className="align-self-center mt-2 mt-md-0"),
+            dbc.Col(dbc.Button("Connect Live", id="connect-button", color="success", size="sm"), width="auto", className="me-1"),
+            dbc.Col(dbc.Button("Disconnect Live", id="disconnect-button", color="warning", size="sm"), width="auto", className="me-1"), # Added me-1
+            dbc.Col(dbc.Checkbox(id='record-data-checkbox', label="Record Live Data", value=False,
+                                 className="form-check-inline ms-md-2"), width="auto", className="align-self-center mt-2 mt-md-0"), # ms-md-2 for a bit of space
         ], className="mb-2 justify-content-start justify-content-md-start"),
         dbc.Row([
-            dbc.Col(dcc.Dropdown(id='replay-file-selector', options=replay_file_options, 
-                                 placeholder="Select replay file...", style={'color': '#333', 'minWidth': '180px'}), 
+            dbc.Col(dcc.Dropdown(id='replay-file-selector', options=replay_file_options,
+                                 placeholder="Select replay file...", style={'color': '#333', 'minWidth': '180px'}),
                     xs=12, sm=6, md=4, lg=4, className="mb-2 mb-sm-0"),
-            dbc.Col(dcc.Slider(id='replay-speed-slider', min=0.1, max=10, step=0.1, value=1.0, 
-                               marks={0.5:'0.5x', 1:'1x', 2:'2x', 5:'5x', 10:'10x'}, 
-                               tooltip={"placement": "bottom", "always_visible": False}), 
+            dbc.Col(dcc.Slider(id='replay-speed-slider', min=0.1, max=10, step=0.1, value=1.0,
+                               marks={0.5:'0.5x', 1:'1x', 2:'2x', 5:'5x', 10:'10x'},
+                               tooltip={"placement": "bottom", "always_visible": False}),
                     xs=12, sm=6, md=4, lg=4, className="align-self-center mb-2 mb-sm-0 px-md-3"),
-            dbc.Col(dbc.Button("Replay", id="replay-button", color="primary", size="sm"), width="auto", className="me-1"),
-            dbc.Col(dbc.Button("Stop Replay", id="stop-replay-button", color="danger", size="sm"), width="auto"),
-        ], align="center", className="justify-content-start justify-content-md-start")
+            dbc.Col(dbc.Button("Start Replay", id="replay-button", color="primary", size="sm"), width="auto", className="me-1"),
+            dbc.Col(dbc.Button("Stop Replay", id="stop-replay-button", color="danger", size="sm"), width="auto", className="me-1"), # Added me-1 for spacing from new button
+        ], align="center", className="justify-content-start justify-content-md-start mb-2"), # Added mb-2 for spacing before potential new row
+        dbc.Row([ # <<< NEW ROW FOR STOP & RESET BUTTON
+            dbc.Col(
+                dbc.Button("Stop & Reset Session", id="stop-reset-button", color="danger", outline=True, size="sm", className="w-100"), # w-100 for full width in its col
+                xs=12, sm=6, md=4, lg=4 # Adjust width as needed, e.g. to align with replay dropdown
+            )
+        ],className="justify-content-start justify-content-md-start")
     ]
     control_zone = html.Div([
         dbc.Button("Show/Hide Controls",id="collapse-controls-button",className="mb-2",color="secondary",n_clicks=0,size="sm"),
         dbc.Collapse(
-            dbc.Card(dbc.CardBody(children=control_card_content_list)), # Pass the list here
+            dbc.Card(dbc.CardBody(children=control_card_content_list)),
             id="collapse-controls",
-            is_open=True, 
+            is_open=True,
         )
     ], className="mb-3", id='control-zone-wrapper')
     
