@@ -52,9 +52,9 @@ def create_layout():
     control_card_content_list = [
         dbc.Row([
             dbc.Col(dbc.Button("Connect Live", id="connect-button", color="success", size="sm"), width="auto", className="me-1"),
-            dbc.Col(dbc.Button("Disconnect Live", id="disconnect-button", color="warning", size="sm"), width="auto", className="me-1"), # Added me-1
+            # "Disconnect Live" button REMOVED
             dbc.Col(dbc.Checkbox(id='record-data-checkbox', label="Record Live Data", value=False,
-                                 className="form-check-inline ms-md-2"), width="auto", className="align-self-center mt-2 mt-md-0"), # ms-md-2 for a bit of space
+                                 className="form-check-inline ms-md-2"), width="auto", className="align-self-center mt-2 mt-md-0"),
         ], className="mb-2 justify-content-start justify-content-md-start"),
         dbc.Row([
             dbc.Col(dcc.Dropdown(id='replay-file-selector', options=replay_file_options,
@@ -65,14 +65,15 @@ def create_layout():
                                tooltip={"placement": "bottom", "always_visible": False}),
                     xs=12, sm=6, md=4, lg=4, className="align-self-center mb-2 mb-sm-0 px-md-3"),
             dbc.Col(dbc.Button("Start Replay", id="replay-button", color="primary", size="sm"), width="auto", className="me-1"),
-            dbc.Col(dbc.Button("Stop Replay", id="stop-replay-button", color="danger", size="sm"), width="auto", className="me-1"), # Added me-1 for spacing from new button
-        ], align="center", className="justify-content-start justify-content-md-start mb-2"), # Added mb-2 for spacing before potential new row
-        dbc.Row([ # <<< NEW ROW FOR STOP & RESET BUTTON
+            # "Stop Replay" button REMOVED
+        ], align="center", className="justify-content-start justify-content-md-start mb-2"),
+        dbc.Row([ # This row now only contains the Stop & Reset button effectively
             dbc.Col(
-                dbc.Button("Stop & Reset Session", id="stop-reset-button", color="danger", outline=True, size="sm", className="w-100"), # w-100 for full width in its col
-                xs=12, sm=6, md=4, lg=4 # Adjust width as needed, e.g. to align with replay dropdown
+                dbc.Button("Stop & Reset Session", id="stop-reset-button", color="danger", outline=True, size="sm", className="w-100"),
+                # Adjust width as desired, e.g., xs=12, sm=8, md=6, lg=5 for a wider button
+                xs=12, sm=6, md=4, lg=4 # Keeps it aligned with replay dropdown for consistency
             )
-        ],className="justify-content-start justify-content-md-start")
+        ],className="justify-content-start justify-content-md-start mt-2") # Added mt-2 for spacing
     ]
     control_zone = html.Div([
         dbc.Button("Show/Hide Controls",id="collapse-controls-button",className="mb-2",color="secondary",n_clicks=0,size="sm"),
