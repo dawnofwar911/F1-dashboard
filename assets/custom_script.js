@@ -9,40 +9,74 @@ window.dash_clientside.clientside = {
     _resizeTimeoutId: null,
 
     animateCarMarkers: function (newCarData, existingFigure, graphDivId, updateIntervalDuration) {
-        if (!newCarData || Object.keys(newCarData).length === 0) {
-            return window.dash_clientside.no_update;
-        }
+        console.log("[JS animateCarMarkers] Triggered. Python uirevision:", existingFigure?.layout?.uirevision, 
+                    "JS Cache uirevision:", window.dash_clientside.clientside.plotlyReactedMap[graphDivId]);
+        console.log("[JS animateCarMarkers] newCarData:", newCarData); // Log incoming newCarData
 
         const gd = document.getElementById(graphDivId);
         if (!gd) {
-            // console.warn("Graph div not found:", graphDivId);
+            console.warn("[JS animateCarMarkers] Graph div not found:", graphDivId);
             return window.dash_clientside.no_update;
         }
 
-        // Ensure Plotly object is fully initialized (same as before)
-        let needsReactCheck = !gd.data || !gd.layout;
         const currentUiRevision = existingFigure?.layout?.uirevision;
         const reactedUiRevision = window.dash_clientside.clientside.plotlyReactedMap[graphDivId];
 
-        if (needsReactCheck && currentUiRevision && reactedUiRevision !== currentUiRevision) {
-            if (existingFigure?.data && existingFigure?.layout) {
-                try {
-                    Plotly.react(gd, existingFigure.data, existingFigure.layout, existingFigure.config);
-                    window.dash_clientside.clientside.plotlyReactedMap[graphDivId] = currentUiRevision;
-                    needsReactCheck = !gd.data || !gd.layout;
-                } catch (e) {
-                    console.error('Error during Plotly.react:', e);
-                    return window.dash_clientside.no_update;
+        // Condition to call Plotly.react:
+        // - currentUiRevision must exist.
+        // - currentUiRevision must be different from what JS last fully rendered.
+        // - existingFigure.layout must exist (as Plotly.react needs it).
+        if (currentUiRevision && reactedUiRevision !== currentUiRevision && existingFigure?.layout) {
+            console.log("[JS animateCarMarkers] Uirevision changed OR first load with uirevision. Python:", currentUiRevision, "JS Cache:", reactedUiRevision);
+            console.log("[JS animateCarMarkers] Attempting Plotly.react. existingFigure.data:", existingFigure.data); // Log what data is
+            
+            try {
+                // Use existingFigure.data directly. For an empty map from Python (go.Figure with no traces), 
+                // existingFigure.data should serialize to an empty array [].
+                Plotly.react(gd, existingFigure.data, existingFigure.layout, existingFigure.config); 
+                
+                window.dash_clientside.clientside.plotlyReactedMap[graphDivId] = currentUiRevision;
+                console.log("[JS animateCarMarkers] Plotly.react call successful. Updated JS reactedUiRevision cache to:", currentUiRevision);
+
+                // For debugging: Log structure after react
+                const postReactGd = document.getElementById(graphDivId);
+                console.log("[JS animateCarMarkers] gd.data after Plotly.react (trace count):", postReactGd.data ? postReactGd.data.length : 'undefined');
+                if (postReactGd.data && postReactGd.data.length === 0) {
+                     console.log("[JS animateCarMarkers] Map appears empty after react (0 data traces). Annotation should be visible.");
                 }
-            } else {
-                return window.dash_clientside.no_update;
+
+            } catch (e) {
+                console.error('[JS animateCarMarkers] Error during Plotly.react:', e, 'Figure data:', existingFigure.data, 'Figure layout:', existingFigure.layout);
+                return window.dash_clientside.no_update; 
             }
-        } else if (needsReactCheck) {
-            return window.dash_clientside.no_update;
+        } else {
+            if (!currentUiRevision) console.log("[JS animateCarMarkers] Plotly.react NOT called: currentUiRevision is missing.");
+            else if (reactedUiRevision === currentUiRevision) console.log("[JS animateCarMarkers] Plotly.react NOT called: uirevision from Python matches JS cache.");
+            else if (!existingFigure?.layout) console.log("[JS animateCarMarkers] Plotly.react NOT called: existingFigure.layout is missing.");
+        }
+        
+        if (newCarData && newCarData.status === 'reset_map_display') {
+            console.log("[JS animateCarMarkers] Received 'reset_map_display' signal. Map should have been reset by Plotly.react if uirevision changed. Skipping car animation.");
+            return window.dash_clientside.no_update; // Don't try to animate with this signal data
         }
 
-        const dataArray = gd.data || gd._fullData;
+        // --- Animation/Restyle Logic ---
+        // This part should only run if the map has traces for cars
+        
+        if (!newCarData || Object.keys(newCarData).length === 0) {
+            // console.log("[JS animateCarMarkers] No newCarData to animate.");
+            return window.dash_clientside.no_update;
+        }
+        
+        const currentGraphData = gd.data;
+        if (!currentGraphData && Object.keys(newCarData).length > 0 ) { // if gd.data is null/undefined but we have car data, something is wrong after react
+             console.warn("[JS animateCarMarkers] gd.data is null/undefined after react block, but received newCarData. Aborting animation for this cycle.");
+             return window.dash_clientside.no_update;
+        };
+        
+        const dataArray = gd.data || gd._fullData; // Use DOM's current data
         if (!dataArray || !Array.isArray(dataArray) || dataArray.length === 0) {
+            console.warn("[JS animateCarMarkers] dataArray from gd.data is empty or invalid before building uidToTraceIndex.");
             return window.dash_clientside.no_update;
         }
 
@@ -168,6 +202,12 @@ window.dash_clientside.clientside = {
             animationDuration = Math.max(50, updateIntervalDuration * 0.90); 
         } else if (updateIntervalDuration) { 
             animationDuration = Math.min(50, updateIntervalDuration * 0.5); 
+        }
+        
+        const dataArrayForAnimation = gd.data || gd._fullData;
+        console.log("JS: gd.data before animation/restyle (trace count):", dataArrayForAnimation ? dataArrayForAnimation.length : 'undefined');
+        if (dataArrayForAnimation && dataArrayForAnimation.length > 0) {
+    console.log("JS: First trace name before animation/restyle:", dataArrayForAnimation[0]?.name); // e.g., "Track" or car TLA
         }
 
         if (animationDuration > 0) {
