@@ -164,28 +164,27 @@ def create_layout():
                     {'if': {'column_id': 'Interval'}, 'width': '75px', 'minWidth': '65px', 'maxWidth': '80px', 'textAlign': 'right', 'paddingRight':'5px'},
                     {'if': {'column_id': 'Gap'},      'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
                     
-                    # <<< MODIFIED/ADDED BEST LAP/SECTOR STYLES (Order: Yellow, Green, Purple) --- START >>>
-                    # Yellow for "regular" valid times (neither PB nor OB)
+                    # --- MODIFIED BEST LAP/SECTOR STYLES WITH CELL CONTENT CHECK ---
+                    # Yellow for "regular" valid times (neither PB nor OB, and not empty)
                     {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "FALSE" && {IsOverallBestLap_Str} = "FALSE" && {Last Lap} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
-                    {'if': {'column_id': 'S1', 'filter_query': '{IsPersonalBestS1_Str} = "FALSE" && {IsOverallBestS1_Str} = "FALSE" && {S1} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
-                    {'if': {'column_id': 'S2', 'filter_query': '{IsPersonalBestS2_Str} = "FALSE" && {IsOverallBestS2_Str} = "FALSE" && {S2} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
-                    {'if': {'column_id': 'S3', 'filter_query': '{IsPersonalBestS3_Str} = "FALSE" && {IsOverallBestS3_Str} = "FALSE" && {S3} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+                    {'if': {'column_id': 'S1',       'filter_query': '{IsPersonalBestS1_Str} = "FALSE" && {IsOverallBestS1_Str} = "FALSE" && {S1} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+                    {'if': {'column_id': 'S2',       'filter_query': '{IsPersonalBestS2_Str} = "FALSE" && {IsOverallBestS2_Str} = "FALSE" && {S2} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+                    {'if': {'column_id': 'S3',       'filter_query': '{IsPersonalBestS3_Str} = "FALSE" && {IsOverallBestS3_Str} = "FALSE" && {S3} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
 
-                    # Personal Bests (Green) - if it's a PB but not an Overall Best
-                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "TRUE" && {IsOverallBestLap_Str} = "FALSE"'}, **PERSONAL_BEST_STYLE},
-                    {'if': {'column_id': 'S1', 'filter_query': '{IsPersonalBestS1_Str} = "TRUE" && {IsOverallBestS1_Str} = "FALSE"'}, **PERSONAL_BEST_STYLE},
-                    {'if': {'column_id': 'S2', 'filter_query': '{IsPersonalBestS2_Str} = "TRUE" && {IsOverallBestS2_Str} = "FALSE"'}, **PERSONAL_BEST_STYLE},
-                    {'if': {'column_id': 'S3', 'filter_query': '{IsPersonalBestS3_Str} = "TRUE" && {IsOverallBestS3_Str} = "FALSE"'}, **PERSONAL_BEST_STYLE},
+                    # Personal Bests (Green) - if it's a PB but not an OB (and not empty, though PB implies not empty)
+                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "TRUE" && {IsOverallBestLap_Str} = "FALSE" && {Last Lap} != "-"'}, **PERSONAL_BEST_STYLE},
+                    {'if': {'column_id': 'S1',       'filter_query': '{IsPersonalBestS1_Str} = "TRUE" && {IsOverallBestS1_Str} = "FALSE" && {S1} != "-"'}, **PERSONAL_BEST_STYLE},
+                    {'if': {'column_id': 'S2',       'filter_query': '{IsPersonalBestS2_Str} = "TRUE" && {IsOverallBestS2_Str} = "FALSE" && {S2} != "-"'}, **PERSONAL_BEST_STYLE},
+                    {'if': {'column_id': 'S3',       'filter_query': '{IsPersonalBestS3_Str} = "TRUE" && {IsOverallBestS3_Str} = "FALSE" && {S3} != "-"'}, **PERSONAL_BEST_STYLE},
 
-                    # Overall Bests (Purple) - these take precedence
-                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'Best Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'S1', 'filter_query': '{IsOverallBestS1_Str} = "TRUE"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'S2', 'filter_query': '{IsOverallBestS2_Str} = "TRUE"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'S3', 'filter_query': '{IsOverallBestS3_Str} = "TRUE"'}, **OVERALL_BEST_STYLE},
-                    # <<< MODIFIED/ADDED BEST LAP/SECTOR STYLES --- END >>>
+                    # Overall Bests (Purple) - these take precedence (and must not be empty)
+                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Last Lap} != "-"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'Best Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Best Lap} != "-"'}, **OVERALL_BEST_STYLE}, # Driver's PB is also session OB
+                    {'if': {'column_id': 'S1',       'filter_query': '{IsOverallBestS1_Str} = "TRUE" && {S1} != "-"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'S2',       'filter_query': '{IsOverallBestS2_Str} = "TRUE" && {S2} != "-"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'S3',       'filter_query': '{IsOverallBestS3_Str} = "TRUE" && {S3} != "-"'}, **OVERALL_BEST_STYLE},
                     
-                    # Default styling for lap and sector times (width, alignment)
+                    # Default styling for lap and sector times (width, alignment) - These should come AFTER color styling
                     {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
                     {'if': {'column_id': 'Best Lap'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
                     {'if': {'column_id': 'S1'},       'width': '55px', 'minWidth': '55px', 'maxWidth': '65px', 'textAlign': 'right', 'paddingRight':'5px'},

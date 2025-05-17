@@ -214,7 +214,6 @@ def _process_timing_data(data):
                                 driver_current_state["PersonalBestLapTime"] = incoming_best_lap_info.copy()
                                 logger.debug(f"Driver {car_num_str} new PB Lap from BestLapTime feed: {pb_lap_val_str}")
                     
-                    # Ensure the BestLapTime structure is updated in driver_current_state
                     if "BestLapTime" not in driver_current_state or not isinstance(driver_current_state["BestLapTime"], dict):
                         driver_current_state["BestLapTime"] = {}
                     if isinstance(incoming_best_lap_info, dict):
@@ -222,7 +221,6 @@ def _process_timing_data(data):
                     else: 
                         driver_current_state["BestLapTime"]['Value'] = incoming_best_lap_info
                 
-                # Update Interval and LastLapTime
                 for key in ["IntervalToPositionAhead", "LastLapTime"]: 
                     if key in line_data:
                         incoming_value = line_data[key]
@@ -233,90 +231,85 @@ def _process_timing_data(data):
                         else: 
                             driver_current_state[key]['Value'] = incoming_value
 
-                # --- Sector Processing with Normalization ---
-                if "Sectors" in line_data and isinstance(line_data["Sectors"], dict) or \
-                   "Sectors" not in line_data: # Process even if "Sectors" key is missing to handle resets
-                    
-                    # Ensure base structure for sectors exists for the driver
+                # Sector Processing with Normalization
+                if "Sectors" in line_data and isinstance(line_data["Sectors"], dict): # Process if "Sectors" key is present
                     if "Sectors" not in driver_current_state or not isinstance(driver_current_state["Sectors"], dict):
-                        driver_current_state["Sectors"] = {"0": {"Value": "-"}, "1": {"Value": "-"}, "2": {"Value": "-"}}
+                        driver_current_state["Sectors"] = {"0": {"Value": "-", "PersonalFastest": False, "OverallFastest": False}, 
+                                                           "1": {"Value": "-", "PersonalFastest": False, "OverallFastest": False}, 
+                                                           "2": {"Value": "-", "PersonalFastest": False, "OverallFastest": False}}
                     
-                    incoming_sectors_data = line_data.get("Sectors", {}) # Get incoming sectors, or empty dict if none
-
-                    # Normalize and update sectors based on incoming data for the current lap
-                    # If a new lap starts, often only S1 comes, then S2, then S3.
-                    # We need to ensure that if S1 is new, S2 and S3 reflect being "not set yet" for *this current lap attempt*
-                    # This logic is tricky because the feed might not explicitly clear old S2/S3 values when S1 of a new lap posts.
-                    # For now, we'll focus on normalizing explicit empty values from the feed.
-                    # A more advanced approach might involve checking NumberOfLaps changes to reset sector values.
+                    incoming_sectors_data = line_data["Sectors"] # We know "Sectors" exists here
 
                     for i in range(3): # Iterate 0, 1, 2 for S1, S2, S3
                         sector_idx_str = str(i)
-                        sector_data_from_feed = incoming_sectors_data.get(sector_idx_str) # Data for this sector from current message
+                        sector_data_from_feed = incoming_sectors_data.get(sector_idx_str) 
 
-                        # Ensure the state has a placeholder for this sector
                         if sector_idx_str not in driver_current_state["Sectors"] or \
                            not isinstance(driver_current_state["Sectors"][sector_idx_str], dict):
                             driver_current_state["Sectors"][sector_idx_str] = {"Value": "-", "PersonalFastest": False, "OverallFastest": False}
                         
                         target_sector_state = driver_current_state["Sectors"][sector_idx_str]
 
-                        if sector_data_from_feed is not None: # If there's any data for this sector in the current message
+                        if sector_data_from_feed is not None: 
                             if isinstance(sector_data_from_feed, dict):
                                 target_sector_state.update(sector_data_from_feed)
-                            else: # If feed sends just a value
+                            else: 
                                 target_sector_state['Value'] = sector_data_from_feed
                             
-                            # Normalize after update: if Value is "" or None, set to "-"
                             current_val = target_sector_state.get("Value")
                             if current_val == "" or current_val is None:
                                 target_sector_state["Value"] = "-"
-                        # If sector_data_from_feed is None (sector not in current message),
-                        # its value in target_sector_state remains from previous state or its default.
-                        # If it was an old value and should now be cleared because S1 of a new lap posted,
-                        # this simple normalization won't catch it unless feed explicitly clears.
+                        # If sector_data_from_feed is None, it means this sector was not in *this* specific message.
+                        # We should NOT clear it to "-" here, because it might be S2 data, and S1 just arrived in message.
+                        # The clearing should happen on a new lap event OR if the feed explicitly sends an empty value.
+                        # The default for display in callbacks.py will handle missing Value keys.
 
-                        # Ensure 'Value' key always exists, defaulting to "-"
-                        if "Value" not in target_sector_state:
+                        if "Value" not in target_sector_state: # Final safety net
                             target_sector_state["Value"] = "-"
-
-                        # --- Process this sector for PB/OB (using normalized target_sector_state) ---
-                        sector_val_str = target_sector_state.get("Value") # Should be normalized now
+                        
+                        # --- Process this sector for PB/OB ---
+                        sector_val_str = target_sector_state.get("Value")
                         is_this_sector_update_a_pb = target_sector_state.get("PersonalFastest", False)
-                        # is_this_sector_update_overall_fastest = target_sector_state.get("OverallFastest", False) # Example
 
                         if sector_val_str and sector_val_str != "-":
-                            sector_seconds = utils.parse_lap_time_to_seconds(sector_val_str)
+                            sector_seconds = utils.parse_lap_time_to_seconds(sector_val_str) #
                             if sector_seconds is not None:
-                                # Personal Best Sector Value Update
-                                current_pb_sector_seconds_val = driver_current_state["PersonalBestSectors"][i] # i is 0,1,2
-                                if is_this_sector_update_a_pb: # Trust feed flag if present and true
+                                current_pb_sector_seconds_val = driver_current_state["PersonalBestSectors"][i]
+                                if is_this_sector_update_a_pb:
                                      if current_pb_sector_seconds_val is None or sector_seconds < current_pb_sector_seconds_val :
                                         driver_current_state["PersonalBestSectors"][i] = sector_seconds
                                         logger.debug(f"Driver {car_num_str} new PB S{i+1} from feed flag: {sector_val_str}")
-                                # Fallback: if numerically better, also consider it a PB for internal tracking
-                                # This is useful if feed flags are missing in replays
                                 elif current_pb_sector_seconds_val is None or sector_seconds < current_pb_sector_seconds_val:
                                     driver_current_state["PersonalBestSectors"][i] = sector_seconds
                                     logger.debug(f"Driver {car_num_str} new PB S{i+1} by numeric comparison: {sector_val_str}")
 
-
-                                # Overall Best Sector Value Update
                                 overall_best_s_time_from_state_val = app_state.session_bests["OverallBestSectors"][i]["Value"]
-                                is_sector_segment_valid_for_ob = True # Basic validity
-                                # (Add more sophisticated segment status checks here if data is available)
-
+                                is_sector_segment_valid_for_ob = True 
                                 if is_sector_segment_valid_for_ob and \
                                    (overall_best_s_time_from_state_val is None or sector_seconds < overall_best_s_time_from_state_val):
                                     app_state.session_bests["OverallBestSectors"][i] = {"Value": sector_seconds, "DriverNumber": car_num_str}
                                     logger.info(f"New Overall Best S{i+1}: {sector_val_str} ({sector_seconds}s) by {car_num_str}")
-                
-                # Speeds processing
+                # Ensure all 3 sector dictionaries exist even if not in current message, and their 'Value' is not "" or None
+                # This was the user's main point of confusion: clearing too early or to ""
+                for i_ensure in range(3):
+                    s_ensure_idx_str = str(i_ensure)
+                    if s_ensure_idx_str not in driver_current_state["Sectors"] or \
+                       not isinstance(driver_current_state["Sectors"][s_ensure_idx_str], dict) :
+                        driver_current_state["Sectors"][s_ensure_idx_str] = {"Value": "-", "PersonalFastest": False, "OverallFastest": False}
+                    else:
+                        # If the sector value is empty string or None, normalize to "-"
+                        if driver_current_state["Sectors"][s_ensure_idx_str].get("Value") == "" or \
+                           driver_current_state["Sectors"][s_ensure_idx_str].get("Value") is None:
+                            driver_current_state["Sectors"][s_ensure_idx_str]["Value"] = "-"
+                        # Also ensure 'Value' key exists if the dict for the sector was there but 'Value' was not
+                        elif "Value" not in driver_current_state["Sectors"][s_ensure_idx_str]:
+                            driver_current_state["Sectors"][s_ensure_idx_str]["Value"] = "-"
+
+
                 if "Speeds" in line_data and isinstance(line_data["Speeds"], dict): 
                      if "Speeds" not in driver_current_state or not isinstance(driver_current_state["Speeds"], dict): driver_current_state["Speeds"] = {}
                      driver_current_state["Speeds"].update(line_data["Speeds"])
 
-                # Status flags
                 status_flags = []
                 if driver_current_state.get("Retired"): status_flags.append("Retired")
                 if driver_current_state.get("InPit"): status_flags.append("In Pit")
@@ -325,14 +318,13 @@ def _process_timing_data(data):
                 if status_flags: driver_current_state["Status"] = ", ".join(status_flags)
                 elif driver_current_state.get("Position", "-") != "-": driver_current_state["Status"] = "On Track"
                 
-                # LastLapTime processing (Overall Best Lap and Lap History)
                 new_last_lap_time_info = driver_current_state.get('LastLapTime', {})
                 new_lap_time_str = new_last_lap_time_info.get('Value')
                 
-                if new_lap_time_str and new_lap_time_str != original_last_lap_time_info.get('Value'): # If new lap time
-                    lap_time_seconds = utils.parse_lap_time_to_seconds(new_lap_time_str)
+                if new_lap_time_str and new_lap_time_str != original_last_lap_time_info.get('Value'):
+                    lap_time_seconds = utils.parse_lap_time_to_seconds(new_lap_time_str) #
                     if lap_time_seconds is not None:
-                        current_overall_best_lap_seconds_from_state_val = utils.parse_lap_time_to_seconds(app_state.session_bests["OverallBestLapTime"]["Value"])
+                        current_overall_best_lap_seconds_from_state_val = utils.parse_lap_time_to_seconds(app_state.session_bests["OverallBestLapTime"]["Value"]) #
                         
                         is_lap_valid_for_overall_best = not driver_current_state.get('InPit', False) and \
                                                         not driver_current_state.get('PitOut', False) and \
@@ -343,8 +335,7 @@ def _process_timing_data(data):
                             app_state.session_bests["OverallBestLapTime"] = {"Value": new_lap_time_str, "DriverNumber": car_num_str}
                             logger.info(f"New Overall Best Lap: {new_lap_time_str} ({lap_time_seconds}s) by {car_num_str} (valid lap conditions met)")
                         
-                        # Lap History
-                        current_completed_laps = driver_current_state.get('NumberOfLaps', 0) # Should be accurate after general field update
+                        current_completed_laps = driver_current_state.get('NumberOfLaps', 0)
                         lap_number_for_this_time = current_completed_laps 
                         last_recorded_lap_num = 0
                         if car_num_str in app_state.lap_time_history and app_state.lap_time_history[car_num_str]:
@@ -355,7 +346,7 @@ def _process_timing_data(data):
                             if compound_for_lap == '-': compound_for_lap = 'UNKNOWN'
                             is_valid_lap_time_for_history = new_last_lap_time_info.get('OverallFastest', False) or \
                                                 new_last_lap_time_info.get('PersonalFastest', False) or \
-                                                is_lap_valid_for_overall_best # Use the same validity
+                                                is_lap_valid_for_overall_best
                             lap_entry = {
                                 'lap_number': lap_number_for_this_time,
                                 'lap_time_seconds': lap_time_seconds,
@@ -365,18 +356,17 @@ def _process_timing_data(data):
                             app_state.lap_time_history[car_num_str].append(lap_entry)
                             logger.debug(f"Added Lap {lap_number_for_this_time} for {car_num_str}: {new_lap_time_str} ({lap_time_seconds}s) on {compound_for_lap}, ValidForHistory: {is_valid_lap_time_for_history}")
                             
-                            # WHEN A NEW LAP IS COMPLETED, RESET SECTOR VALUES FOR THE *NEXT* LAP TO "-".
-                            # This is a more proactive way to clear them.
-                            logger.debug(f"New lap {lap_number_for_this_time} completed by {car_num_str}. Resetting displayed sector values to '-' for next lap anticipation.")
-                            for i_reset in range(3):
-                                s_idx_reset_str = str(i_reset)
-                                if s_idx_reset_str in driver_current_state["Sectors"] and isinstance(driver_current_state["Sectors"][s_idx_reset_str], dict):
-                                    driver_current_state["Sectors"][s_idx_reset_str]["Value"] = "-"
-                                    # Optionally reset PersonalFastest/OverallFastest flags for these pending sectors too
-                                    driver_current_state["Sectors"][s_idx_reset_str]["PersonalFastest"] = False
-                                    driver_current_state["Sectors"][s_idx_reset_str]["OverallFastest"] = False
-                                else: # Ensure structure exists if it was missing
-                                    driver_current_state["Sectors"][s_idx_reset_str] = {"Value": "-", "PersonalFastest": False, "OverallFastest": False}
+                            # --- REMOVED PROACTIVE SECTOR RESET FROM HERE ---
+                            # logger.debug(f"New lap {lap_number_for_this_time} completed by {car_num_str}. Resetting displayed sector values to '-' for next lap anticipation.")
+                            # for i_reset in range(3):
+                            #    s_idx_reset_str = str(i_reset)
+                            #    if s_idx_reset_str in driver_current_state["Sectors"] and isinstance(driver_current_state["Sectors"][s_idx_reset_str], dict):
+                            #        driver_current_state["Sectors"][s_idx_reset_str]["Value"] = "-"
+                            #        driver_current_state["Sectors"][s_idx_reset_str]["PersonalFastest"] = False
+                            #        driver_current_state["Sectors"][s_idx_reset_str]["OverallFastest"] = False
+                            #    else: 
+                            #        driver_current_state["Sectors"][s_idx_reset_str] = {"Value": "-", "PersonalFastest": False, "OverallFastest": False}
+                            # --- END OF REMOVED BLOCK ---
 
 
         # --- Post-loop updates for overall best flags on driver states ---
@@ -390,17 +380,13 @@ def _process_timing_data(data):
         for car_num_str_check, driver_state_check in app_state.timing_state.items():
             driver_state_check["IsOverallBestLap"] = (overall_best_lap_holder == car_num_str_check)
             
-            current_overall_best_sectors_for_driver = [False, False, False] # Ensure it's a list
-            # Ensure IsOverallBestSector exists and is a list
-            if not isinstance(driver_state_check.get("IsOverallBestSector"), list) or len(driver_state_check.get("IsOverallBestSector")) != 3 :
-                 driver_state_check["IsOverallBestSector"] = [False, False, False] # Initialize if incorrect type/length
+            # Ensure IsOverallBestSector exists and is a list before trying to assign to its indices
+            if not isinstance(driver_state_check.get("IsOverallBestSector"), list) or \
+               len(driver_state_check.get("IsOverallBestSector")) != 3:
+                 driver_state_check["IsOverallBestSector"] = [False, False, False]
 
             for i in range(3):
                 driver_state_check["IsOverallBestSector"][i] = (overall_best_sector_holders[i] == car_num_str_check)
-            # No, this line was wrong: current_overall_best_sectors_for_driver[i] = (overall_best_sector_holders[i] == car_num_str_check)
-            # driver_state_check["IsOverallBestSector"] = current_overall_best_sectors_for_driver # This was assigning a new list, not modifying in place as intended previously.
-                                                                                                # Corrected by directly assigning to driver_state_check["IsOverallBestSector"][i]
-
             
     elif data:
          logger.warning(f"Unexpected TimingData format received: {type(data)}")
