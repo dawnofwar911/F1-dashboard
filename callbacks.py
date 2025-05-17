@@ -866,7 +866,7 @@ def initialize_track_map(n_intervals, expected_session_id, current_track_map_fig
     # Use a more unique marker for version store updates, like a timestamp or UUID
     new_figure_version = time.time() # Each new figure gets a new version
 
-    logger.info(f"INIT_TRACK_MAP --- Triggered by: {triggered_input_id}. Expected Session ID: '{expected_session_id}'")
+    logger.debug(f"INIT_TRACK_MAP --- Triggered by: {triggered_input_id}. Expected Session ID: '{expected_session_id}'")
     current_fig_uirevision = current_track_map_figure.get('layout', {}).get('uirevision') if current_track_map_figure and current_track_map_figure.get('layout') else 'None'
     logger.debug(f"INIT_TRACK_MAP --- Current Figure Uirevision in State: '{current_fig_uirevision}'")
 
