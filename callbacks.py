@@ -3,27 +3,24 @@
 Contains all the Dash callback functions for the application.
 Handles UI updates, user actions, and plot generation.
 """
-from dash.dependencies import Input, Output, State # Ensure State is imported
 import datetime
-import pytz
+import pytz # Not strictly used in this version, but often useful with F1 data
 import logging
 import json
 import time
-import datetime
-from datetime import timezone
+# from datetime import timezone # Already imported in app_state & utils if needed there
 import threading
 from pathlib import Path
 
 import dash
 from dash.dependencies import Input, Output, State, ClientsideFunction
-from dash import dcc, html, dash_table, no_update # Import no_update
+from dash import dcc, html, dash_table, no_update
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots # Import make_subplots
-import numpy as np
-import requests
-from shapely.geometry import LineString, Point # <<< ADD SHAPELY IMPORT
-from shapely.ops import nearest_points # <<< For snapping points to line
+from plotly.subplots import make_subplots
+import numpy as np # Keep if any complex numerical ops remain, else remove
+# from shapely.geometry import LineString, Point # Not directly used here, but in utils
+# from shapely.ops import nearest_points # Not directly used here
 
 # --- App Import ---
 try:
@@ -34,71 +31,17 @@ except ImportError:
 
 # --- Module Imports ---
 import app_state
-import config
-import utils # Contains helpers
+import config # <<< UPDATED: For constants
+import utils # <<< UPDATED: For helper functions like create_empty_figure_with_message
 import signalr_client
 import replay
-# data_processing functions are called internally by the loop, not directly needed here
+# data_processing functions are called by the loop, not directly needed here
 
-logger = logging.getLogger("F1App.Callbacks") # Use consistent logger name
+logger = logging.getLogger("F1App.Callbacks")
 
-# --- Core Display Update Callbacks ---
+# Note: UI revision, height, and margin constants are now in config.py
+# Note: TRACK_STATUS_STYLES and WEATHER_ICON_MAP are now in config.py
 
-# --- Constants for initial figure uirevisions (MUST MATCH layout.py) ---
-# These are the uirevisions you set in the initial go.Figure() in layout.py
-INITIAL_TRACK_MAP_UIREVISION = 'track_map_main_layout'
-INITIAL_TELEMETRY_UIREVISION = 'telemetry_main_layout'
-INITIAL_LAP_PROG_UIREVISION = 'lap_prog_main_layout'
-
-# --- Heights from layout.py wrapper divs (MUST MATCH layout.py) ---
-TRACK_MAP_WRAPPER_HEIGHT = 360 # From your provided layout.py
-TELEMETRY_WRAPPER_HEIGHT = 320 # From your provided layout.py
-LAP_PROG_WRAPPER_HEIGHT = 320  # From your provided layout.py
-# Driver details div height is also relevant for overall column space
-DRIVER_DETAILS_HEIGHT = 80
-
-# --- Margins for consistency (MUST MATCH layout.py for initial figures) ---
-TRACK_MAP_MARGINS = {'l': 2, 'r': 2, 't': 2, 'b': 2}
-TELEMETRY_MARGINS_EMPTY = {'l': 30, 'r': 5, 't': 10, 'b': 20} # For "Select driver" state
-TELEMETRY_MARGINS_DATA = {'l': 35, 'r': 10, 't': 30, 'b': 30}  # When data is plotted (can allow more for titles/axes)
-LAP_PROG_MARGINS_EMPTY = {'l': 35, 'r': 5, 't': 20, 'b': 30}
-LAP_PROG_MARGINS_DATA = {'l': 40, 'r': 10, 't': 30, 'b': 40}
-
-# --- Track Status and Weather specific styling maps ---
-TRACK_STATUS_STYLES = {
-    '1': {"label": "CLEAR", "card_color": "success", "text_color": "white"}, # Clear
-    '2': {"label": "YELLOW", "card_color": "warning", "text_color": "black"}, # Yellow
-    '3': {"label": "SC DEPLOYED?", "card_color": "warning", "text_color": "black"}, # SC Expected / Deployed
-    '4': {"label": "SAFETY CAR", "card_color": "warning", "text_color": "black"}, # Safety Car
-    '5': {"label": "RED FLAG", "card_color": "danger", "text_color": "white"},   # Red Flag
-    '6': {"label": "VSC DEPLOYED", "card_color": "info", "text_color": "white"},# VSC Deployed
-    '7': {"label": "VSC ENDING", "card_color": "info", "text_color": "white"}, # VSC Ending
-    'DEFAULT': {"label": "UNKNOWN", "card_color": "secondary", "text_color": "white"}
-}
-
-# --- Weather Icon Mapping (using simple text/emoji for now, can be Bootstrap Icon classes) ---
-WEATHER_ICON_MAP = {
-    "sunny": "☀️",
-    "cloudy": "☁️",
-    "overcast": "🌥️", # Or same as cloudy
-    "rain": "🌧️",
-    "drizzle": "🌦️",
-    "windy": "💨",
-    "default": "🌡️" # Default temperature icon
-}
-
-def create_empty_figure_with_message(height, uirevision, message, margins):
-    """Helper to create a consistent empty figure."""
-    return go.Figure(layout={
-        'template': 'plotly_dark',
-        'height': height,
-        'margin': margins,
-        'uirevision': uirevision, # Use the specific uirevision for empty states
-        'xaxis': {'visible': False, 'range': [0,1]}, # Dummy axis
-        'yaxis': {'visible': False, 'range': [0,1]}, # Dummy axis
-        'annotations': [{'text': message, 'xref': 'paper', 'yref': 'paper',
-                         'showarrow': False, 'font': {'size': 12}}]
-    })
 
 @app.callback(
     Output('connection-status', 'children'),
@@ -107,15 +50,10 @@ def create_empty_figure_with_message(height, uirevision, message, margins):
 )
 def update_connection_status(n):
     """Updates the connection status indicator."""
-    # --- >>> ADD DEBUG LOGGING <<< ---
-    # logger.debug(f"Running update_connection_status (Interval {n})")
-    # --- >>> END DEBUG LOGGING <<< ---
+    status_text = config.TEXT_CONN_STATUS_DEFAULT # Use constant
+    status_style = {'color': 'grey', 'fontWeight': 'bold'}
 
-    # Initialize defaults
-    status_text = "State: ? | Conn: ?"
-    status_style = {'color': 'grey', 'fontWeight': 'bold'} # Default style
-
-    try: # Add try-except around state access and logic
+    try:
         with app_state.app_state_lock:
             status = app_state.app_status.get("connection", "Unknown")
             state = app_state.app_status.get("state", "Idle")
@@ -123,69 +61,58 @@ def update_connection_status(n):
             rec_file = app_state.current_recording_filename
             rep_file = app_state.app_status.get("current_replay_file")
 
-            # --- >>> ADD DEBUG LOGGING <<< ---
-            # l ogger.debug(f"Read State: {state}, Conn: {status}, Recording: {is_rec}, RecFile: {rec_file}, RepFile: {rep_file}")
-            # --- >>> END DEBUG LOGGING <<< ---
-
         status_text = f"State: {state} | Conn: {status}"
-        color = 'grey' # Default color
+        color = 'grey'
 
-        # Determine color based on state
-        if state == "Live": color = 'lime' # Brighter green
+        if state == "Live": color = 'lime'
         elif state in ["Connecting", "Initializing"]: color = 'orange'
         elif state in ["Stopped", "Idle"]: color = 'grey'
-        elif state == "Error": color = 'red' # Changed Error color
-        elif state == "Replaying": color = 'dodgerblue' # Changed Replay color
+        elif state == "Error": color = 'red'
+        elif state == "Replaying": color = 'dodgerblue'
         elif state == "Playback Complete": color = 'lightblue'
         elif state == "Stopping": color = 'lightcoral'
 
-        # Append Recording/Replay info
-        if is_rec and rec_file and isinstance(rec_file, (str, Path)): # Check type before using Path
+        if is_rec and rec_file and isinstance(rec_file, (str, Path)):
              try: status_text += f" (REC: {Path(rec_file).name})"
-             except Exception as path_e: logger.warning(f"Could not get filename from rec_file '{rec_file}': {path_e}") # Log path error
+             except Exception as path_e: logger.warning(f"Could not get filename from rec_file '{rec_file}': {path_e}")
         elif state == "Replaying" and rep_file:
-             try: status_text += f" (Replay: {Path(rep_file).name})" # Use Path here too for consistency
+             try: status_text += f" (Replay: {Path(rep_file).name})"
              except Exception as path_e: logger.warning(f"Could not get filename from rep_file '{rep_file}': {path_e}")
 
         status_style = {'color': color, 'fontWeight': 'bold'}
 
     except Exception as e:
         logger.error(f"Error in update_connection_status: {e}", exc_info=True)
-        # Return a visible error state in the UI
-        status_text = "Error updating status!"
+        status_text = config.TEXT_CONN_STATUS_ERROR_UPDATE # Use constant
         status_style = {'color': 'red', 'fontWeight': 'bold'}
 
-    # logger.debug(f"Updating connection status display: '{status_text}', Style: {status_style}") # Optional: Log output
     return status_text, status_style
 
 @app.callback(
-    Output('session-info-display', 'children'), 
+    Output('session-info-display', 'children'),
     Output('prominent-weather-display', 'children'),
-    Output('weather-main-icon', 'children'), # <<< NEW Output for the icon
-    Output('prominent-weather-card', 'color'), # <<< NEW Output for card color
-    Output('prominent-weather-card', 'inverse'), # Ensure text is readable
+    Output('weather-main-icon', 'children'),
+    Output('prominent-weather-card', 'color'),
+    Output('prominent-weather-card', 'inverse'),
     Input('interval-component-slow', 'n_intervals')
 )
 def update_session_and_weather_info(n):
-    session_info_str = "Session Info: Awaiting data..."
-    # Weather display elements
+    session_info_str = config.TEXT_SESSION_INFO_AWAITING # Use constant
     weather_details_spans = []
-    main_weather_icon = WEATHER_ICON_MAP["default"]
-    weather_card_color = "light" # Default card color
-    weather_card_inverse = False # Default: light card, dark text
+    main_weather_icon = config.WEATHER_ICON_MAP["default"] # Use constant
+    weather_card_color = "light"
+    weather_card_inverse = False
 
     try:
         with app_state.app_state_lock:
             local_session_details = app_state.session_details.copy()
-            raw_weather_payload = app_state.data_store.get('WeatherData', {}) 
+            raw_weather_payload = app_state.data_store.get('WeatherData', {})
             local_weather_data = raw_weather_payload.get('data', {}) if isinstance(raw_weather_payload, dict) else {}
-            if not isinstance(local_weather_data, dict): 
+            if not isinstance(local_weather_data, dict):
                 local_weather_data = {}
 
-        # --- Session Name, Circuit etc. (for original 'session-info-display') ---
-        # (Your existing logic for session_info_str from Response 22)
         meeting = local_session_details.get('Meeting', {}).get('Name', '?')
-        session_name = local_session_details.get('Name', '?') 
+        session_name = local_session_details.get('Name', '?')
         circuit = local_session_details.get('Circuit', {}).get('ShortName', '?')
         parts = []
         if circuit != '?': parts.append(f"{circuit}")
@@ -194,8 +121,6 @@ def update_session_and_weather_info(n):
         if parts: session_info_str = " | ".join(parts)
 
 
-        # --- Weather Data ---
-        # Helper to safely convert to float, returns None if not possible
         def safe_float(value, default=None):
             if value is None: return default
             try: return float(value)
@@ -206,83 +131,79 @@ def update_session_and_weather_info(n):
         humidity = safe_float(local_weather_data.get('Humidity'))
         pressure = safe_float(local_weather_data.get('Pressure'))
         wind_speed = safe_float(local_weather_data.get('WindSpeed'))
-        wind_direction = local_weather_data.get('WindDirection') # Often a string or number
-        rainfall_val = local_weather_data.get('Rainfall') # Can be '0', '1', 0, 1
+        wind_direction = local_weather_data.get('WindDirection')
+        rainfall_val = local_weather_data.get('Rainfall')
         is_raining = rainfall_val == '1' or rainfall_val == 1
 
-        overall_condition = "default" # Start with default
-        weather_card_color = "light"  # Default to light
+        overall_condition = "default"
+        weather_card_color = "light"
         weather_card_inverse = False
-        
+
         if is_raining:
             overall_condition = "rain"
-            weather_card_color = "info" 
+            weather_card_color = "info"
             weather_card_inverse = True
-        elif air_temp is not None and humidity is not None: # Only do temp/hum based if we have both
-            if air_temp > 25 and humidity < 60 : # Adjusted humidity threshold for "sunny"
+        elif air_temp is not None and humidity is not None:
+            if air_temp > 25 and humidity < 60 :
                 overall_condition = "sunny"
-                weather_card_color = "warning" 
-                weather_card_inverse = False # Black text on yellow
-            elif humidity >= 75 or air_temp < 15: # Example: cloudy/cool/damp
-                overall_condition = "cloudy" # Could be more specific if more data points
-                weather_card_color = "secondary" # Greyish for cloudy
+                weather_card_color = "warning"
+                weather_card_inverse = False
+            elif humidity >= 75 or air_temp < 15:
+                overall_condition = "cloudy"
+                weather_card_color = "secondary"
                 weather_card_inverse = True
-            # You can add more elif conditions here based on combinations of data
-        elif air_temp is not None: # If only air_temp is available
-             if air_temp > 28: overall_condition = "sunny" # Hot implies sun
-             elif air_temp < 10: overall_condition = "cloudy" # Cool implies clouds
+        elif air_temp is not None:
+             if air_temp > 28: overall_condition = "sunny"
+             elif air_temp < 10: overall_condition = "cloudy"
 
-        main_weather_icon = WEATHER_ICON_MAP.get(overall_condition, WEATHER_ICON_MAP["default"])
+        main_weather_icon = config.WEATHER_ICON_MAP.get(overall_condition, config.WEATHER_ICON_MAP["default"]) # Use constant
 
-        # Build the detailed weather string
         if air_temp is not None: weather_details_spans.append(html.Span(f"Air: {air_temp:.1f}°C", className="me-3"))
         if track_temp is not None: weather_details_spans.append(html.Span(f"Track: {track_temp:.1f}°C", className="me-3"))
         if humidity is not None: weather_details_spans.append(html.Span(f"Hum: {humidity:.0f}%", className="me-3"))
         if pressure is not None: weather_details_spans.append(html.Span(f"Press: {pressure:.0f}hPa", className="me-3"))
         if wind_speed is not None:
             wind_str = f"Wind: {wind_speed:.1f}m/s"
-            if wind_direction is not None: # Wind direction can be numeric or sometimes 'Variable'
+            if wind_direction is not None:
                  try: wind_str += f" ({int(wind_direction)}°)"
-                 except (ValueError, TypeError): wind_str += f" ({wind_direction})" # If not int, show as is
+                 except (ValueError, TypeError): wind_str += f" ({wind_direction})"
             weather_details_spans.append(html.Span(wind_str, className="me-3"))
-        
-        # Add RAIN text prominently if it's raining and not already clear from icon/card
-        if is_raining and overall_condition != "rain": 
-            weather_details_spans.append(html.Span("RAIN", className="me-2 fw-bold", 
-                                         style={'color':'#007bff'})) # Blue rain text
+
+        if is_raining and overall_condition != "rain":
+            weather_details_spans.append(html.Span("RAIN", className="me-2 fw-bold",
+                                         style={'color':'#007bff'}))
 
         if not weather_details_spans and overall_condition == "default":
-            final_weather_display_children = [html.Em("Weather data unavailable")]
+            final_weather_display_children = [html.Em(config.TEXT_WEATHER_UNAVAILABLE)] # Use constant
         elif not weather_details_spans and overall_condition != "default":
-             final_weather_display_children = [html.Em(f"{overall_condition.capitalize()} conditions")]
+             final_weather_display_children = [html.Em(config.TEXT_WEATHER_CONDITION_GENERIC.format(condition=overall_condition.capitalize()))] # Use constant
         else:
             final_weather_display_children = weather_details_spans
-            
+
         return session_info_str, html.Div(children=final_weather_display_children), main_weather_icon, weather_card_color, weather_card_inverse
 
     except Exception as e:
         logger.error(f"Session/Weather Display Error in callback: {e}", exc_info=True)
-        return "Error: Session Info", "Error: Weather", WEATHER_ICON_MAP["default"], "light", False
+        # Use constants
+        return config.TEXT_SESSION_INFO_ERROR, config.TEXT_WEATHER_ERROR, config.WEATHER_ICON_MAP["default"], "light", False
+
 
 @app.callback(
     Output('prominent-track-status-text', 'children'),
-    Output('prominent-track-status-card', 'color'), # To change card background
-    Output('prominent-track-status-text', 'style'), # To change text color for contrast
-    Input('interval-component-medium', 'n_intervals') # Or fast, depending on desired reactivity
+    Output('prominent-track-status-card', 'color'),
+    Output('prominent-track-status-text', 'style'),
+    Input('interval-component-medium', 'n_intervals')
 )
 def update_prominent_track_status(n):
     with app_state.app_state_lock:
-        track_status_code = str(app_state.track_status_data.get('Status', '0')) # Ensure string
-        # track_message = app_state.track_status_data.get('Message', '') # We might add this back later
+        track_status_code = str(app_state.track_status_data.get('Status', '0'))
 
-    status_info = TRACK_STATUS_STYLES.get(track_status_code, TRACK_STATUS_STYLES['DEFAULT'])
-    
+    # Use TRACK_STATUS_STYLES from config
+    status_info = config.TRACK_STATUS_STYLES.get(track_status_code, config.TRACK_STATUS_STYLES['DEFAULT'])
+
     label_to_display = status_info["label"]
-    # if track_message and track_message != 'AllClear' and track_status_code != '1':
-    #     label_to_display += f" ({track_message})" # Optionally add message
-
     text_style = {'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px', 'color': status_info["text_color"]}
-    
+
     return label_to_display, status_info["card_color"], text_style
 
 @app.callback(
@@ -292,18 +213,16 @@ def update_prominent_track_status(n):
     Input('interval-component-timing', 'n_intervals')
 )
 def update_main_data_displays(n):
-    """Updates the timing table and the 'other data' display area (Optimized)."""
     other_elements = []
     table_data = []
-    timestamp_text = "Waiting..."
+    timestamp_text = config.TEXT_WAITING_FOR_DATA # Use constant
     start_time = time.monotonic()
 
     try:
         with app_state.app_state_lock:
             timing_state_copy = app_state.timing_state.copy()
-            data_store_copy = app_state.data_store # Read only, direct access okay
-            
-        # --- Other Data Display (Keep previous logic) ---
+            data_store_copy = app_state.data_store
+
         excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
                             'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat']
         sorted_streams = sorted(
@@ -311,7 +230,7 @@ def update_main_data_displays(n):
         for stream in sorted_streams:
             value = data_store_copy.get(stream, {})
             data_payload = value.get('data', 'N/A')
-            timestamp_str_val = value.get('timestamp', 'N/A') # Renamed to avoid conflict
+            timestamp_str_val = value.get('timestamp', 'N/A')
             try:
                 data_str = json.dumps(data_payload, indent=2)
             except TypeError:
@@ -321,45 +240,39 @@ def update_main_data_displays(n):
             other_elements.append(html.Details([html.Summary(f"{stream} ({timestamp_str_val})"), html.Pre(data_str, style={
                                   'marginLeft': '15px', 'maxHeight': '200px', 'overflowY': 'auto'})], open=(stream == "LapCount")))
 
-        # --- Timing Table Timestamp ---
         timing_data_entry = data_store_copy.get('TimingData', {})
-        timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else "Waiting..."
+        timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else config.TEXT_WAITING_FOR_DATA # Use constant
 
-        # --- Generate Timing Table Data (Optimized Loop) ---
         if timing_state_copy:
             processed_table_data = []
             for car_num, driver_state in timing_state_copy.items():
-                # --- Driver Number and TLA ---
-                racing_no = driver_state.get("RacingNumber", car_num) # Fallback to car_num if no RacingNumber
-                tla = driver_state.get("Tla", "N/A") # TLA for 'Car' column
-
+                racing_no = driver_state.get("RacingNumber", car_num)
+                tla = driver_state.get("Tla", "N/A")
                 pos = driver_state.get('Position', '-')
-                
-                # --- Tyre Information Formatting ---
-                compound = driver_state.get('TyreCompound', '-') 
-                age = driver_state.get('TyreAge', '?')      
-                is_new = driver_state.get('IsNewTyre', False) 
+                compound = driver_state.get('TyreCompound', '-')
+                age = driver_state.get('TyreAge', '?')
+                is_new = driver_state.get('IsNewTyre', False)
                 compound_short = ""
                 known_compounds = ["SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"]
                 if compound and compound.upper() in known_compounds:
                     compound_short = compound[0].upper()
-                elif compound and compound != '-': 
-                    compound_short = "?" 
+                elif compound and compound != '-':
+                    compound_short = "?"
                 tyre_display_parts = []
-                if compound_short: 
+                if compound_short:
                     tyre_display_parts.append(compound_short)
-                if age != '?': 
-                    age_str = str(age) 
+                if age != '?':
+                    age_str = str(age)
                     tyre_display_parts.append(f"{age_str}L")
                 tyre_base = " ".join(tyre_display_parts) if tyre_display_parts else "-"
                 new_tyre_indicator = ""
-                if compound_short and compound_short != '?' and not is_new: 
+                if compound_short and compound_short != '?' and not is_new:
                     new_tyre_indicator = "*"
                 tyre = f"{tyre_base}{new_tyre_indicator}"
-                if tyre_base == "-": 
+                if tyre_base == "-":
                     tyre = "-"
 
-                time_val = driver_state.get('Time', '-') # This is 'Lap Time'
+                time_val = driver_state.get('Time', '-')
                 gap = driver_state.get('GapToLeader', '-')
                 interval = utils.get_nested_state(
                     driver_state, 'IntervalToPositionAhead', 'Value', default='-')
@@ -373,51 +286,39 @@ def update_main_data_displays(n):
                     driver_state, 'Sectors', '1', 'Value', default='-')
                 s3 = utils.get_nested_state(
                     driver_state, 'Sectors', '2', 'Value', default='-')
-                
-                # --- Pit Stops ---
+
                 reliable_stops = driver_state.get('ReliablePitStops', 0)
                 timing_data_stops = driver_state.get('NumberOfPitStops', 0)
-                
-                pits_display_val = '0' # Default to 0
+
+                pits_display_val = '0'
                 if reliable_stops > 0:
                     pits_display_val = str(reliable_stops)
-                elif timing_data_stops > 0: # Only if reliable_stops is 0, consider timing_data_stops
+                elif timing_data_stops > 0:
                     pits_display_val = str(timing_data_stops)
-                # If both are 0, it remains '0'.
-                # If StintsData has been processed and ReliablePitStops is correctly 0 (e.g. first stint),
-                # it will correctly show 0, even if TimingData_NumberOfPitStops is momentarily 1.
 
                 status = driver_state.get('Status', 'N/A')
-                
+
                 car_data = driver_state.get('CarData', {})
                 speed = car_data.get('Speed', '-')
                 gear = car_data.get('Gear', '-')
                 rpm = car_data.get('RPM', '-')
                 drs_val = car_data.get('DRS')
-                drs_map = {8: "E", 10: "On", 12: "On", 14: "ON"} # Eligible, On
+                drs_map = {8: "E", 10: "On", 12: "On", 14: "ON"}
                 drs = drs_map.get(drs_val, 'Off') if drs_val is not None else 'Off'
 
                 row = {
-                    'No.': racing_no, # Populate 'No.' column
-                    'Car': tla,       # Populate 'Car' (TLA) column
-                    'Pos': pos,
-                    'Tyre': tyre,     # Updated tyre display
-                    'Time': time_val, # This is 'Lap Time'
-                    'Gap': gap,
-                    'Interval': interval,
-                    'Last Lap': last_lap,
-                    'Best Lap': best_lap,
-                    'S1': s1, 'S2': s2, 'S3': s3,
-                    'Pits': pits_display_val,     # Populate 'Pits' column
-                    'Status': status,
-                    'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs
+                    'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre,
+                    'Time': time_val, 'Gap': gap, 'Interval': interval,
+                    'Last Lap': last_lap, 'Best Lap': best_lap,
+                    'S1': s1, 'S2': s2, 'S3': s3, 'Pits': pits_display_val,
+                    'Status': status, 'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs
                 }
                 processed_table_data.append(row)
 
             processed_table_data.sort(key=utils.pos_sort_key)
             table_data = processed_table_data
         else:
-            timestamp_text = "Waiting for DriverList..."
+            timestamp_text = "Waiting for DriverList..." # Could be a config constant
 
         end_time = time.monotonic()
         # logger.debug(f"update_main_data_displays took {end_time - start_time:.4f}s")
@@ -434,25 +335,24 @@ def update_main_data_displays(n):
     Input('interval-component-slow', 'n_intervals')
 )
 def update_race_control_log(n):
-    # (Logic from Response 22/24)
     try:
         with app_state.app_state_lock: log_snapshot = list(app_state.race_control_log)
         display_text = "\n".join(log_snapshot)
-        return display_text if display_text else "Waiting for Race Control messages..."
-    except Exception as e: logger.error(f"Error updating RC log: {e}", exc_info=True); return "Error loading RC log."
+        # Use constant
+        return display_text if display_text else config.TEXT_RC_WAITING
+    except Exception as e:
+        logger.error(f"Error updating RC log: {e}", exc_info=True)
+        return config.TEXT_RC_ERROR # Use constant
 
-
-# --- Control Callbacks ---
 
 @app.callback(
-    Output('dummy-output-for-controls', 'children', allow_duplicate=True), # Dummy output
+    Output('dummy-output-for-controls', 'children', allow_duplicate=True),
     Input('replay-speed-slider', 'value'),
     prevent_initial_call=True
 )
 def update_replay_speed_state(new_speed):
-    """Updates the shared replay speed state when the slider changes."""
     if new_speed is None:
-        return no_update # Should not happen unless slider is cleared?
+        return no_update
 
     logger.info(f"Replay speed slider changed to: {new_speed}")
     try:
@@ -463,16 +363,13 @@ def update_replay_speed_state(new_speed):
     except (ValueError, TypeError):
         logger.warning(f"Could not convert slider value '{new_speed}' to float.")
         return no_update
-# --- >>> END ADDED CALLBACK <<< ---
 
 @app.callback(
     [Output('dummy-output-for-controls', 'children', allow_duplicate=True),
      Output('track-map-graph', 'figure', allow_duplicate=True),
-     Output('car-positions-store', 'data', allow_duplicate=True)], # <<< ADDED Output
+     Output('car-positions-store', 'data', allow_duplicate=True)],
     Input('connect-button', 'n_clicks'),
-    # Input('disconnect-button', 'n_clicks'), # Assuming removed as per your request
     Input('replay-button', 'n_clicks'),
-    # Input('stop-replay-button', 'n_clicks'), # Assuming removed
     Input('stop-reset-button', 'n_clicks'),
     State('replay-file-selector', 'value'),
     State('replay-speed-slider', 'value'),
@@ -487,19 +384,20 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
 
     dummy_output = no_update
     track_map_figure_output = no_update
-    car_positions_store_output = no_update # <<< Initialize new output value
+    car_positions_store_output = no_update
 
     if not button_id:
-        return dummy_output, track_map_figure_output, car_positions_store_output # Return all outputs
+        return dummy_output, track_map_figure_output, car_positions_store_output
 
     logger.info(f"Control button clicked: {button_id}")
 
     def generate_reset_track_map_figure():
-        unique_reset_uirevision = f"reset_map_rev_{time.time()}" 
+        unique_reset_uirevision = f"reset_map_rev_{time.time()}"
         logger.debug(f"Generating reset track map with unique uirevision: {unique_reset_uirevision}")
-        fig = create_empty_figure_with_message(
-            height=TRACK_MAP_WRAPPER_HEIGHT, uirevision=unique_reset_uirevision,
-            message="Track data will load when session is active.", margins=TRACK_MAP_MARGINS
+        # Use utils.create_empty_figure_with_message and config constants
+        fig = utils.create_empty_figure_with_message(
+            height=config.TRACK_MAP_WRAPPER_HEIGHT, uirevision=unique_reset_uirevision,
+            message=config.TEXT_TRACK_MAP_DATA_WILL_LOAD, margins=config.TRACK_MAP_MARGINS
         )
         fig.update_layout(yaxis_scaleanchor='x', yaxis_scaleratio=1,
                           plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)')
@@ -507,24 +405,41 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
         return fig
 
     if button_id == 'connect-button':
-        # (Connect logic from Response #12 - no changes needed here regarding track map output from this button)
-        # ...
         with app_state.app_state_lock:
             current_app_s = app_state.app_status["state"]
-            if current_app_s not in ["Idle", "Stopped", "Error", "Playback Complete"]: logger.warning(f"Connect ignored. App state: {current_app_s}"); return dummy_output, track_map_figure_output
+            # If transitioning from a replay or a stopped state, explicitly reset map related cache
+            if current_app_s in ["Replaying", "Playback Complete", "Stopped", "Error"]: # "Error" might also need this
+                logger.info(f"Connect Live: Transitioning from {current_app_s}. Resetting track map related states for a clean live start.")
+                # Explicitly clear the Python-side cache for the track map
+                # This ensures initialize_track_map will definitely see a cache miss for the old track
+                # if the new live session has a different ID.
+                # And if it's the same ID, it forces a re-evaluation.
+                app_state.track_coordinates_cache = app_state.INITIAL_TRACK_COORDINATES_CACHE.copy()
+                app_state.session_details['SessionKey'] = None # Force _process_session_info to see a change
+
+                # Send an empty map to clear the visual immediately
+                # This provides a new unique uirevision to the JS
+                track_map_figure_output = generate_reset_track_map_figure() # generate_reset_track_map_figure makes a unique UID
+                car_positions_store_output = {'status': 'reset_map_display', 'timestamp': time.time()} # Signal JS too
+
+            if current_app_s not in ["Idle", "Stopped", "Error", "Playback Complete", "Replaying"]: # Added Replaying here
+                logger.warning(f"Connect ignored. App state: {current_app_s}")
+                # Need to return all outputs of the callback
+                return dummy_output, track_map_figure_output, car_positions_store_output
+            
             if app_state.stop_event.is_set(): logger.info("Connect Live: Clearing pre-existing stop_event.")
             app_state.stop_event.clear()
             should_record_live = app_state.record_live_data
         logger.info(f"Initiating connection. Recording: {should_record_live}")
         websocket_url, ws_headers = None, None
         try:
-            with app_state.app_state_lock: app_state.app_status.update({"state": "Initializing", "connection": "Negotiating..."})
+            with app_state.app_state_lock: app_state.app_status.update({"state": "Initializing", "connection": config.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS}) # Use constant
             websocket_url, ws_headers = signalr_client.build_connection_url(config.NEGOTIATE_URL_BASE, config.HUB_NAME)
             if not websocket_url or not ws_headers: raise ConnectionError("Negotiation failed.")
         except Exception as e:
             logger.error(f"Negotiation error: {e}", exc_info=True)
-            with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Negotiation Failed"})
-            return dummy_output, track_map_figure_output
+            with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": config.TEXT_SIGNALR_NEGOTIATION_ERROR_PREFIX + str(type(e).__name__)}) # Use constant
+            return dummy_output, track_map_figure_output, car_positions_store_output # Return all three
         if websocket_url and ws_headers:
             if should_record_live:
                 if not replay.init_live_file(): logger.error("Failed to init recording.")
@@ -535,18 +450,20 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
 
 
     elif button_id == 'replay-button':
-        # (Replay logic from Response #12 - no changes needed here regarding track map output from this button)
-        # ...
         if selected_replay_file:
             active_live_session = False
             with app_state.app_state_lock:
                 state = app_state.app_status["state"]
                 if state in ["Live", "Connecting"]: active_live_session = True
-                elif state == "Replaying": logger.warning("Replay ignored: Already replaying."); return dummy_output, track_map_figure_output
+                elif state == "Replaying":
+                    logger.warning(config.TEXT_REPLAY_ALREADY_RUNNING) # Use constant
+                    return dummy_output, track_map_figure_output, car_positions_store_output # Return all three
             if active_live_session:
                 logger.info("Stopping live feed for replay.")
                 try: signalr_client.stop_connection(); time.sleep(0.3)
-                except Exception as e: logger.error(f"Error stopping live feed for replay: {e}", exc_info=True); return dummy_output, track_map_figure_output
+                except Exception as e:
+                    logger.error(f"Error stopping live feed for replay: {e}", exc_info=True)
+                    return dummy_output, track_map_figure_output, car_positions_store_output # Return all three
             try:
                 speed_float = float(replay_speed); speed_float = max(0.1, speed_float)
                 full_replay_path = Path(config.REPLAY_DIR) / selected_replay_file
@@ -554,36 +471,34 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
                 else: logger.error(f"Failed to start replay for {full_replay_path.name}.")
             except Exception as e_replay_start:
                  logger.error(f"Error starting replay: {e_replay_start}", exc_info=True)
-                 with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": "Replay Start Failed"})
-        else: logger.warning("Start Replay: No file selected.")
+                 with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": config.TEXT_REPLAY_ERROR_THREAD_START_FAILED_STATUS}) # Use constant
+        else: logger.warning(f"Start Replay: {config.TEXT_REPLAY_SELECT_FILE}") # Use constant
 
 
     elif button_id == 'stop-reset-button':
         logger.info("Stop & Reset Session button clicked.")
         any_action_failed = False
-        
+
         logger.info("Stop & Reset: Attempting to stop SignalR connection (if any)...")
         try: signalr_client.stop_connection(); logger.info("Stop & Reset: signalr_client.stop_connection() completed.")
         except Exception as e: logger.error(f"Stop & Reset: Error during signalr_client.stop_connection(): {e}", exc_info=True); any_action_failed = True
-        
+
         logger.info("Stop & Reset: Attempting to stop replay (if any)...")
         try: replay.stop_replay(); logger.info("Stop & Reset: replay.stop_replay() completed.")
         except Exception as e: logger.error(f"Stop & Reset: Error during replay.stop_replay(): {e}", exc_info=True); any_action_failed = True
-        
+
         logger.debug("Stop & Reset: Pausing (0.3s) for stop signals...")
         time.sleep(0.3)
 
         logger.info("Stop & Reset: Resetting application state...")
         try:
-            app_state.reset_to_default_state() 
-            track_map_figure_output = generate_reset_track_map_figure() 
-            # --- MODIFICATION: Trigger car-positions-store to run animateCarMarkers ---
-            car_positions_store_output = {'status': 'reset_map_display', 'timestamp': time.time()} 
-            # --- END MODIFICATION ---
+            app_state.reset_to_default_state()
+            track_map_figure_output = generate_reset_track_map_figure()
+            car_positions_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
             logger.info("Stop & Reset: State reset; track map set to empty; car_positions_store signaled.")
         except Exception as e:
             logger.error(f"Stop & Reset: Error during reset_to_default_state: {e}", exc_info=True); any_action_failed = True
-        
+
         logger.info("Stop & Reset: Finalizing stop_event and app status...")
         with app_state.app_state_lock:
             current_status = app_state.app_status.get("state")
@@ -592,16 +507,16 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
             else: logger.info("Stop & Reset: Global stop_event was already clear.")
             if any_action_failed and current_status != "Error":
                 logger.warning("Stop & Reset: Forcing app status to 'Error' due to failures.")
-                app_state.app_status["state"] = "Error"; app_state.app_status["connection"] = "Reset failed"
+                app_state.app_status["state"] = "Error"; app_state.app_status["connection"] = "Reset failed" # Could be config constant
             elif not any_action_failed and current_status != "Idle":
                  logger.info(f"Stop & Reset: Actions succeeded. Current state '{current_status}' (expected Idle). Ensuring Idle.")
-                 app_state.app_status["state"] = "Idle"; app_state.app_status["connection"] = "Disconnected"
+                 app_state.app_status["state"] = "Idle"; app_state.app_status["connection"] = config.TEXT_SIGNALR_DISCONNECTED_STATUS # Use constant
         logger.info("Stop & Reset Session processing finished.")
-    
+
     else:
         logger.warning(f"Button ID '{button_id}' not handled by handle_control_clicks.")
 
-    return dummy_output, track_map_figure_output, car_positions_store_output # <<< Return all three
+    return dummy_output, track_map_figure_output, car_positions_store_output
 
 
 @app.callback(
@@ -610,12 +525,11 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
     prevent_initial_call=True
 )
 def record_checkbox_callback(checked_value):
-    """Updates the app_state.record_live_data flag."""
     if checked_value is None: return 'record-data-checkbox'
     new_state = bool(checked_value)
     logger.debug(f"Record Live Data checkbox set to: {new_state}")
     with app_state.app_state_lock: app_state.record_live_data = new_state
-    return 'record-data-checkbox' # Dummy output
+    return 'record-data-checkbox'
 
 
 @app.callback(
@@ -623,8 +537,6 @@ def record_checkbox_callback(checked_value):
     Input('interval-component-slow', 'n_intervals')
 )
 def update_replay_options(n_intervals):
-     """Updates the replay file dropdown options periodically."""
-     # logger.debug("Updating replay file options...")
      return replay.get_replay_files(config.REPLAY_DIR)
 
 
@@ -639,7 +551,6 @@ def toggle_controls_collapse(n, is_open):
         return not is_open
     return is_open
 
-# --- >>> NEW/MODIFIED: Driver Details & Telemetry Callback <<< ---
 @app.callback(
     Output('driver-details-output', 'children'),
     Output('lap-selector-dropdown', 'options'),
@@ -648,39 +559,38 @@ def toggle_controls_collapse(n, is_open):
     Output('telemetry-graph', 'figure'),
     Input('driver-select-dropdown', 'value'),
     Input('lap-selector-dropdown', 'value'),
-    State('telemetry-graph', 'figure'), # Get current figure to check uirevision
-    prevent_initial_call=True 
+    State('telemetry-graph', 'figure'),
+    prevent_initial_call=True
 )
 def display_driver_details(selected_driver_number, selected_lap, current_telemetry_figure):
     ctx = dash.callback_context
     triggered_id = ctx.triggered_id if ctx.triggered else 'N/A'
     logger.debug(f"Telemetry Update: Trigger={triggered_id}, Driver={selected_driver_number}, Lap={selected_lap}")
 
-    details_children = [html.P("Select a driver.", style={'fontSize':'0.8rem', 'padding':'5px'})]
-    lap_options = [{'label': 'No Laps', 'value': ''}]
+    # Use constants
+    details_children = [html.P(config.TEXT_DRIVER_SELECT, style={'fontSize':'0.8rem', 'padding':'5px'})]
+    lap_options = config.DROPDOWN_NO_LAPS_OPTIONS
     current_lap_value_for_dropdown = None
     lap_disabled = True
-    
-    # Default empty figure using the INITIAL uirevision (from layout.py)
-    fig_empty_telemetry = create_empty_figure_with_message(
-        TELEMETRY_WRAPPER_HEIGHT, INITIAL_TELEMETRY_UIREVISION, 
-        "Select driver & lap", TELEMETRY_MARGINS_EMPTY
+
+    # Use utils.create_empty_figure_with_message and config constants
+    fig_empty_telemetry = utils.create_empty_figure_with_message(
+        config.TELEMETRY_WRAPPER_HEIGHT, config.INITIAL_TELEMETRY_UIREVISION,
+        config.TEXT_DRIVER_SELECT_LAP, config.TELEMETRY_MARGINS_EMPTY
     )
 
     if not selected_driver_number:
-        # If already showing the initial empty state, no update
         if current_telemetry_figure and \
-           current_telemetry_figure.get('layout', {}).get('uirevision') == INITIAL_TELEMETRY_UIREVISION:
+           current_telemetry_figure.get('layout', {}).get('uirevision') == config.INITIAL_TELEMETRY_UIREVISION:
             return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, no_update
         return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_empty_telemetry
 
     driver_num_str = str(selected_driver_number)
-    
+
     with app_state.app_state_lock:
         available_laps = sorted(app_state.telemetry_data.get(driver_num_str, {}).keys())
         driver_info_state = app_state.timing_state.get(driver_num_str, {}).copy()
-        
-    # Update driver details text part (as in Response 18)
+
     if driver_info_state:
         tla = driver_info_state.get('Tla', '?'); num = driver_info_state.get('RacingNumber', driver_num_str)
         name = driver_info_state.get('FullName', 'Unknown'); team = driver_info_state.get('TeamName', '?')
@@ -690,7 +600,6 @@ def display_driver_details(selected_driver_number, selected_lap, current_telemet
         tyre_str = f"{driver_info_state.get('TyreCompound','-')} ({driver_info_state.get('TyreAge','?')}L)" if driver_info_state.get('TyreCompound','-') != '-' else '-'
         details_children.append(html.P(f"Last: {ll} | Best: {bl} | Tyre: {tyre_str}", style={'fontSize':'0.75rem', 'marginBottom':'0px'}))
 
-    # UIRevision for a state where a driver is selected, but lap might not be, or no laps exist
     driver_selected_uirevision = f"telemetry_{driver_num_str}_pendinglap"
 
     if available_laps:
@@ -700,39 +609,36 @@ def display_driver_details(selected_driver_number, selected_lap, current_telemet
             current_lap_value_for_dropdown = available_laps[-1]
         else:
             current_lap_value_for_dropdown = selected_lap
-    else: # No laps for this driver
-        no_laps_message = f"No lap data for {driver_info_state.get('Tla', driver_num_str)}."
-        # If already showing this specific "no laps" message for this driver, no update
+    else:
+        # Use constant
+        no_laps_message = config.TEXT_DRIVER_NO_LAP_DATA_PREFIX + driver_info_state.get('Tla', driver_num_str) + "."
         if current_telemetry_figure and \
            current_telemetry_figure.get('layout', {}).get('uirevision') == driver_selected_uirevision and \
            current_telemetry_figure.get('layout',{}).get('annotations',[{}])[0].get('text','') == no_laps_message:
             return details_children, lap_options, None, True, no_update
-            
-        fig_no_laps = create_empty_figure_with_message(
-            TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision, no_laps_message, TELEMETRY_MARGINS_EMPTY
+
+        # Use utils.create_empty_figure_with_message and config constants
+        fig_no_laps = utils.create_empty_figure_with_message(
+            config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision, no_laps_message, config.TELEMETRY_MARGINS_EMPTY
         )
         return details_children, lap_options, None, True, fig_no_laps
 
-    if not current_lap_value_for_dropdown: # No valid lap selected yet (e.g. after driver change, before auto-select if needed)
-        select_lap_message = f"Select a lap for {driver_info_state.get('Tla', driver_num_str)}."
+    if not current_lap_value_for_dropdown:
+        # Use constant
+        select_lap_message = config.TEXT_DRIVER_SELECT_A_LAP_PREFIX + driver_info_state.get('Tla', driver_num_str) + "."
         if current_telemetry_figure and \
            current_telemetry_figure.get('layout', {}).get('uirevision') == driver_selected_uirevision and \
            current_telemetry_figure.get('layout',{}).get('annotations',[{}])[0].get('text','') == select_lap_message:
              return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, no_update
 
-        fig_select_lap = create_empty_figure_with_message(
-            TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision, select_lap_message, TELEMETRY_MARGINS_EMPTY
+        # Use utils.create_empty_figure_with_message and config constants
+        fig_select_lap = utils.create_empty_figure_with_message(
+            config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision, select_lap_message, config.TELEMETRY_MARGINS_EMPTY
         )
         return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_select_lap
 
-    # --- Generate Telemetry Plot ---
-    # UIRevision for a plot with specific driver and lap data
     data_plot_uirevision = f"telemetry_data_{driver_num_str}_{current_lap_value_for_dropdown}"
 
-    # Fix for telemetry not displaying on first click:
-    # If the callback was triggered by something other than explicit driver/lap selection AND
-    # the graph already shows this data, then no_update.
-    # This helps if an interval is also an Input to this callback.
     if current_telemetry_figure and \
        current_telemetry_figure.get('layout',{}).get('uirevision') == data_plot_uirevision and \
        triggered_id not in ['driver-select-dropdown', 'lap-selector-dropdown']:
@@ -743,16 +649,14 @@ def display_driver_details(selected_driver_number, selected_lap, current_telemet
     try:
         with app_state.app_state_lock:
             lap_data = app_state.telemetry_data.get(driver_num_str, {}).get(current_lap_value_for_dropdown, {})
-        # ... (Your existing logic for timestamps_str, timestamps_dt, valid_indices)
         timestamps_str = lap_data.get('Timestamps', [])
         timestamps_dt = [utils.parse_iso_timestamp_safe(ts) for ts in timestamps_str]
         valid_indices = [i for i, dt_obj in enumerate(timestamps_dt) if dt_obj is not None]
 
         if valid_indices:
-            # ... (Your existing logic for plotting channels with make_subplots)
             timestamps_plot = [timestamps_dt[i] for i in valid_indices]
-            channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
-            fig_with_data = make_subplots(rows=len(channels), cols=1, shared_xaxes=True, 
+            channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS'] # Could be a config constant
+            fig_with_data = make_subplots(rows=len(channels), cols=1, shared_xaxes=True,
                                           subplot_titles=[c[:10] for c in channels], vertical_spacing=0.06)
             for i, channel in enumerate(channels):
                 y_data_raw = lap_data.get(channel, [])
@@ -760,84 +664,67 @@ def display_driver_details(selected_driver_number, selected_lap, current_telemet
                 if channel == 'DRS':
                     drs_plot = [1 if val in [10, 12, 14] else 0 for val in y_data_plot]
                     fig_with_data.add_trace(go.Scattergl(x=timestamps_plot, y=drs_plot, mode='lines', name=channel, line_shape='hv', connectgaps=False), row=i+1, col=1)
-                    fig_with_data.update_yaxes(fixedrange=True, tickvals=[0,1], ticktext=['Off','On'], range=[-0.1,1.1], row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8) # Remove y-axis title text, use subplot title
+                    fig_with_data.update_yaxes(fixedrange=True, tickvals=[0,1], ticktext=['Off','On'], range=[-0.1,1.1], row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
                 else:
                     fig_with_data.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel, connectgaps=False), row=i+1, col=1)
-                    fig_with_data.update_yaxes(fixedrange=True, row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8) # Remove y-axis title text
-            
+                    fig_with_data.update_yaxes(fixedrange=True, row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
+
             fig_with_data.update_layout(
                 template='plotly_dark',
-                height=TELEMETRY_WRAPPER_HEIGHT,  # Use constant for wrapper height
+                height=config.TELEMETRY_WRAPPER_HEIGHT, # Use constant
                 hovermode="x unified",
                 showlegend=False,
-                # Margins: t(top) needs space for main title, l(left) for y-axis ticks if they had text
-                margin=TELEMETRY_MARGINS_DATA,  # Use specific margins for data plots
-
-                # Main Title for the whole telemetry plot
+                margin=config.TELEMETRY_MARGINS_DATA, # Use constant
                 title_text=f"<b>{driver_info_state.get('Tla', driver_num_str)} - Lap {current_lap_value_for_dropdown} Telemetry</b>",
-                title_x=0.5,  # Center title
-                title_y=0.98,  # Position title at the top, adjust as needed
-                title_font_size=12,  # Slightly smaller main title
-
+                title_x=0.5, title_y=0.98, title_font_size=12,
                 uirevision=data_plot_uirevision,
-                annotations=[]  # Clear any previous "Select driver/lap" annotations
+                annotations=[]
             )
 
             for i, annot in enumerate(fig_with_data.layout.annotations):
-                annot.font.size = 9  # Smaller subplot titles
-                annot.yanchor = 'bottom'
-                annot.y = annot.y  # Slight nudge up if needed based on vertical_spacing
+                annot.font.size = 9; annot.yanchor = 'bottom'; annot.y = annot.y
 
             for i_ax in range(len(channels)):
                 fig_with_data.update_xaxes(
-                    showline=(i_ax == len(channels)-1),
-                    zeroline=False,
-                    showticklabels=(i_ax == len(channels)-1),
-                    row=i_ax+1, col=1,
+                    showline=(i_ax == len(channels)-1), zeroline=False,
+                    showticklabels=(i_ax == len(channels)-1), row=i_ax+1, col=1,
                     tickfont_size=8
                 )
-            
+
             return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_with_data
-        else: # No valid plot data for this specific lap
-            fig_empty_telemetry.layout.annotations[0].text = f"No plot data for Lap {current_lap_value_for_dropdown}."
-            fig_empty_telemetry.layout.uirevision = data_plot_uirevision # Still use dynamic uirevision for this state
+        else:
+            # Use constant
+            fig_empty_telemetry.layout.annotations[0].text = config.TEXT_TELEMETRY_NO_PLOT_DATA_FOR_LAP_PREFIX + str(current_lap_value_for_dropdown) + "."
+            fig_empty_telemetry.layout.uirevision = data_plot_uirevision
             return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_empty_telemetry
     except Exception as plot_err:
         logger.error(f"Error in telemetry plot: {plot_err}", exc_info=True)
-        fig_empty_telemetry.layout.annotations[0].text = "Error loading telemetry."
-        fig_empty_telemetry.layout.uirevision = data_plot_uirevision # Use dynamic uirevision on error
+        fig_empty_telemetry.layout.annotations[0].text = config.TEXT_TELEMETRY_ERROR # Use constant
+        fig_empty_telemetry.layout.uirevision = data_plot_uirevision
         return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_empty_telemetry
 
 @app.callback(
-    # This store will hold the YYYY_CircuitKey string
     Output('current-track-layout-cache-key-store', 'data'),
     Input('interval-component-medium', 'n_intervals'),
     State('current-track-layout-cache-key-store', 'data')
 )
 def update_current_session_id_for_map(n_intervals, existing_session_id_in_store):
     with app_state.app_state_lock:
-        # Get Year and CircuitKey from app_state.session_details
-        # These are set by _process_session_info
         year = app_state.session_details.get('Year')
-        circuit_key = app_state.session_details.get(
-            'CircuitKey')  # This is the numeric key
+        circuit_key = app_state.session_details.get('CircuitKey')
         app_status_state = app_state.app_status.get("state", "Idle")
 
     if not year or not circuit_key or app_status_state in ["Idle", "Stopped", "Error"]:
         if existing_session_id_in_store is not None:
-            # logger.debug("Clearing current-track-layout-cache-key-store (now session-id-store) as session is not active or details missing.")
-            return None  # Clear the session ID from the store
+            return None
         return dash.no_update
 
-    # Construct the session identifier string (e.g., "2023_44")
-    # This is the 'session_key' that _process_session_info calculates and stores in
-    # app_state.session_details['SessionKey'] and uses for the track_coordinates_cache['session_key']
     current_session_id = f"{year}_{circuit_key}"
 
     if current_session_id != existing_session_id_in_store:
         logger.info(
-            f"Updating current-track-layout-cache-key-store (now session-id-store) to: {current_session_id}")
-        return current_session_id  # This is the YYYY_CircuitKey string
+            f"Updating current-track-layout-cache-key-store to: {current_session_id}")
+        return current_session_id
 
     return dash.no_update
 
@@ -846,22 +733,18 @@ def update_current_session_id_for_map(n_intervals, existing_session_id_in_store)
     Output('clientside-update-interval', 'disabled'),
     [Input('connect-button', 'n_clicks'),
      Input('replay-button', 'n_clicks'),
-     # Input('disconnect-button', 'n_clicks'), # REMOVED
-     # Input('stop-replay-button', 'n_clicks'), # REMOVED
-     Input('stop-reset-button', 'n_clicks'),   # <<< ADDED: stop-reset now controls this
+     Input('stop-reset-button', 'n_clicks'),
      Input('interval-component-fast', 'n_intervals')],
     [State('clientside-update-interval', 'disabled'),
      State('replay-file-selector', 'value')]
 )
 def toggle_clientside_interval(connect_clicks, replay_clicks,
-                               # disconnect_clicks, # REMOVED
-                               # stop_replay_clicks, # REMOVED
-                               stop_reset_clicks, # <<< ADDED corresponding argument
+                               stop_reset_clicks,
                                fast_interval_tick, currently_disabled, selected_replay_file):
     ctx = dash.callback_context
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered and ctx.triggered[0] else None
 
-    if not triggered_id: # Should not happen if an Input fired, but good check
+    if not triggered_id:
         return no_update
 
     with app_state.app_state_lock:
@@ -870,47 +753,40 @@ def toggle_clientside_interval(connect_clicks, replay_clicks,
     if triggered_id in ['connect-button', 'replay-button']:
         if triggered_id == 'replay-button' and not selected_replay_file:
             logger.info(
-                "Replay button clicked, but no file selected. Clientside interval remains disabled.")
-            return True # Keep disabled
+                f"Replay button clicked, but no file selected ({config.TEXT_REPLAY_SELECT_FILE}). Clientside interval remains disabled.") # Use constant
+            return True
 
         logger.info(
             f"Attempting to enable clientside-update-interval due to '{triggered_id}'.")
-        return False  # Enable interval
+        return False
 
-    elif triggered_id == 'stop-reset-button': # <<< ADDED LOGIC
+    elif triggered_id == 'stop-reset-button':
         logger.info(
             f"Disabling clientside-update-interval due to '{triggered_id}'.")
-        return True # Disable interval
+        return True
 
     elif triggered_id == 'interval-component-fast':
         if current_app_s in ["Live", "Replaying"]:
-            if currently_disabled: # If it's currently disabled but should be running
+            if currently_disabled:
                 logger.info(
                     f"Fast interval: App is '{current_app_s}', enabling clientside interval.")
-                return False # Enable
-            # else: it's already enabled and should be, so no_update
+                return False
             return no_update
-        else: # App is not Live or Replaying (e.g., Idle, Stopped, Error)
-            if not currently_disabled: # If it's currently enabled but shouldn't be
+        else:
+            if not currently_disabled:
                 logger.info(
                     f"Fast interval: App is '{current_app_s}', disabling clientside interval.")
-                return True # Disable
-            # else: it's already disabled and should be, so no_update
+                return True
             return no_update
-    
-    # Fallback if triggered_id was something unexpected (though Dash should prevent this)
+
     logger.warning(f"toggle_clientside_interval: Unhandled triggered_id '{triggered_id}'. Returning no_update.")
     return no_update
-
 
 
 @app.callback(
     Output('car-positions-store', 'data'),
     Input('clientside-update-interval', 'n_intervals'),
-    # Or a more direct 'current_session_key' from app_state if available
-    # No need for live-mode or replay-file state if timing_state is the single source of truth
 )
-# Removed session_key_from_dropdown parameter
 def update_car_data_for_clientside(n_intervals):
     if n_intervals == 0:
         return dash.no_update
@@ -920,7 +796,6 @@ def update_car_data_for_clientside(n_intervals):
         timing_state_snapshot = app_state.timing_state.copy()
 
     if current_app_status not in ["Live", "Replaying"] or not timing_state_snapshot:
-        # logger.debug("Not updating car-positions-store: App not Live/Replaying or no timing data.")
         return dash.no_update
 
     processed_car_data = {}
@@ -962,179 +837,158 @@ def update_car_data_for_clientside(n_intervals):
     prevent_initial_call=True
 )
 def update_clientside_interval_speed(replay_speed, interval_disabled):
-    """
-    Adjusts the clientside-update-interval based on the replay speed.
-    Sends updates more frequently at higher speeds.
-    """
     if interval_disabled or replay_speed is None:
-        # If the main interval is disabled, or no speed, don't change its rate
         return dash.no_update
 
     try:
         speed = float(replay_speed)
-        if speed <= 0:
-            speed = 1.0 # Avoid division by zero or negative intervals
+        if speed <= 0: speed = 1.0
     except (ValueError, TypeError):
-        speed = 1.0 # Default to 1x speed if conversion fails
+        speed = 1.0
 
-    # Define a base interval (e.g., the default 1250ms for 1x speed)
     base_interval_ms = 1250
-
-    # Calculate new interval: faster speed = smaller interval
-    # Ensure a minimum interval to prevent overwhelming the system
-    new_interval_ms = max(350, int(base_interval_ms / speed)) # Minimum 100ms
+    new_interval_ms = max(350, int(base_interval_ms / speed))
 
     logger.info(f"Adjusting clientside-update-interval to {new_interval_ms}ms for replay speed {speed}x")
     return new_interval_ms
 
 @app.callback(
-    Output('track-map-graph', 'figure', allow_duplicate=True),
-    # --- Trigger Change ---
-    Input('interval-component-medium', 'n_intervals'), # Trigger periodically (e.g., every 1 sec)
-    # --- State Inputs ---
-    Input('current-track-layout-cache-key-store', 'data'), # Get the expected session ID
-    State('track-map-graph', 'figure'), # Get the CURRENT figure shown in the graph.
-    prevent_initial_call='initial_duplicate'
+    [Output('track-map-graph', 'figure', allow_duplicate=True),
+     Output('track-map-figure-version-store', 'data')],
+    [Input('interval-component-medium', 'n_intervals'),
+     Input('current-track-layout-cache-key-store', 'data')],
+    State('track-map-graph', 'figure'),
+    prevent_initial_call=True
 )
 def initialize_track_map(n_intervals, expected_session_id, current_track_map_figure):
-    logger.debug(f"Track Map Update: Triggered. Expected Session ID = {expected_session_id}")
+    ctx = dash.callback_context
+    triggered_input_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered and ctx.triggered[0] else "Unknown"
+    # Use a more unique marker for version store updates, like a timestamp or UUID
+    new_figure_version = time.time() # Each new figure gets a new version
 
-    # Default empty/loading figure, using the INITIAL uirevision
-    fig_empty_or_loading_map = create_empty_figure_with_message(
-        TRACK_MAP_WRAPPER_HEIGHT, INITIAL_TRACK_MAP_UIREVISION, 
-        "Loading track data...", TRACK_MAP_MARGINS
-    )
-    
-    fig_empty_or_loading_map.layout.plot_bgcolor = 'rgb(30,30,30)'
-    fig_empty_or_loading_map.layout.paper_bgcolor = 'rgba(0,0,0,0)'
+    logger.debug(f"INIT_TRACK_MAP --- Triggered by: {triggered_input_id}. Expected Session ID: '{expected_session_id}'")
+    current_fig_uirevision = current_track_map_figure.get('layout', {}).get('uirevision') if current_track_map_figure and current_track_map_figure.get('layout') else 'None'
+    logger.debug(f"INIT_TRACK_MAP --- Current Figure Uirevision in State: '{current_fig_uirevision}'")
 
-    if not expected_session_id:
-        logger.debug("Track Map Update: No expected_session_id. Returning empty map if not already shown.")
-        if current_track_map_figure and \
-           current_track_map_figure.get('layout', {}).get('uirevision') == INITIAL_TRACK_MAP_UIREVISION:
-            return no_update
-        return fig_empty_or_loading_map
-
-    # UIRevision for a map WITH a specific track loaded
-    data_loaded_uirevision = f"tracklayout_{expected_session_id}"
-
-    # If the map is already showing the correct track, no need to update the base map
-    if current_track_map_figure and \
-       current_track_map_figure.get('layout', {}).get('uirevision') == data_loaded_uirevision:
-        logger.debug(f"Track map already displaying correct layout uirevision: {data_loaded_uirevision}")
-        return no_update 
-
-    # --- Read from cache ---
-    # Critical: Ensure this read happens correctly and sees the updated cache
     with app_state.app_state_lock:
-        # Make a deep copy if there's any chance of modification, otherwise direct access is fine for read
-        cached_data = app_state.track_coordinates_cache.copy() 
-        driver_list_snapshot = app_state.timing_state.copy() 
+        cached_data = app_state.track_coordinates_cache.copy()
+        driver_list_snapshot = app_state.timing_state.copy()
+        logger.debug(f"INIT_TRACK_MAP --- AppState session_details.SessionKey: '{app_state.session_details.get('SessionKey')}'")
+        logger.debug(f"INIT_TRACK_MAP --- AppState track_coordinates_cache.session_key: '{cached_data.get('session_key')}'")
 
-    logger.debug(f"Track Map Update: Cache Read. Cached session_key='{cached_data.get('session_key')}', Expected='{expected_session_id}'")
-
-    if cached_data.get('session_key') == expected_session_id and \
-       cached_data.get('x') and cached_data.get('y'):
-        logger.info(f"Track map: Cache HIT for {expected_session_id}. Drawing track.")
+    if not expected_session_id or not isinstance(expected_session_id, str) or '_' not in expected_session_id:
+        empty_map_uirevision = f"empty_map_undefined_session_{new_figure_version}" # Use new_figure_version for uirevision too
         
+        # Only update if uirevision is different to avoid loop with clientside if it also outputs figure
+        if current_fig_uirevision == empty_map_uirevision:
+             logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (already showing specific empty map: {empty_map_uirevision})")
+             return no_update, no_update
+
+        fig_empty = utils.create_empty_figure_with_message(
+            config.TRACK_MAP_WRAPPER_HEIGHT, empty_map_uirevision,
+            config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS
+        )
+        fig_empty.layout.plot_bgcolor = 'rgb(30,30,30)'; fig_empty.layout.paper_bgcolor = 'rgba(0,0,0,0)'
+        logger.debug(f"INIT_TRACK_MAP --- Returning EMPTY map (no valid expected_session_id: '{expected_session_id}'). New uirev: {empty_map_uirevision}")
+        return fig_empty, new_figure_version
+
+    data_loaded_uirevision = f"tracklayout_{expected_session_id}"
+    loading_uirevision = f"loading_{expected_session_id}" # Dynamic uirevision for the loading state
+
+    logger.debug(f"INIT_TRACK_MAP --- For SID '{expected_session_id}': TargetLoadedUirev='{data_loaded_uirevision}', TargetLoadingUirev='{loading_uirevision}'")
+
+    is_cache_ready_for_session = (
+        cached_data.get('session_key') == expected_session_id and
+        cached_data.get('x') and cached_data.get('y')
+    )
+
+    if is_cache_ready_for_session:
+        if current_fig_uirevision == data_loaded_uirevision:
+            logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (map already displays correct loaded uirev: {data_loaded_uirevision})")
+            return no_update, no_update
+        
+        logger.debug(f"INIT_TRACK_MAP --- Cache HIT for '{expected_session_id}'. Drawing track. New uirev: {data_loaded_uirevision}")
         fig_data = [
-            go.Scatter(x=list(cached_data['x']), y=list(cached_data['y']), mode='lines', 
+            go.Scatter(x=list(cached_data['x']), y=list(cached_data['y']), mode='lines',
                        line=dict(color='grey', width=2), name='Track', hoverinfo='none')
         ]
         for car_num, driver_state in driver_list_snapshot.items():
             tla = driver_state.get('Tla', car_num)
             team_color = driver_state.get('TeamColour', '808080')
-            if not team_color.startswith('#'): team_color = '#' + team_color
+            if not isinstance(team_color, str) or not team_color.startswith('#'):
+                team_color = '#' + str(team_color).replace("#","") if isinstance(team_color, str) else '#808080'
+                if len(team_color) not in [4, 7]: team_color = '#808080'
             fig_data.append(go.Scatter(
-                x=[], y=[], mode='markers+text', name=tla, uid=car_num,
+                x=[], y=[], mode='markers+text', name=tla, uid=str(car_num),
                 marker=dict(size=8, color=team_color, line=dict(width=1, color='Black')),
                 textfont=dict(size=8, color='white'), textposition='middle right',
-                hoverinfo='text', text=tla 
+                hoverinfo='text', text=tla
             ))
-
         fig_layout = go.Layout(
-            template='plotly_dark',
-            uirevision=data_loaded_uirevision, # <<< Use the new dynamic uirevision FOR THIS DATA
-            xaxis=dict(visible=False, showgrid=False, zeroline=False, showticklabels=False, 
-                       range=cached_data.get('range_x'), autorange=False if cached_data.get('range_x') else True),
-            yaxis=dict(visible=False, showgrid=False, zeroline=False, showticklabels=False, 
-                       range=cached_data.get('range_y'), autorange=False if cached_data.get('range_y') else True, 
-                       scaleanchor="x" if cached_data.get('range_x') and cached_data.get('range_y') else None, 
-                       scaleratio=1 if cached_data.get('range_x') and cached_data.get('range_y') else None),
-            showlegend=False, 
-            plot_bgcolor='rgb(30,30,30)', 
-            paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='white'), 
-            margin=TRACK_MAP_MARGINS, 
-            height=TRACK_MAP_WRAPPER_HEIGHT,
-            annotations=[] # Ensure no "loading" annotation when track is drawn
+            template='plotly_dark', uirevision=data_loaded_uirevision,
+            xaxis=dict(visible=False, fixedrange=True, range=cached_data.get('range_x'), autorange=False if cached_data.get('range_x') else True),
+            yaxis=dict(visible=False, fixedrange=True, scaleanchor="x", scaleratio=1, range=cached_data.get('range_y'), autorange=False if cached_data.get('range_y') else True),
+            showlegend=False, plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white'), margin=config.TRACK_MAP_MARGINS, height=config.TRACK_MAP_WRAPPER_HEIGHT,
+            annotations=[]
         )
-        return go.Figure(data=fig_data, layout=fig_layout)
-    else: # Cache miss or incomplete data
-        logger.info(f"Track map: Cache MISS or data incomplete for {expected_session_id}. Current cache key: {cached_data.get('session_key')}")
-        # If already showing the "loading" map for this specific ID, don't keep re-sending it
-        current_text = ""
-        if current_track_map_figure and current_track_map_figure.get('layout', {}).get('annotations'):
-            current_text = current_track_map_figure['layout']['annotations'][0].get('text', '')
-        
-        expected_loading_text = f"Track data loading for {expected_session_id}..."
-        if current_track_map_figure and \
-           current_track_map_figure.get('layout', {}).get('uirevision') == INITIAL_TRACK_MAP_UIREVISION and \
-           current_text == expected_loading_text:
-            return no_update
+        new_figure = go.Figure(data=fig_data, layout=fig_layout)
+        logger.debug(f"INIT_TRACK_MAP --- Returning NEW TRACK figure for '{expected_session_id}'. Final uirev: {new_figure.layout.uirevision}")
+        return new_figure, new_figure_version
+    else: # Cache is NOT ready
+        if current_fig_uirevision == loading_uirevision:
+            logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (map already shows correct loading uirev: {loading_uirevision} for {expected_session_id})")
+            return no_update, no_update
 
-        fig_empty_or_loading_map.layout.annotations[0].text = expected_loading_text
-        return fig_empty_or_loading_map
+        fig_loading_specific = utils.create_empty_figure_with_message(
+            config.TRACK_MAP_WRAPPER_HEIGHT, loading_uirevision,
+            f"{config.TEXT_TRACK_MAP_LOADING_FOR_SESSION_PREFIX}{expected_session_id}...",
+            config.TRACK_MAP_MARGINS
+        )
+        fig_loading_specific.layout.plot_bgcolor = 'rgb(30,30,30)'; fig_loading_specific.layout.paper_bgcolor = 'rgba(0,0,0,0)'
+        logger.debug(f"INIT_TRACK_MAP --- Cache MISS for '{expected_session_id}'. Returning LOADING map. New uirev: {loading_uirevision}")
+        return fig_loading_specific, new_figure_version
 
-# --- >>> ADDED: Driver Dropdown Update Callback <<< ---
 @app.callback(
     Output('driver-select-dropdown', 'options'),
-    Input('interval-component-slow', 'n_intervals') # Update slowly
+    Input('interval-component-slow', 'n_intervals')
 )
 def update_driver_dropdown_options(n_intervals):
-    """Updates the driver selection dropdown options."""
     logger.debug("Attempting to update driver dropdown options...")
-    options = [{'label': 'No drivers available', 'value': '', 'disabled': True}] # Default
+    options = config.DROPDOWN_NO_DRIVERS_OPTIONS # Use constant
     try:
         with app_state.app_state_lock:
-            # --- >>> READ FROM timing_state <<< ---
             timing_state_copy = app_state.timing_state.copy()
-            # logger.debug(f"Raw app_state.timing_state keys: {list(timing_state_copy.keys())}")
 
-        # Pass the timing state data to the updated helper function
-        options = utils.generate_driver_options(timing_state_copy)
+        options = utils.generate_driver_options(timing_state_copy) # This helper already uses config constants for error states
         logger.debug(f"Updating driver dropdown options: {len(options)} options generated.")
     except Exception as e:
          logger.error(f"Error generating driver dropdown options: {e}", exc_info=True)
-         options = [{'label': 'Error loading drivers', 'value': '', 'disabled': True}]
+         options = config.DROPDOWN_ERROR_LOADING_DRIVERS_OPTIONS # Use constant
     return options
-    
+
 @app.callback(
     Output('lap-time-driver-selector', 'options'),
-    Input('interval-component-slow', 'n_intervals') # Update driver list slowly
+    Input('interval-component-slow', 'n_intervals')
 )
 def update_lap_chart_driver_options(n_intervals):
-    """Updates the driver selection dropdown options for the lap chart."""
-    # This can reuse the same utility as the main driver selector if the format is suitable
-    # Or create a specific one if needed. For now, reuse.
     with app_state.app_state_lock:
         timing_state_copy = app_state.timing_state.copy()
-    
-    options = utils.generate_driver_options(timing_state_copy) # Assumes this returns list of {'label': ..., 'value': ...}
-    # Set default selected drivers - e.g., top few, or based on some logic
-    # For now, we'll let user select.
+    # utils.generate_driver_options already handles empty/error cases with config constants
+    options = utils.generate_driver_options(timing_state_copy)
     return options
 
 
 @app.callback(
     Output('lap-time-progression-graph', 'figure'),
-    Input('lap-time-driver-selector', 'value'), # Renamed to selected_drivers_for_lap_chart
+    Input('lap-time-driver-selector', 'value'),
     Input('interval-component-medium', 'n_intervals')
 )
 def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
-    fig_empty_lap_prog = create_empty_figure_with_message(
-        LAP_PROG_WRAPPER_HEIGHT, INITIAL_LAP_PROG_UIREVISION,
-        "Select drivers for lap progression", LAP_PROG_MARGINS_EMPTY
+    # Use utils.create_empty_figure_with_message and config constants
+    fig_empty_lap_prog = utils.create_empty_figure_with_message(
+        config.LAP_PROG_WRAPPER_HEIGHT, config.INITIAL_LAP_PROG_UIREVISION,
+        config.TEXT_LAP_PROG_SELECT_DRIVERS, config.LAP_PROG_MARGINS_EMPTY
     )
 
     if not selected_drivers_rnos:
@@ -1147,21 +1001,20 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
         lap_history_snapshot = {rno: list(laps) for rno, laps in app_state.lap_time_history.items()}
         timing_state_snapshot = app_state.timing_state.copy()
 
-    # Start with a layout that has the correct uirevision and properties for a data plot
     fig_with_data = go.Figure(layout={
         'template': 'plotly_dark', 'uirevision': data_plot_uirevision,
-        'height': LAP_PROG_WRAPPER_HEIGHT, 'margin': LAP_PROG_MARGINS_DATA,
+        'height': config.LAP_PROG_WRAPPER_HEIGHT, # Use constant
+        'margin': config.LAP_PROG_MARGINS_DATA, # Use constant
         'xaxis_title': 'Lap Number', 'yaxis_title': 'Lap Time (s)',
-        'hovermode': 'x unified', 'title_text':'Lap Time Progression', 'title_x':0.5, 'title_font_size':14,
+        'hovermode': 'x unified', 'title_text': 'Lap Time Progression', 'title_x':0.5, 'title_font_size':14,
         'showlegend':True, 'legend_title_text':'Drivers', 'legend_font_size':10,
-        'annotations': [] # CRITICAL: Start with no annotations for data plots
+        'annotations': []
     })
-    
-    data_actually_plotted = False # Flag to check if any traces were added
+
+    data_actually_plotted = False
     min_time_overall, max_time_overall, max_laps_overall = float('inf'), float('-inf'), 0
 
     for driver_rno in selected_drivers_rnos:
-        # ... (your existing logic for fetching tla, team_color, lap_numbers, lap_times_sec, hover_texts)
         driver_laps = lap_history_snapshot.get(driver_rno, [])
         if not driver_laps: continue
         driver_info = timing_state_snapshot.get(driver_rno, {})
@@ -1170,24 +1023,24 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
         if not team_color_hex.startswith('#'): team_color_hex = '#' + team_color_hex
         valid_laps = [lap for lap in driver_laps if lap.get('is_valid', True)]
         if not valid_laps: continue
-        
+
         data_actually_plotted = True
         lap_numbers = [lap['lap_number'] for lap in valid_laps]
         lap_times_sec = [lap['lap_time_seconds'] for lap in valid_laps]
-        
+
         if lap_numbers: max_laps_overall = max(max_laps_overall, max(lap_numbers))
         if lap_times_sec:
             min_time_overall = min(min_time_overall, min(lap_times_sec))
             max_time_overall = max(max_time_overall, max(lap_times_sec))
 
-        hover_texts = [] # Rebuild hover texts
+        hover_texts = []
         for lap in valid_laps:
             total_seconds = lap['lap_time_seconds']
             minutes = int(total_seconds // 60)
-            seconds_part = total_seconds % 60 # Use seconds_part for clarity
+            seconds_part = total_seconds % 60
             time_formatted = f"{minutes}:{seconds_part:06.3f}" if minutes > 0 else f"{seconds_part:.3f}"
             hover_texts.append(f"<b>{tla}</b><br>Lap: {lap['lap_number']}<br>Time: {time_formatted}<br>Tyre: {lap['compound']}<extra></extra>")
-        
+
         fig_with_data.add_trace(go.Scatter(
             x=lap_numbers, y=lap_times_sec, mode='lines+markers', name=tla,
             marker=dict(color=team_color_hex, size=5), line=dict(color=team_color_hex, width=1.5),
@@ -1195,58 +1048,45 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
         ))
 
     if not data_actually_plotted:
-        # If drivers were selected but no data was plotted (e.g., no valid laps for any of them)
-        # Return the standard empty figure with a message
-        fig_empty_lap_prog.layout.annotations[0].text = "No lap data for selected driver(s)."
-        # Important: The uirevision for this state should be dynamic based on selection,
-        # so it doesn't revert to the absolute initial if the selection itself changes.
-        fig_empty_lap_prog.layout.uirevision = data_plot_uirevision # Or a specific "no_data_for_selection" uirevision
+        fig_empty_lap_prog.layout.annotations[0].text = config.TEXT_LAP_PROG_NO_DATA # Use constant
+        fig_empty_lap_prog.layout.uirevision = data_plot_uirevision
         return fig_empty_lap_prog
 
-    # Configure axes for the data plot
     if min_time_overall != float('inf') and max_time_overall != float('-inf'):
         padding = (max_time_overall - min_time_overall) * 0.05 if max_time_overall > min_time_overall else 0.5
         fig_with_data.update_yaxes(visible=True, range=[min_time_overall - padding, max_time_overall + padding])
     else:
-        fig_with_data.update_yaxes(visible=False) # Hide if no valid range (should be caught by data_actually_plotted)
+        fig_with_data.update_yaxes(visible=False)
 
     if max_laps_overall > 0:
         fig_with_data.update_xaxes(visible=True, range=[0.5, max_laps_overall + 0.5])
     else:
-        fig_with_data.update_xaxes(visible=False) # Hide if no laps
+        fig_with_data.update_xaxes(visible=False)
 
     return fig_with_data
 
 
 @app.callback(
-    # Target className to hide/show
     Output("debug-data-accordion-item", "className"),
-    # "value" is True or False for dbc.Switch
     Input("debug-mode-switch", "value"),
-    # prevent_initial_call=True # Allow to run on load to set initial state
 )
 def toggle_debug_data_visibility(debug_mode_enabled):
     if debug_mode_enabled:
         logger.info("Debug mode enabled: Showing 'Other Data Streams'.")
-        # Return its normal className (or "" if no other classes)
         return "mt-1"
-        # "mt-1" was in the Accordion, so keeping it or similar.
-        # If your AccordionItem has other classes, include them here.
     else:
         logger.info("Debug mode disabled: Hiding 'Other Data Streams'.")
-        return "d-none"  # Bootstrap class to hide the element
-    
+        return "d-none"
+
 app.clientside_callback(
     ClientsideFunction(
-        namespace='clientside',  # Matches window.dash_clientside.clientside
-        function_name='animateCarMarkers'  # Matches the function name in custom_script.js
+        namespace='clientside',
+        function_name='animateCarMarkers'
     ),
-    # Still need an Output, though JS modifies in place
     Output('track-map-graph', 'figure'),
-    Input('car-positions-store', 'data'),
-    # Passes the current figure as 'existingFigure' to JS
+    [Input('car-positions-store', 'data'),
+     Input('track-map-figure-version-store', 'data')],
     State('track-map-graph', 'figure'),
-    # Passes the graph's div ID as 'graphDivId' to JS
     State('track-map-graph', 'id'),
     State('clientside-update-interval', 'interval')
 )
@@ -1256,10 +1096,9 @@ app.clientside_callback(
         namespace='clientside',
         function_name='setupTrackMapResizeListener'
     ),
-    Output('track-map-graph', 'figure', allow_duplicate=True), # Dummy output, but must exist
-    Input('track-map-graph', 'figure'), # Trigger when the figure is first set or updated
-    prevent_initial_call='initial_duplicate'# Allow to run on initial load
+    Output('track-map-graph', 'figure', allow_duplicate=True),
+    Input('track-map-graph', 'figure'),
+    prevent_initial_call='initial_duplicate'
 )
 
-# --- Final Log ---
-logger.info("Callback definitions processed.")
+logger.info("Callback definitions processed (now using constants from config.py and helpers from utils.py).")
