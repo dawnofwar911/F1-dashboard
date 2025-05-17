@@ -13,16 +13,26 @@ def create_layout():
     logger.info("Creating application layout (using constants from config.py)...")
 
     try:
-        replay.ensure_replay_dir_exists()
-        replay_file_options = replay.get_replay_files(config.REPLAY_DIR)
+        replay.ensure_replay_dir_exists() #
+        replay_file_options = replay.get_replay_files(config.REPLAY_DIR) #
     except Exception as e:
         logger.error(f"Failed to get replay files during layout creation: {e}")
         replay_file_options = []
 
     # Use TIMING_TABLE_COLUMNS_CONFIG from config.py
-    timing_table_columns = config.TIMING_TABLE_COLUMNS_CONFIG
+    timing_table_columns = config.TIMING_TABLE_COLUMNS_CONFIG #
 
     tyre_style_base = {'textAlign': 'center', 'fontWeight': 'bold', 'border': '1px solid #444'}
+
+    # <<< ADDED BEST LAP/SECTOR STYLES --- START >>>
+    # Define standard styles for personal and overall bests for readability
+    # Colors can be moved to config.py if preferred
+    PERSONAL_BEST_STYLE = {'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold'} # Green (Bootstrap success-like)
+    OVERALL_BEST_STYLE = {'backgroundColor': '#6f42c1', 'color': 'white', 'fontWeight': 'bold'}  # Purple (Bootstrap purple-like)
+    REGULAR_LAP_SECTOR_STYLE = {'backgroundColor': '#ffc107', 'color': '#343a40', 'fontWeight': 'normal'} # Bootstrap warning yellow, dark text
+    # Ensure these styles are distinct enough from tyre colors
+    # <<< ADDED BEST LAP/SECTOR STYLES --- END >>>
+
 
     stores_and_intervals = html.Div([
         dcc.Interval(id='interval-component-map-animation', interval=100, n_intervals=0),
@@ -137,19 +147,45 @@ def create_layout():
                 style_data={'borderBottom': '1px solid grey'},
                 style_data_conditional=[
                     {'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(60, 60, 60)'},
+                    # Tyre Styles
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "S " || {Tyre} = "S"'}, 'backgroundColor': '#D90000', 'color': 'white', **tyre_style_base},
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "M " || {Tyre} = "M"'}, 'backgroundColor': '#EBC000', 'color': '#383838', **tyre_style_base},
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "H " || {Tyre} = "H"'}, 'backgroundColor': '#E0E0E0', 'color': '#383838', **tyre_style_base},
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "I " || {Tyre} = "I"'}, 'backgroundColor': '#00A300', 'color': 'white', **tyre_style_base},
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "W " || {Tyre} = "W"'}, 'backgroundColor': '#0077FF', 'color': 'white', **tyre_style_base},
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} = "-"'}, 'backgroundColor': 'inherit', 'color': 'grey', 'textAlign': 'center'},
+                    
+                    # Column Specific Alignments/Widths
                     {'if': {'column_id': 'Pos'}, 'textAlign': 'center', 'fontWeight': 'bold', 'width': '35px', 'minWidth':'35px'},
                     {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '35px', 'minWidth':'35px', 'paddingRight':'2px'},
                     {'if': {'column_id': 'Car'}, 'textAlign': 'left', 'width': '45px', 'minWidth':'45px'},
                     {'if': {'column_id': 'Pits'}, 'textAlign': 'center', 'width': '45px', 'minWidth':'35px'},
-                    {'if': {'column_id': 'Time'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'}, # 'Lap Time'
+                    {'if': {'column_id': 'Time'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'}, 
                     {'if': {'column_id': 'Interval'}, 'width': '75px', 'minWidth': '65px', 'maxWidth': '80px', 'textAlign': 'right', 'paddingRight':'5px'},
                     {'if': {'column_id': 'Gap'},      'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
+                    
+                    # <<< MODIFIED/ADDED BEST LAP/SECTOR STYLES (Order: Yellow, Green, Purple) --- START >>>
+                    # Yellow for "regular" valid times (neither PB nor OB)
+                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "FALSE" && {IsOverallBestLap_Str} = "FALSE" && {Last Lap} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+                    {'if': {'column_id': 'S1', 'filter_query': '{IsPersonalBestS1_Str} = "FALSE" && {IsOverallBestS1_Str} = "FALSE" && {S1} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+                    {'if': {'column_id': 'S2', 'filter_query': '{IsPersonalBestS2_Str} = "FALSE" && {IsOverallBestS2_Str} = "FALSE" && {S2} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+                    {'if': {'column_id': 'S3', 'filter_query': '{IsPersonalBestS3_Str} = "FALSE" && {IsOverallBestS3_Str} = "FALSE" && {S3} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+
+                    # Personal Bests (Green) - if it's a PB but not an Overall Best
+                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "TRUE" && {IsOverallBestLap_Str} = "FALSE"'}, **PERSONAL_BEST_STYLE},
+                    {'if': {'column_id': 'S1', 'filter_query': '{IsPersonalBestS1_Str} = "TRUE" && {IsOverallBestS1_Str} = "FALSE"'}, **PERSONAL_BEST_STYLE},
+                    {'if': {'column_id': 'S2', 'filter_query': '{IsPersonalBestS2_Str} = "TRUE" && {IsOverallBestS2_Str} = "FALSE"'}, **PERSONAL_BEST_STYLE},
+                    {'if': {'column_id': 'S3', 'filter_query': '{IsPersonalBestS3_Str} = "TRUE" && {IsOverallBestS3_Str} = "FALSE"'}, **PERSONAL_BEST_STYLE},
+
+                    # Overall Bests (Purple) - these take precedence
+                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'Best Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'S1', 'filter_query': '{IsOverallBestS1_Str} = "TRUE"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'S2', 'filter_query': '{IsOverallBestS2_Str} = "TRUE"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'S3', 'filter_query': '{IsOverallBestS3_Str} = "TRUE"'}, **OVERALL_BEST_STYLE},
+                    # <<< MODIFIED/ADDED BEST LAP/SECTOR STYLES --- END >>>
+                    
+                    # Default styling for lap and sector times (width, alignment)
                     {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
                     {'if': {'column_id': 'Best Lap'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
                     {'if': {'column_id': 'S1'},       'width': '55px', 'minWidth': '55px', 'maxWidth': '65px', 'textAlign': 'right', 'paddingRight':'5px'},
@@ -186,27 +222,26 @@ def create_layout():
                     html.H5("Track Map", className="card-title mb-2"),
                     html.Div(
                         # Use constant for height
-                        style={'height': f'{config.TRACK_MAP_WRAPPER_HEIGHT}px', 'width': '100%'},
+                        style={'height': f'{config.TRACK_MAP_WRAPPER_HEIGHT}px', 'width': '100%'}, #
                         children=[
                             dcc.Graph(
                                 id='track-map-graph',
                                 style={'height': '100%', 'width': '100%'},
-                                figure=go.Figure(layout={ # Plotly Figure Layout
+                                figure=go.Figure(layout={ 
                                     'template': 'plotly_dark',
-                                    'uirevision': config.INITIAL_TRACK_MAP_UIREVISION,
-                                    'xaxis': {'visible': False, 'range': [0,1], 'fixedrange': True}, # Disable zoom/pan on X
-                                    'yaxis': {'visible': False, 'range': [0,1], 'scaleanchor':'x', 'scaleratio':1, 'fixedrange': True}, # Disable zoom/pan on Y
-                                    'margin': config.TRACK_MAP_MARGINS,
+                                    'uirevision': config.INITIAL_TRACK_MAP_UIREVISION, #
+                                    'xaxis': {'visible': False, 'range': [0,1], 'fixedrange': True}, 
+                                    'yaxis': {'visible': False, 'range': [0,1], 'scaleanchor':'x', 'scaleratio':1, 'fixedrange': True}, 
+                                    'margin': config.TRACK_MAP_MARGINS, #
                                     'plot_bgcolor': 'rgb(30,30,30)',
                                     'paper_bgcolor': 'rgba(0,0,0,0)',
-                                    'dragmode': False  # Correct place for dragmode in layout
+                                    'dragmode': False  
                                 }),
-                                config={ # Dash Component Config
+                                config={ 
                                     'displayModeBar': False,
-                                    'scrollZoom': False, # Redundant if axes fixedrange=True, but harmless
-                                    'autosizable': True, # Default, good to have
-                                    'responsive': True   # Default, good to have
-                                    # No 'dragmode' here
+                                    'scrollZoom': False, 
+                                    'autosizable': True, 
+                                    'responsive': True   
                                 }
                             )
                         ]
@@ -225,14 +260,14 @@ def create_layout():
                          dbc.Col(html.Label("Lap:", style={'fontSize':'0.85rem'}), width="auto",
                                  className="pe-0 align-self-center"),
                          dbc.Col(dcc.Dropdown(
-                                     id='lap-selector-dropdown', options=[], placeholder="Lap", # Basic placeholder
+                                     id='lap-selector-dropdown', options=[], placeholder="Lap", 
                                      style={'minWidth': '70px', 'color': '#333', 'fontSize':'0.85rem'},
                                      clearable=False, searchable=False, disabled=True
                                  ), className="ps-1", width=True)
                     ], className="mb-2 align-items-center g-1"),
                     html.Div(
                         # Use constant for height
-                        style={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px'},
+                        style={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px'}, #
                         children=[
                             dcc.Graph(
                                 id='telemetry-graph',
@@ -253,7 +288,7 @@ def create_layout():
                         id='driver-details-output',
                         # Use constant for height
                         style={
-                            'height': f'{config.DRIVER_DETAILS_HEIGHT}px',
+                            'height': f'{config.DRIVER_DETAILS_HEIGHT}px', #
                             'overflowY': 'auto', 'border': '1px solid #444',
                             'padding': '5px', 'fontSize': '0.8rem', 'marginTop':'10px',
                             'backgroundColor': '#2B2B2B'
@@ -277,7 +312,7 @@ def create_layout():
                 ),
                 html.Div(
                     # Use constant for height
-                    style={'height': f'{config.LAP_PROG_WRAPPER_HEIGHT}px'},
+                    style={'height': f'{config.LAP_PROG_WRAPPER_HEIGHT}px'}, #
                     children=[
                         dcc.Graph(
                             id='lap-time-progression-graph',
@@ -301,13 +336,13 @@ def create_layout():
 
     app_footer = html.Footer(
         dbc.Row([
-            dbc.Col(html.Small("F1 Dashboard", className="text-muted"), # Could be config.APP_TITLE or similar
+            dbc.Col(html.Small("F1 Dashboard", className="text-muted"), 
                     width="auto", className="me-auto align-self-center"),
             dbc.Col(
                 dbc.Switch(
                     id="debug-mode-switch",
                     label="Debug Streams",
-                    value=False, # Default debug mode to off
+                    value=False, 
                     className="form-check-inline"
                 ), width="auto", className="align-self-center"
             )
@@ -322,7 +357,7 @@ def create_layout():
         main_data_zone,
         analysis_zone,
         app_footer
-    ], fluid=True, className="dbc dbc-slate p-2") # Theme can be from config too if needed
+    ], fluid=True, className="dbc dbc-slate p-2") 
 
-    logger.info("Layout created using constants from config.py.")
+    logger.info("Layout created using constants from config.py and added best lap/sector styling.") #
     return app_layout

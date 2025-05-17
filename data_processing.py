@@ -12,10 +12,10 @@ import threading
 # Import shared state variables and lock
 import app_state
 import utils # Contains helpers
-import config # <<< ADDED: For config.CHANNEL_MAP
+import config 
 
 # Get logger
-logger = logging.getLogger("F1App.DataProcessing") # Consistent logger name
+logger = logging.getLogger("F1App.DataProcessing") 
 
 # --- Individual Stream Processing Functions ---
 
@@ -26,15 +26,15 @@ def _process_race_control(data):
         messages_payload = data.get('Messages')
         if isinstance(messages_payload, list):
             messages_to_process = messages_payload
-        elif isinstance(messages_payload, dict): # F1 feed sometimes sends a dict of messages
+        elif isinstance(messages_payload, dict): 
             messages_to_process = messages_payload.values()
         else:
             logger.warning(f"RaceControlMessages 'Messages' field was not a list or dict: {type(messages_payload)}")
             return
-    elif data: # If data is not None/empty but not the expected dict
+    elif data: 
          logger.warning(f"Unexpected RaceControlMessages format received: {type(data)}. Expected dict with 'Messages'.")
          return
-    else: # data is None or empty
+    else: 
         return
 
     new_messages_added = 0
@@ -42,12 +42,12 @@ def _process_race_control(data):
         if isinstance(msg, dict):
             try:
                 timestamp = msg.get('Utc', 'Timestamp?')
-                lap_num_str = str(msg.get('Lap', '-')) # Ensure lap is string
+                lap_num_str = str(msg.get('Lap', '-')) 
                 message_text = msg.get('Message', '')
                 time_str = "Timestamp?"
                 if isinstance(timestamp, str) and 'T' in timestamp:
-                     try: time_str = timestamp.split('T')[1].split('.')[0] # Get HH:MM:SS
-                     except: time_str = timestamp # Fallback to full timestamp if split fails
+                     try: time_str = timestamp.split('T')[1].split('.')[0] 
+                     except: time_str = timestamp 
                 log_entry = f"[{time_str} L{lap_num_str}]: {message_text}"
                 app_state.race_control_log.appendleft(log_entry)
                 new_messages_added += 1
@@ -62,13 +62,13 @@ def _process_weather_data(data):
     if isinstance(data, dict):
         if 'WeatherData' not in app_state.data_store:
             app_state.data_store['WeatherData'] = {}
-        app_state.data_store['WeatherData'].update(data) # Store the whole WeatherData payload
+        app_state.data_store['WeatherData'].update(data) 
     else:
         logger.warning(f"Unexpected WeatherData format received: {type(data)}")
 
 def _process_timing_app_data(data):
     """ Helper function to process TimingAppData stream data (contains Stint/Tyre info) """
-    if not app_state.timing_state: # Check if timing_state is initialized
+    if not app_state.timing_state: 
         return
 
     if isinstance(data, dict) and 'Lines' in data and isinstance(data['Lines'], dict):
@@ -136,12 +136,20 @@ def _process_driver_list(data):
         processed_count = len(data)
         for driver_num_str, driver_info in data.items():
             if not isinstance(driver_info, dict):
-                if driver_num_str == "_kf": continue # Official feed internal key
+                if driver_num_str == "_kf": continue 
                 else: logger.warning(f"Skipping invalid driver_info for {driver_num_str} in DriverList: {driver_info}"); continue
 
             is_new_driver = driver_num_str not in app_state.timing_state
             tla_from_stream = driver_info.get("Tla", "N/A")
 
+            default_best_lap_sector_info = {
+                "PersonalBestLapTimeValue": None, 
+                "PersonalBestLapTime": {"Value": None, "Lap": None},
+                "IsOverallBestLap": False, 
+                "PersonalBestSectors": [None, None, None], 
+                "IsOverallBestSector": [False, False, False] 
+            }
+            
             if is_new_driver:
                 app_state.timing_state[driver_num_str] = {
                     "RacingNumber": driver_info.get("RacingNumber", driver_num_str), "Tla": tla_from_stream,
@@ -153,10 +161,11 @@ def _process_driver_list(data):
                     "LastLapTime": {}, "BestLapTime": {}, "Sectors": {}, "Status": "On Track",
                     "InPit": False, "Retired": False, "Stopped": False, "PitOut": False,
                     "TyreCompound": "-", "TyreAge": "?", "IsNewTyre": False, "StintsData": {},
-                    "NumberOfPitStops": 0, "ReliablePitStops": 0, "CarData": {}, "PositionData": {}, "PreviousPositionData": {}
+                    "NumberOfPitStops": 0, "ReliablePitStops": 0, "CarData": {}, "PositionData": {}, "PreviousPositionData": {},
+                    **default_best_lap_sector_info 
                 }
                 app_state.lap_time_history[driver_num_str] = []
-                app_state.telemetry_data[driver_num_str] = {} # Initialize telemetry structure
+                app_state.telemetry_data[driver_num_str] = {} 
                 added_count += 1
             else:
                 current_driver_state = app_state.timing_state[driver_num_str]
@@ -165,9 +174,10 @@ def _process_driver_list(data):
                     current_driver_state["Tla"] = tla_from_stream
                 for key in ["RacingNumber", "FullName", "TeamName", "Line", "TeamColour", "FirstName", "LastName", "Reference", "CountryCode"]:
                      if key in driver_info and driver_info[key] is not None: current_driver_state[key] = driver_info[key]
-                # Ensure essential keys exist if updating an older state structure
+
                 default_timing_values = { "Position": "-", "Time": "-", "GapToLeader": "-", "IntervalToPositionAhead": {"Value": "-"}, "LastLapTime": {}, "BestLapTime": {}, "Sectors": {}, "Status": "On Track", "InPit": False, "Retired": False, "Stopped": False, "PitOut": False, "TyreCompound": "-", "TyreAge": "?", "IsNewTyre": False, "StintsData": {}, "NumberOfPitStops": 0, "ReliablePitStops": 0, "CarData": {}, "PositionData": {}, "PreviousPositionData": {}}
                 for key, default_val in default_timing_values.items(): current_driver_state.setdefault(key, default_val)
+                for key, default_val in default_best_lap_sector_info.items(): current_driver_state.setdefault(key, default_val) 
 
                 if driver_num_str not in app_state.lap_time_history: app_state.lap_time_history[driver_num_str] = []
                 if driver_num_str not in app_state.telemetry_data: app_state.telemetry_data[driver_num_str] = {}
@@ -184,27 +194,129 @@ def _process_timing_data(data):
         for car_num_str, line_data in data['Lines'].items():
             driver_current_state = app_state.timing_state.get(car_num_str)
             if driver_current_state and isinstance(line_data, dict):
-                prev_completed_laps = driver_current_state.get('NumberOfLaps', 0)
                 original_last_lap_time_info = driver_current_state.get('LastLapTime', {}).copy()
 
+                # Update general timing fields
                 for key in ["Position", "Time", "GapToLeader", "InPit", "Retired", "Stopped", "PitOut", "NumberOfLaps", "NumberOfPitStops"]:
                      if key in line_data: driver_current_state[key] = line_data[key]
-                for key in ["IntervalToPositionAhead", "LastLapTime", "BestLapTime"]:
+
+                # Update BestLapTime (driver's personal best)
+                if "BestLapTime" in line_data:
+                    incoming_best_lap_info = line_data["BestLapTime"]
+                    if isinstance(incoming_best_lap_info, dict) and incoming_best_lap_info.get("Value"):
+                        pb_lap_val_str = incoming_best_lap_info.get("Value")
+                        pb_lap_seconds = utils.parse_lap_time_to_seconds(pb_lap_val_str)
+                        current_pb_lap_seconds_val = driver_current_state.get("PersonalBestLapTimeValue")
+
+                        if pb_lap_seconds is not None:
+                            if current_pb_lap_seconds_val is None or pb_lap_seconds < current_pb_lap_seconds_val:
+                                driver_current_state["PersonalBestLapTimeValue"] = pb_lap_seconds
+                                driver_current_state["PersonalBestLapTime"] = incoming_best_lap_info.copy()
+                                logger.debug(f"Driver {car_num_str} new PB Lap from BestLapTime feed: {pb_lap_val_str}")
+                    
+                    # Ensure the BestLapTime structure is updated in driver_current_state
+                    if "BestLapTime" not in driver_current_state or not isinstance(driver_current_state["BestLapTime"], dict):
+                        driver_current_state["BestLapTime"] = {}
+                    if isinstance(incoming_best_lap_info, dict):
+                        driver_current_state["BestLapTime"].update(incoming_best_lap_info)
+                    else: 
+                        driver_current_state["BestLapTime"]['Value'] = incoming_best_lap_info
+                
+                # Update Interval and LastLapTime
+                for key in ["IntervalToPositionAhead", "LastLapTime"]: 
                     if key in line_data:
                         incoming_value = line_data[key]
-                        if key not in driver_current_state or not isinstance(driver_current_state[key], dict): driver_current_state[key] = {}
-                        if isinstance(incoming_value, dict): driver_current_state[key].update(incoming_value)
-                        else: driver_current_state[key]['Value'] = incoming_value # F1 feed uses 'Value' for these
-                if "Sectors" in line_data and isinstance(line_data["Sectors"], dict):
-                     if "Sectors" not in driver_current_state or not isinstance(driver_current_state["Sectors"], dict): driver_current_state["Sectors"] = {}
-                     for sector_idx, sector_data in line_data["Sectors"].items():
-                          if sector_idx not in driver_current_state["Sectors"] or not isinstance(driver_current_state["Sectors"][sector_idx], dict): driver_current_state["Sectors"][sector_idx] = {}
-                          if isinstance(sector_data, dict): driver_current_state["Sectors"][sector_idx].update(sector_data)
-                          else: driver_current_state["Sectors"][sector_idx]['Value'] = sector_data
-                if "Speeds" in line_data and isinstance(line_data["Speeds"], dict): # E.g. SpeedTrap
+                        if key not in driver_current_state or not isinstance(driver_current_state[key], dict):
+                            driver_current_state[key] = {}
+                        if isinstance(incoming_value, dict):
+                            driver_current_state[key].update(incoming_value)
+                        else: 
+                            driver_current_state[key]['Value'] = incoming_value
+
+                # --- Sector Processing with Normalization ---
+                if "Sectors" in line_data and isinstance(line_data["Sectors"], dict) or \
+                   "Sectors" not in line_data: # Process even if "Sectors" key is missing to handle resets
+                    
+                    # Ensure base structure for sectors exists for the driver
+                    if "Sectors" not in driver_current_state or not isinstance(driver_current_state["Sectors"], dict):
+                        driver_current_state["Sectors"] = {"0": {"Value": "-"}, "1": {"Value": "-"}, "2": {"Value": "-"}}
+                    
+                    incoming_sectors_data = line_data.get("Sectors", {}) # Get incoming sectors, or empty dict if none
+
+                    # Normalize and update sectors based on incoming data for the current lap
+                    # If a new lap starts, often only S1 comes, then S2, then S3.
+                    # We need to ensure that if S1 is new, S2 and S3 reflect being "not set yet" for *this current lap attempt*
+                    # This logic is tricky because the feed might not explicitly clear old S2/S3 values when S1 of a new lap posts.
+                    # For now, we'll focus on normalizing explicit empty values from the feed.
+                    # A more advanced approach might involve checking NumberOfLaps changes to reset sector values.
+
+                    for i in range(3): # Iterate 0, 1, 2 for S1, S2, S3
+                        sector_idx_str = str(i)
+                        sector_data_from_feed = incoming_sectors_data.get(sector_idx_str) # Data for this sector from current message
+
+                        # Ensure the state has a placeholder for this sector
+                        if sector_idx_str not in driver_current_state["Sectors"] or \
+                           not isinstance(driver_current_state["Sectors"][sector_idx_str], dict):
+                            driver_current_state["Sectors"][sector_idx_str] = {"Value": "-", "PersonalFastest": False, "OverallFastest": False}
+                        
+                        target_sector_state = driver_current_state["Sectors"][sector_idx_str]
+
+                        if sector_data_from_feed is not None: # If there's any data for this sector in the current message
+                            if isinstance(sector_data_from_feed, dict):
+                                target_sector_state.update(sector_data_from_feed)
+                            else: # If feed sends just a value
+                                target_sector_state['Value'] = sector_data_from_feed
+                            
+                            # Normalize after update: if Value is "" or None, set to "-"
+                            current_val = target_sector_state.get("Value")
+                            if current_val == "" or current_val is None:
+                                target_sector_state["Value"] = "-"
+                        # If sector_data_from_feed is None (sector not in current message),
+                        # its value in target_sector_state remains from previous state or its default.
+                        # If it was an old value and should now be cleared because S1 of a new lap posted,
+                        # this simple normalization won't catch it unless feed explicitly clears.
+
+                        # Ensure 'Value' key always exists, defaulting to "-"
+                        if "Value" not in target_sector_state:
+                            target_sector_state["Value"] = "-"
+
+                        # --- Process this sector for PB/OB (using normalized target_sector_state) ---
+                        sector_val_str = target_sector_state.get("Value") # Should be normalized now
+                        is_this_sector_update_a_pb = target_sector_state.get("PersonalFastest", False)
+                        # is_this_sector_update_overall_fastest = target_sector_state.get("OverallFastest", False) # Example
+
+                        if sector_val_str and sector_val_str != "-":
+                            sector_seconds = utils.parse_lap_time_to_seconds(sector_val_str)
+                            if sector_seconds is not None:
+                                # Personal Best Sector Value Update
+                                current_pb_sector_seconds_val = driver_current_state["PersonalBestSectors"][i] # i is 0,1,2
+                                if is_this_sector_update_a_pb: # Trust feed flag if present and true
+                                     if current_pb_sector_seconds_val is None or sector_seconds < current_pb_sector_seconds_val :
+                                        driver_current_state["PersonalBestSectors"][i] = sector_seconds
+                                        logger.debug(f"Driver {car_num_str} new PB S{i+1} from feed flag: {sector_val_str}")
+                                # Fallback: if numerically better, also consider it a PB for internal tracking
+                                # This is useful if feed flags are missing in replays
+                                elif current_pb_sector_seconds_val is None or sector_seconds < current_pb_sector_seconds_val:
+                                    driver_current_state["PersonalBestSectors"][i] = sector_seconds
+                                    logger.debug(f"Driver {car_num_str} new PB S{i+1} by numeric comparison: {sector_val_str}")
+
+
+                                # Overall Best Sector Value Update
+                                overall_best_s_time_from_state_val = app_state.session_bests["OverallBestSectors"][i]["Value"]
+                                is_sector_segment_valid_for_ob = True # Basic validity
+                                # (Add more sophisticated segment status checks here if data is available)
+
+                                if is_sector_segment_valid_for_ob and \
+                                   (overall_best_s_time_from_state_val is None or sector_seconds < overall_best_s_time_from_state_val):
+                                    app_state.session_bests["OverallBestSectors"][i] = {"Value": sector_seconds, "DriverNumber": car_num_str}
+                                    logger.info(f"New Overall Best S{i+1}: {sector_val_str} ({sector_seconds}s) by {car_num_str}")
+                
+                # Speeds processing
+                if "Speeds" in line_data and isinstance(line_data["Speeds"], dict): 
                      if "Speeds" not in driver_current_state or not isinstance(driver_current_state["Speeds"], dict): driver_current_state["Speeds"] = {}
                      driver_current_state["Speeds"].update(line_data["Speeds"])
 
+                # Status flags
                 status_flags = []
                 if driver_current_state.get("Retired"): status_flags.append("Retired")
                 if driver_current_state.get("InPit"): status_flags.append("In Pit")
@@ -212,35 +324,84 @@ def _process_timing_data(data):
                 if driver_current_state.get("PitOut"): status_flags.append("Out Lap")
                 if status_flags: driver_current_state["Status"] = ", ".join(status_flags)
                 elif driver_current_state.get("Position", "-") != "-": driver_current_state["Status"] = "On Track"
-
+                
+                # LastLapTime processing (Overall Best Lap and Lap History)
                 new_last_lap_time_info = driver_current_state.get('LastLapTime', {})
                 new_lap_time_str = new_last_lap_time_info.get('Value')
-                current_completed_laps = driver_current_state.get('NumberOfLaps', 0)
-                lap_number_for_this_time = current_completed_laps
+                
+                if new_lap_time_str and new_lap_time_str != original_last_lap_time_info.get('Value'): # If new lap time
+                    lap_time_seconds = utils.parse_lap_time_to_seconds(new_lap_time_str)
+                    if lap_time_seconds is not None:
+                        current_overall_best_lap_seconds_from_state_val = utils.parse_lap_time_to_seconds(app_state.session_bests["OverallBestLapTime"]["Value"])
+                        
+                        is_lap_valid_for_overall_best = not driver_current_state.get('InPit', False) and \
+                                                        not driver_current_state.get('PitOut', False) and \
+                                                        not driver_current_state.get('Stopped', False)
 
-                if new_lap_time_str and new_lap_time_str != original_last_lap_time_info.get('Value'):
-                    last_recorded_lap_num = 0
-                    if car_num_str in app_state.lap_time_history and app_state.lap_time_history[car_num_str]:
-                        last_recorded_lap_num = app_state.lap_time_history[car_num_str][-1]['lap_number']
+                        if is_lap_valid_for_overall_best and \
+                           (current_overall_best_lap_seconds_from_state_val is None or lap_time_seconds < current_overall_best_lap_seconds_from_state_val):
+                            app_state.session_bests["OverallBestLapTime"] = {"Value": new_lap_time_str, "DriverNumber": car_num_str}
+                            logger.info(f"New Overall Best Lap: {new_lap_time_str} ({lap_time_seconds}s) by {car_num_str} (valid lap conditions met)")
+                        
+                        # Lap History
+                        current_completed_laps = driver_current_state.get('NumberOfLaps', 0) # Should be accurate after general field update
+                        lap_number_for_this_time = current_completed_laps 
+                        last_recorded_lap_num = 0
+                        if car_num_str in app_state.lap_time_history and app_state.lap_time_history[car_num_str]:
+                            last_recorded_lap_num = app_state.lap_time_history[car_num_str][-1]['lap_number']
 
-                    if lap_number_for_this_time > 0 and lap_number_for_this_time > last_recorded_lap_num:
-                        lap_time_seconds = utils.parse_lap_time_to_seconds(new_lap_time_str)
-                        if lap_time_seconds is not None:
+                        if lap_number_for_this_time > 0 and lap_number_for_this_time > last_recorded_lap_num:
                             compound_for_lap = driver_current_state.get('TyreCompound', 'UNKNOWN')
                             if compound_for_lap == '-': compound_for_lap = 'UNKNOWN'
-                            is_valid_lap_time = new_last_lap_time_info.get('OverallFastest', False) or \
+                            is_valid_lap_time_for_history = new_last_lap_time_info.get('OverallFastest', False) or \
                                                 new_last_lap_time_info.get('PersonalFastest', False) or \
-                                                (not driver_current_state.get('InPit', False) and not driver_current_state.get('PitOut', False))
-
-
+                                                is_lap_valid_for_overall_best # Use the same validity
                             lap_entry = {
                                 'lap_number': lap_number_for_this_time,
                                 'lap_time_seconds': lap_time_seconds,
                                 'compound': compound_for_lap,
-                                'is_valid': is_valid_lap_time
+                                'is_valid': is_valid_lap_time_for_history
                             }
                             app_state.lap_time_history[car_num_str].append(lap_entry)
-                            logger.debug(f"Added Lap {lap_number_for_this_time} for {car_num_str}: {new_lap_time_str} ({lap_time_seconds}s) on {compound_for_lap}, Valid: {is_valid_lap_time}")
+                            logger.debug(f"Added Lap {lap_number_for_this_time} for {car_num_str}: {new_lap_time_str} ({lap_time_seconds}s) on {compound_for_lap}, ValidForHistory: {is_valid_lap_time_for_history}")
+                            
+                            # WHEN A NEW LAP IS COMPLETED, RESET SECTOR VALUES FOR THE *NEXT* LAP TO "-".
+                            # This is a more proactive way to clear them.
+                            logger.debug(f"New lap {lap_number_for_this_time} completed by {car_num_str}. Resetting displayed sector values to '-' for next lap anticipation.")
+                            for i_reset in range(3):
+                                s_idx_reset_str = str(i_reset)
+                                if s_idx_reset_str in driver_current_state["Sectors"] and isinstance(driver_current_state["Sectors"][s_idx_reset_str], dict):
+                                    driver_current_state["Sectors"][s_idx_reset_str]["Value"] = "-"
+                                    # Optionally reset PersonalFastest/OverallFastest flags for these pending sectors too
+                                    driver_current_state["Sectors"][s_idx_reset_str]["PersonalFastest"] = False
+                                    driver_current_state["Sectors"][s_idx_reset_str]["OverallFastest"] = False
+                                else: # Ensure structure exists if it was missing
+                                    driver_current_state["Sectors"][s_idx_reset_str] = {"Value": "-", "PersonalFastest": False, "OverallFastest": False}
+
+
+        # --- Post-loop updates for overall best flags on driver states ---
+        overall_best_lap_holder = app_state.session_bests["OverallBestLapTime"]["DriverNumber"]
+        overall_best_sector_holders = [
+            app_state.session_bests["OverallBestSectors"][0]["DriverNumber"],
+            app_state.session_bests["OverallBestSectors"][1]["DriverNumber"],
+            app_state.session_bests["OverallBestSectors"][2]["DriverNumber"]
+        ]
+
+        for car_num_str_check, driver_state_check in app_state.timing_state.items():
+            driver_state_check["IsOverallBestLap"] = (overall_best_lap_holder == car_num_str_check)
+            
+            current_overall_best_sectors_for_driver = [False, False, False] # Ensure it's a list
+            # Ensure IsOverallBestSector exists and is a list
+            if not isinstance(driver_state_check.get("IsOverallBestSector"), list) or len(driver_state_check.get("IsOverallBestSector")) != 3 :
+                 driver_state_check["IsOverallBestSector"] = [False, False, False] # Initialize if incorrect type/length
+
+            for i in range(3):
+                driver_state_check["IsOverallBestSector"][i] = (overall_best_sector_holders[i] == car_num_str_check)
+            # No, this line was wrong: current_overall_best_sectors_for_driver[i] = (overall_best_sector_holders[i] == car_num_str_check)
+            # driver_state_check["IsOverallBestSector"] = current_overall_best_sectors_for_driver # This was assigning a new list, not modifying in place as intended previously.
+                                                                                                # Corrected by directly assigning to driver_state_check["IsOverallBestSector"][i]
+
+            
     elif data:
          logger.warning(f"Unexpected TimingData format received: {type(data)}")
 
@@ -295,8 +456,7 @@ def _process_position_data(data):
 
 def _process_car_data(data):
     """Handles CarData."""
-    # config.CHANNEL_MAP is used here, config is imported at module level
-    if 'timing_state' not in app_state.__dict__ or not app_state.timing_state: # Added check for timing_state init
+    if 'timing_state' not in app_state.__dict__ or not app_state.timing_state: 
         logger.debug("CarData received but timing_state not ready, skipping.")
         return
 
@@ -315,24 +475,22 @@ def _process_car_data(data):
 
         for car_number, car_details in cars_data.items():
              car_number_str = str(car_number)
-             if car_number_str not in app_state.timing_state: continue # Driver might not be in list yet
+             if car_number_str not in app_state.timing_state: continue 
              if not isinstance(car_details, dict): continue
              channels = car_details.get('Channels', {})
              if not isinstance(channels, dict): continue
 
-             # Ensure CarData dict exists for the driver
              if 'CarData' not in app_state.timing_state[car_number_str]:
                  app_state.timing_state[car_number_str]['CarData'] = {}
              car_data_dict = app_state.timing_state[car_number_str]['CarData']
 
-             for channel_num_str, data_key in config.CHANNEL_MAP.items(): # Use config.CHANNEL_MAP
+             for channel_num_str, data_key in config.CHANNEL_MAP.items(): #
                  if channel_num_str in channels:
                      car_data_dict[data_key] = channels[channel_num_str]
-             car_data_dict['Utc'] = utc_time # Timestamp for this CarData update
+             car_data_dict['Utc'] = utc_time 
 
-             # --- Telemetry History Storage ---
              driver_timing_state = app_state.timing_state[car_number_str]
-             completed_laps = driver_timing_state.get('NumberOfLaps', -1) # TimingData Line
+             completed_laps = driver_timing_state.get('NumberOfLaps', -1) 
              try:
                  current_lap_num = int(completed_laps) + 1
                  if current_lap_num <= 0: current_lap_num = 1
@@ -340,21 +498,20 @@ def _process_car_data(data):
                  logger.warning(f"CarData: Cannot determine lap for Drv {car_number_str}, LapInfo='{completed_laps}'. Skip history.")
                  continue
 
-             # Ensure telemetry structure for driver and lap exists
              if car_number_str not in app_state.telemetry_data: app_state.telemetry_data[car_number_str] = {}
              if current_lap_num not in app_state.telemetry_data[car_number_str]:
                  app_state.telemetry_data[car_number_str][current_lap_num] = {
-                     'Timestamps': [], **{key: [] for key in config.CHANNEL_MAP.values()}
+                     'Timestamps': [], **{key: [] for key in config.CHANNEL_MAP.values()} #
                  }
                  logger.debug(f"Initialized telemetry storage for Drv {car_number_str}, Lap {current_lap_num}")
 
              lap_telemetry_history = app_state.telemetry_data[car_number_str][current_lap_num]
              lap_telemetry_history['Timestamps'].append(utc_time)
-             for channel_num_str, data_key in config.CHANNEL_MAP.items():
+             for channel_num_str, data_key in config.CHANNEL_MAP.items(): #
                  value = channels.get(channel_num_str)
-                 if data_key in ['RPM', 'Speed', 'Gear', 'Throttle', 'Brake', 'DRS']: # Numeric channels
+                 if data_key in ['RPM', 'Speed', 'Gear', 'Throttle', 'Brake', 'DRS']: 
                      try: value = int(value) if value is not None else None
-                     except (ValueError, TypeError): value = None # Store None if not convertible
+                     except (ValueError, TypeError): value = None 
                  lap_telemetry_history[data_key].append(value)
 
 
@@ -366,23 +523,17 @@ def _process_session_data(data):
     try:
         status_series = data.get('StatusSeries')
         if isinstance(status_series, dict):
-             for entry_key, status_info in status_series.items(): # Can be keyed by numbers like '1', '2' etc.
+             for entry_key, status_info in status_series.items(): 
                  if isinstance(status_info, dict):
                       session_status = status_info.get('SessionStatus')
                       if session_status:
                            app_state.session_details['SessionStatus'] = session_status
                            logger.info(f"Session Status Updated: {session_status}")
-        # Extract other top-level keys if they exist and are useful
-        # For example, if SessionData ever directly contained 'Path', 'ArchiveStatus', etc.
-        # for key in ['Path', 'ArchiveStatus', 'Key', 'Type', 'Name', 'Number']:
-        #    if key in data and data[key] is not None:
-        #        app_state.session_details[key] = data[key]
-        #        logger.info(f"SessionDetails updated from SessionData: {key} = {data[key]}")
 
     except Exception as e:
         logger.error(f"Error processing SessionData: {e}", exc_info=True)
 
-def _process_session_info(data): # Removed app_state argument, use imported module
+def _process_session_info(data): 
     """ Processes SessionInfo data. Starts background track data fetch if session changes."""
     if not isinstance(data, dict):
         logger.warning(f"SessionInfo non-dict: {data}"); return
@@ -404,16 +555,16 @@ def _process_session_info(data): # Removed app_state argument, use imported modu
 
         app_state.session_details['Year'] = year_str
         app_state.session_details['CircuitKey'] = circuit_key
-        app_state.session_details['SessionKey'] = new_session_key # This is the important one for track map
+        app_state.session_details['SessionKey'] = new_session_key 
         app_state.session_details['Meeting'] = meeting_info
         app_state.session_details['Circuit'] = circuit_info
         app_state.session_details['Country'] = country_info
-        app_state.session_details['Name'] = data.get('Name') # Session Name (e.g., "Practice 1", "Qualifying", "Race")
-        app_state.session_details['Type'] = data.get('Type') # Session Type (e.g., "Practice", "Sprint Qualifying", "Race")
+        app_state.session_details['Name'] = data.get('Name') 
+        app_state.session_details['Type'] = data.get('Type') 
         app_state.session_details['StartDate'] = start_date_str
         app_state.session_details['EndDate'] = data.get('EndDate')
         app_state.session_details['GmtOffset'] = data.get('GmtOffset')
-        app_state.session_details['Path'] = data.get('Path') # Official feed path for this session's data
+        app_state.session_details['Path'] = data.get('Path') 
 
         needs_fetch = False
         if new_session_key:
@@ -426,13 +577,13 @@ def _process_session_info(data): # Removed app_state argument, use imported modu
                  logger.debug(f"DataProcessing: Cache key {new_session_key} seems current. No fetch triggered by SessionInfo.")
         else:
              logger.warning(f"DataProcessing: Could not construct valid SessionKey from SessionInfo. Clearing track cache.")
-             app_state.session_details.pop('SessionKey', None) # Remove invalid/None key
-             app_state.track_coordinates_cache = app_state.INITIAL_TRACK_COORDINATES_CACHE.copy() # Reset to initial
+             app_state.session_details.pop('SessionKey', None) 
+             app_state.track_coordinates_cache = app_state.INITIAL_TRACK_COORDINATES_CACHE.copy() 
 
         if needs_fetch:
              fetch_thread = threading.Thread(
-                  target=utils._background_track_fetch_and_update,
-                  args=(new_session_key, year_str, circuit_key, app_state), # Pass app_state for lock
+                  target=utils._background_track_fetch_and_update, #
+                  args=(new_session_key, year_str, circuit_key, app_state), 
                   daemon=True
              )
              fetch_thread.start()
@@ -448,8 +599,8 @@ def _process_session_info(data): # Removed app_state argument, use imported modu
 def data_processing_loop():
     processed_count = 0
     last_log_time = time.monotonic()
-    log_interval_seconds = 15 # Could be a config constant
-    log_interval_items = 500  # Could be a config constant
+    log_interval_seconds = 15 
+    log_interval_items = 500  
     loop_counter = 0
 
     logger.info("Data processing thread started.")
@@ -459,31 +610,27 @@ def data_processing_loop():
         if app_state.stop_event.is_set():
             with app_state.app_state_lock: current_app_overall_state = app_state.app_status.get("state")
             logger.debug(f"DataProcessingLoop: stop_event is set. Current app state: {current_app_overall_state}")
-            # Allow transient stop events to be cleared by other processes
             if current_app_overall_state in ["Idle", "Initializing", "Connecting", "Live", "Replaying", "Stopping", "Stopped"]:
-                # logger.info(f"DataProcessingLoop: stop_event set, app state '{current_app_overall_state}'. Pausing briefly.")
-                time.sleep(0.75) # Brief pause
-                if not app_state.stop_event.is_set(): # Re-check
+                time.sleep(0.75) 
+                if not app_state.stop_event.is_set(): 
                     logger.info("DataProcessingLoop: stop_event was cleared. Continuing loop.")
                     continue
                 else:
                     logger.info("DataProcessingLoop: stop_event remains set after pause. Exiting data processing.")
                     break
-            else: # Error, Playback Complete, or unknown states
+            else: 
                 logger.info(f"DataProcessingLoop: stop_event set and app state ('{current_app_overall_state}') suggests stop. Exiting.")
                 break
 
         if loop_counter % 50 == 0:
              try: q_s = app_state.data_queue.qsize()
              except NotImplementedError: q_s = 'N/A'
-             # logger.debug(f"Data processing loop running (Iter {loop_counter}). Queue: {q_s}") # Less verbose
 
         current_time = time.monotonic()
         if (current_time - last_log_time > log_interval_seconds) or \
            (processed_count > 0 and processed_count % log_interval_items == 0):
             try:
                 qsize = app_state.data_queue.qsize()
-                # logger.debug(f"Data processing loop status: Processed={processed_count}, Queue Size={qsize}") # Less verbose
                 last_log_time = current_time
             except Exception as q_err:
                 logger.warning(f"Could not get queue size for periodic log: {q_err}")
@@ -508,7 +655,7 @@ def data_processing_loop():
                     if stream_name == "Heartbeat": app_state.app_status["last_heartbeat"] = timestamp
                     elif stream_name == "DriverList": _process_driver_list(actual_data)
                     elif stream_name == "TimingData": _process_timing_data(actual_data)
-                    elif stream_name == "SessionInfo": _process_session_info(actual_data) # Pass app_state implicitly
+                    elif stream_name == "SessionInfo": _process_session_info(actual_data) 
                     elif stream_name == "SessionData": _process_session_data(actual_data)
                     elif stream_name == "TimingAppData": _process_timing_app_data(actual_data)
                     elif stream_name == "TrackStatus": _process_track_status(actual_data)
@@ -516,7 +663,6 @@ def data_processing_loop():
                     elif stream_name == "Position": _process_position_data(actual_data)
                     elif stream_name == "WeatherData": _process_weather_data(actual_data)
                     elif stream_name == "RaceControlMessages": _process_race_control(actual_data)
-                    # else: logger.debug(f"No specific handler for stream: {stream_name}") # Can be verbose
                 except Exception as proc_ex:
                     logger.error(f"ERROR processing stream '{stream_name}': {proc_ex}", exc_info=True)
 
@@ -533,4 +679,4 @@ def data_processing_loop():
 
     logger.info(f"Data processing thread finished. Final app_state.stop_event status: {app_state.stop_event.is_set()}")
 
-print("DEBUG: data_processing module loaded (with config.CHANNEL_MAP usage and direct app_state access in _process_session_info)")
+print("DEBUG: data_processing module loaded (with refined best lap/sector logic)")
