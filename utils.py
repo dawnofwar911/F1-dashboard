@@ -14,19 +14,35 @@ from pathlib import Path
 import requests
 from shapely.geometry import LineString
 import numpy as np
+import plotly.graph_objects as go # <<< ADDED IMPORT
 
 # Import for F1 Schedule / Data
 try:
     import fastf1
     import pandas as pd
 except ImportError:
-    # Log error but allow app to potentially continue without FastF1 features
     logging.warning("FastF1/Pandas not found. Session info features may be limited. Install with: pip install fastf1 pandas")
     fastf1 = None
     pd = None
 
+# Import config for constants
+import config # <<< ADDED IMPORT
+
 logger = logging.getLogger("F1App.Utils")
 main_logger = logging.getLogger("F1App.Utils")
+
+def create_empty_figure_with_message(height, uirevision, message, margins):
+    """Helper to create a consistent empty figure with a message."""
+    return go.Figure(layout={
+        'template': 'plotly_dark',
+        'height': height,
+        'margin': margins,
+        'uirevision': uirevision,
+        'xaxis': {'visible': False, 'range': [0,1]},
+        'yaxis': {'visible': False, 'range': [0,1]},
+        'annotations': [{'text': message, 'xref': 'paper', 'yref': 'paper',
+                         'showarrow': False, 'font': {'size': 12}}]
+    })
 
 def parse_lap_time_to_seconds(time_str: str):
     """
@@ -36,7 +52,6 @@ def parse_lap_time_to_seconds(time_str: str):
     if not time_str or not isinstance(time_str, str) or time_str == '-':
         return None
 
-    # Check for minute:second.millisecond format
     match_min_sec_ms = re.match(r'(\d+):(\d{2})\.(\d{3})', time_str)
     if match_min_sec_ms:
         minutes = int(match_min_sec_ms.group(1))
@@ -44,20 +59,18 @@ def parse_lap_time_to_seconds(time_str: str):
         milliseconds = int(match_min_sec_ms.group(3))
         return minutes * 60 + seconds + milliseconds / 1000.0
 
-    # Check for second.millisecond format
     match_sec_ms = re.match(r'(\d+)\.(\d{3})', time_str)
     if match_sec_ms:
         seconds = int(match_sec_ms.group(1))
-        milliseconds = int(match_sec_ms.group(2))
+        milliseconds = int(match_sec_ms.group(3))
         return seconds + milliseconds / 1000.0
-    
-    # Check for just seconds (less common for lap times, but possible)
+
     match_s = re.match(r'(\d+)', time_str)
     if match_s:
         try:
-            return float(time_str) # Could be an int or float already
+            return float(time_str)
         except ValueError:
-            pass # Fall through if not a simple float
+            pass
 
     logger.warning(f"Could not parse lap time string: '{time_str}'")
     return None
@@ -68,38 +81,33 @@ def convert_utc_str_to_epoch_ms(timestamp_str):
     and returns milliseconds since epoch. Returns None if parsing fails.
     """
     if not timestamp_str or not isinstance(timestamp_str, str):
-        # logger.debug(f"convert_utc_str_to_epoch_ms: Invalid input - {timestamp_str}")
         return None
-    
-    # Assuming parse_iso_timestamp_safe is robust and handles various F1 TS formats
-    dt_object = parse_iso_timestamp_safe(timestamp_str) 
-    
+
+    dt_object = parse_iso_timestamp_safe(timestamp_str)
+
     if dt_object:
-        # Ensure it's UTC before getting timestamp
-        if dt_object.tzinfo is None: # If naive, assume it's UTC as per F1 data context
+        if dt_object.tzinfo is None:
             dt_object = dt_object.replace(tzinfo=timezone.utc)
-        else: # If timezone-aware, convert to UTC
+        else:
             dt_object = dt_object.astimezone(timezone.utc)
         return int(dt_object.timestamp() * 1000)
-    
-    # logger.warning(f"convert_utc_str_to_epoch_ms: Failed to parse '{timestamp_str}' using parse_iso_timestamp_safe.")
     return None
 
 def _fetch_track_data_for_cache(session_key, year, circuit_key):
     """Fetches track data from API. Returns a dict for the cache or None on failure."""
-    # Ensure year and circuit_key are usable strings for the URL
     if not year or not circuit_key:
         main_logger.error(
             f"Fetch Helper: Invalid year or circuit key ({year}, {circuit_key})")
-        return None  # Return None to indicate failure
+        return None
 
-    api_url = f"https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
+    # Use constant from config.py
+    api_url = config.MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE.format(circuit_key=circuit_key, year=year)
     main_logger.info(f"Fetch Helper: API fetch initiated for: {api_url}")
     track_x_coords, track_y_coords, track_linestring_obj, x_range, y_range = [
         None]*5
     try:
         response = requests.get(
-            api_url, headers={'User-Agent': 'F1-Dash/0.4'}, timeout=15, verify=False)
+            api_url, headers={'User-Agent': config.MULTIVIEWER_API_USER_AGENT}, timeout=config.REQUESTS_TIMEOUT_SECONDS, verify=False)
         response.raise_for_status()
         map_api_data = response.json()
         temp_x_api = [float(p) for p in map_api_data.get('x', [])]
@@ -123,29 +131,23 @@ def _fetch_track_data_for_cache(session_key, year, circuit_key):
             main_logger.warning(
                 f"Fetch Helper: API {session_key} no valid x/y.")
     except Exception as e_api:
-        # Keep log concise
         main_logger.error(
             f"Fetch Helper: API FAILED for {session_key}: {e_api}", exc_info=False)
 
-    # Return results in a dictionary matching cache structure
     cache_update_data = {
         'session_key': session_key, 'x': track_x_coords, 'y': track_y_coords,
         'linestring': track_linestring_obj, 'range_x': x_range, 'range_y': y_range
     }
-    # Log what we are returning
     ls_type = type(cache_update_data.get('linestring')).__name__
     main_logger.debug(
         f"Fetch Helper: Returning data. Linestring Type={ls_type}, X is None: {track_x_coords is None}")
     return cache_update_data
 
-# --- Target function for the background fetch thread ---
 def _background_track_fetch_and_update(session_key, year, circuit_key, app_state):
     """Runs fetch in background and updates cache under lock."""
     fetched_data = _fetch_track_data_for_cache(session_key, year, circuit_key)
-    # Only update cache if fetch returned data (even if partial/None values)
     if fetched_data:
-        with app_state.app_state_lock:  # Acquire lock ONLY for cache update
-            # Check if session key hasn't changed AGAIN since fetch started
+        with app_state.app_state_lock:
             current_session_in_state = app_state.session_details.get(
                 'SessionKey')
             if current_session_in_state == session_key:
@@ -163,46 +165,35 @@ def _background_track_fetch_and_update(session_key, year, circuit_key, app_state
         main_logger.error(
             f"Background Fetch: Fetch helper failed for {session_key}. Cache not updated.")
 
-# --- Filename Sanitization ---
 def sanitize_filename(name):
     """Removes/replaces characters unsuitable for filenames."""
     if not name: return "Unknown"
     name = str(name).strip()
-    # Replace spaces and various invalid characters with underscores
     name = re.sub(r'[\\/:*?"<>|\s\-\:\.,\(\)]+', '_', name)
-    # Remove any remaining non-alphanumeric or non-underscore characters
     name = re.sub(r'[^\w_]+', '', name)
-    # Consolidate multiple underscores
     name = re.sub(r'_+', '_', name)
-    # Remove leading/trailing underscores
     name = name.strip('_')
     return name if name else "InvalidName"
 
-# --- Data Decoding ---
 def _decode_and_decompress(encoded_data):
     """Decodes base64 encoded and zlib decompressed data (message payload)."""
     if not encoded_data or not isinstance(encoded_data, str):
-        # logger.warning(f"decode_and_decompress received non-string or empty data: type {type(encoded_data)}")
         return None
 
     try:
-        # Add padding if necessary
         missing_padding = len(encoded_data) % 4
         if missing_padding:
             encoded_data += '=' * (4 - missing_padding)
         decoded_data = base64.b64decode(encoded_data)
-        # Use -zlib.MAX_WBITS for raw deflate data
         decompressed_data = zlib.decompress(decoded_data, -zlib.MAX_WBITS)
         return json.loads(decompressed_data.decode('utf-8'))
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error after decompression: {e}. Data sample: {decompressed_data[:100]}...", exc_info=False)
         return None
     except Exception as e:
-        # Log less verbosely, include only first part of encoded data
         logger.error(f"Decode/Decompress error: {e}. Data: {str(encoded_data)[:50]}...", exc_info=False)
         return None
 
-# --- Timestamp Parsing ---
 def parse_iso_timestamp_safe(timestamp_str, line_num_for_log="?"):
     """
     Safely parses an ISO timestamp string, replacing 'Z', padding/truncating
@@ -212,13 +203,12 @@ def parse_iso_timestamp_safe(timestamp_str, line_num_for_log="?"):
     if not timestamp_str or not isinstance(timestamp_str, str):
         return None
 
-    cleaned_ts = timestamp_str # Initialize with original
-    timestamp_to_parse = cleaned_ts # Initialize
+    cleaned_ts = timestamp_str
+    timestamp_to_parse = cleaned_ts
 
     try:
-        # Always replace 'Z' first
         cleaned_ts = timestamp_str.replace('Z', '+00:00')
-        timestamp_to_parse = cleaned_ts  # Default if no fractional part
+        timestamp_to_parse = cleaned_ts
 
         if '.' in cleaned_ts:
             parts = cleaned_ts.split('.', 1)
@@ -226,7 +216,6 @@ def parse_iso_timestamp_safe(timestamp_str, line_num_for_log="?"):
             fractional_part_full = parts[1]
             offset_part = ''
 
-            # Split fractional part from timezone offset
             if '+' in fractional_part_full:
                 frac_parts = fractional_part_full.split('+', 1)
                 fractional_part = frac_parts[0]
@@ -235,27 +224,20 @@ def parse_iso_timestamp_safe(timestamp_str, line_num_for_log="?"):
                 frac_parts = fractional_part_full.split('-', 1)
                 fractional_part = frac_parts[0]
                 offset_part = '-' + frac_parts[1]
-            else: # Assume UTC offset if Z was replaced or no offset present
+            else:
                 fractional_part = fractional_part_full
-                # If original didn't end with Z and had no offset, this might be wrong
-                # but fromisoformat needs an offset. Assume UTC if missing.
                 if '+00:00' not in timestamp_to_parse:
-                     offset_part = '+00:00' # Assume UTC if Z wasn't there and no offset
+                     offset_part = '+00:00'
 
 
-            # Pad/truncate fractional part to exactly 6 digits
             fractional_part_padded = f"{fractional_part:<06s}"[:6]
-
-            # Reassemble the string
             timestamp_to_parse = f"{integer_part}.{fractional_part_padded}{offset_part}"
 
-        # Attempt parsing the potentially modified string
         parsed_dt = datetime.datetime.fromisoformat(timestamp_to_parse)
-        # Ensure timezone is UTC if offset was +00:00
         if parsed_dt.tzinfo == datetime.timezone.utc or parsed_dt.tzinfo is None:
-             return parsed_dt.replace(tzinfo=timezone.utc) # Standardize to UTC object
+             return parsed_dt.replace(tzinfo=timezone.utc)
         else:
-             return parsed_dt # Return with original offset if not UTC
+             return parsed_dt
 
     except ValueError as e:
         logger.warning(f"Timestamp format error line {line_num_for_log}: Original='{timestamp_str}', ParsedAttempt='{timestamp_to_parse}'. Err: {e}")
@@ -264,8 +246,6 @@ def parse_iso_timestamp_safe(timestamp_str, line_num_for_log="?"):
         logger.error(f"Unexpected error parsing timestamp line {line_num_for_log}: Original='{timestamp_str}'. Err: {e}", exc_info=True)
         return None
 
-
-# --- FastF1 Session Info ---
 def get_current_or_next_session_info():
     """
     Uses FastF1 to find the currently ongoing session (if started recently)
@@ -277,10 +257,9 @@ def get_current_or_next_session_info():
         return None, None
 
     try:
-        # Cache setup for FastF1 (optional but recommended)
-        # Ensure cache dir exists, handle potential errors
         try:
-            cache_dir = Path("./ff1_cache").resolve() # Example cache location
+            # Use constant from config.py for cache_dir
+            cache_dir = config.FASTF1_CACHE_DIR.resolve()
             cache_dir.mkdir(parents=True, exist_ok=True)
             fastf1.Cache.enable_cache(cache_dir)
             logger.debug(f"FastF1 Cache enabled at: {cache_dir}")
@@ -298,13 +277,12 @@ def get_current_or_next_session_info():
         next_future_session = {'date': pd.Timestamp.max.tz_localize('UTC'), 'event_name': None, 'session_name': None}
 
         for index, event in schedule.iterrows():
-            for i in range(1, 6): # Session1 to Session5
+            for i in range(1, 6):
                 session_date_col = f'Session{i}DateUtc'
                 session_name_col = f'Session{i}'
 
                 if session_date_col in event and pd.notna(event[session_date_col]):
                     session_date = event[session_date_col]
-                    # Ensure tz-aware
                     if not isinstance(session_date, pd.Timestamp):
                          try: session_date = pd.Timestamp(session_date)
                          except: logger.warning(f"Could not parse date: {event[session_date_col]}"); continue
@@ -312,14 +290,14 @@ def get_current_or_next_session_info():
                     if session_date.tzinfo is None:
                          session_date = session_date.tz_localize('UTC')
 
-                    if session_date > now: # Future
+                    if session_date > now:
                         if session_date < next_future_session['date']:
                             next_future_session.update({
                                 'date': session_date,
                                 'event_name': event.get('EventName'),
                                 'session_name': event.get(session_name_col)
                             })
-                    elif session_date <= now: # Past or Current start time
+                    elif session_date <= now:
                         if session_date > last_past_session['date']:
                             last_past_session.update({
                                 'date': session_date,
@@ -327,8 +305,7 @@ def get_current_or_next_session_info():
                                 'session_name': event.get(session_name_col)
                             })
 
-        # Decision Logic
-        ongoing_window = pd.Timedelta(hours=3) # Consider session ongoing if started within 3 hours
+        ongoing_window = pd.Timedelta(hours=3)
         if last_past_session.get('event_name') and (now - last_past_session.get('date', now)) <= ongoing_window:
             logger.info(f"FastF1: Using ongoing session: {last_past_session['event_name']} - {last_past_session['session_name']}")
             return last_past_session['event_name'], last_past_session['session_name']
@@ -343,31 +320,27 @@ def get_current_or_next_session_info():
         logger.error(f"FastF1 Error getting session info: {e}", exc_info=True)
         return None, None
 
-# --- Nested Dictionary Access ---
 def get_nested_state(d, *keys, default=None):
     """Safely accesses nested dictionary keys."""
     val = d
     for key in keys:
         if isinstance(val, dict):
             val = val.get(key)
-        elif isinstance(val, list): # Allow integer index access for lists
+        elif isinstance(val, list):
              try:
                   key_int = int(key)
                   if 0 <= key_int < len(val):
                        val = val[key_int]
                   else:
-                       return default # Index out of bounds
+                       return default
              except (ValueError, TypeError):
-                  return default # Key wasn't a valid integer for list index
+                  return default
         else:
-            # Not a dict or list, cannot go deeper
             return default
-        if val is None: # Stop if None is encountered at any level
+        if val is None:
              return default
     return val
 
-
-# --- Data Table Sorting ---
 def pos_sort_key(item):
     """Sort key function for DataTable position column."""
     pos_str = item.get('Pos', '999')
@@ -375,57 +348,52 @@ def pos_sort_key(item):
     if isinstance(pos_str, str) and pos_str.isdigit():
         try: return int(pos_str)
         except ValueError: return 999
-    return 999 # Place non-numeric (OUT, "", etc.) at the end
-    
-def generate_driver_options(timing_state_dict): # Changed argument name for clarity
+    return 999
+
+def generate_driver_options(timing_state_dict):
     """Generates list of options for driver dropdowns from timing_state."""
     options = []
     logger.debug(f"Generating driver options from timing_state keys: {list(timing_state_dict.keys())}")
 
     if not timing_state_dict or not isinstance(timing_state_dict, dict):
         logger.warning("generate_driver_options received empty or invalid timing_state.")
-        return [{'label': 'No drivers available', 'value': '', 'disabled': True}]
+        # Use constant from config.py
+        return config.DROPDOWN_NO_DRIVERS_OPTIONS
 
     driver_list_for_sorting = []
-    # Extract necessary info for sorting and display first
     for driver_num, driver_data in timing_state_dict.items():
-        if isinstance(driver_data, dict): # Basic check
+        if isinstance(driver_data, dict):
              driver_list_for_sorting.append({
-                 'value': driver_num, # The key is the value for the dropdown
+                 'value': driver_num,
                  'number': driver_data.get('RacingNumber', 'N/A'),
                  'tla': driver_data.get('Tla', '???'),
                  'name': driver_data.get('FullName', 'Unknown Driver')
              })
 
-    # Sort by racing number numerically
     def sort_key(item):
         try: return int(item.get('number', 999))
         except (ValueError, TypeError): return 999
 
     sorted_drivers = sorted(driver_list_for_sorting, key=sort_key)
 
-    # Create options list
     for driver in sorted_drivers:
         label = f"{driver['tla']} (#{driver['number']}) - {driver['name']}"
         options.append({'label': label, 'value': driver['value']})
 
-    if not options: # Handle case where processing failed or no valid drivers found
-         return [{'label': 'No drivers processed', 'value': '', 'disabled': True}]
+    if not options:
+        # Use constant from config.py
+         return config.DROPDOWN_NO_DRIVERS_PROCESSED_OPTIONS
 
     return options
 
-
-# --- Logging Filter ---
 class RecordDataFilter(logging.Filter):
     """Logging filter to control recording based on app_state."""
     def filter(self, record):
-        # Assuming app_state is imported and accessible
         try:
-            import app_state # Import here to avoid circular dependencies at module level
-            # Only allow the record to pass if recording is active
+            import app_state
             return app_state.is_saving_active
         except ImportError:
-            return False # Cannot record if app_state isn't available
+            return False
 
 
-print("DEBUG: utils module loaded")
+print("DEBUG: utils module loaded (with create_empty_figure helper and config usage)")

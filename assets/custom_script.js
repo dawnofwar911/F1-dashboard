@@ -4,283 +4,221 @@ if (!window.dash_clientside) { window.dash_clientside = {}; }
 
 window.dash_clientside.clientside = {
     plotlyReactedMap: {},
-    // Flag to indicate a resize just happened
-    _trackMapResizedRecently: false, 
+    _trackMapResizedRecently: false,
     _resizeTimeoutId: null,
+    _trackMapResizeObserver: null,
 
-    animateCarMarkers: function (newCarData, existingFigure, graphDivId, updateIntervalDuration) {
-        console.log("[JS animateCarMarkers] Triggered. Python uirevision:", existingFigure?.layout?.uirevision, 
-                    "JS Cache uirevision:", window.dash_clientside.clientside.plotlyReactedMap[graphDivId]);
-        console.log("[JS animateCarMarkers] newCarData:", newCarData); // Log incoming newCarData
+    animateCarMarkers: function (newCarData, trackMapVersion, existingFigure, graphDivId, updateIntervalDuration) {
+        // trackMapVersion is new. Its change signifies initialize_track_map (Python) has outputted a new figure.
+        // When this happens, existingFigure should be the very latest.
+
+        // console.log(`[JS animateCarMarkers] Version: ${trackMapVersion}, Python uirevision: ${existingFigure?.layout?.uirevision}, JS Cache uirevision: ${window.dash_clientside.clientside.plotlyReactedMap[graphDivId]}`);
+        // console.log("[JS animateCarMarkers] newCarData:", newCarData);
 
         const gd = document.getElementById(graphDivId);
         if (!gd) {
-            console.warn("[JS animateCarMarkers] Graph div not found:", graphDivId);
+            // console.warn("[JS animateCarMarkers] Graph div not found:", graphDivId);
+            return window.dash_clientside.no_update;
+        }
+         if (!existingFigure) { // If existingFigure is null from the start
+            // console.warn("[JS animateCarMarkers] existingFigure is null. Cannot proceed.");
             return window.dash_clientside.no_update;
         }
 
-        const currentUiRevision = existingFigure?.layout?.uirevision;
+
+        const currentUiRevision = existingFigure.layout?.uirevision; // Use optional chaining
         const reactedUiRevision = window.dash_clientside.clientside.plotlyReactedMap[graphDivId];
 
-        // Condition to call Plotly.react:
-        // - currentUiRevision must exist.
-        // - currentUiRevision must be different from what JS last fully rendered.
-        // - existingFigure.layout must exist (as Plotly.react needs it).
-        if (currentUiRevision && reactedUiRevision !== currentUiRevision && existingFigure?.layout) {
-            console.log("[JS animateCarMarkers] Uirevision changed OR first load with uirevision. Python:", currentUiRevision, "JS Cache:", reactedUiRevision);
-            console.log("[JS animateCarMarkers] Attempting Plotly.react. existingFigure.data:", existingFigure.data); // Log what data is
-            
+        // --- Full Redraw Logic (Plotly.react) ---
+        if (currentUiRevision && reactedUiRevision !== currentUiRevision && existingFigure.layout && existingFigure.data) {
+            console.log(`[JS animateCarMarkers] Uirevision changed. Python: ${currentUiRevision}, JS Cache: ${reactedUiRevision}. Calling Plotly.react.`);
             try {
-                // Use existingFigure.data directly. For an empty map from Python (go.Figure with no traces), 
-                // existingFigure.data should serialize to an empty array [].
-                Plotly.react(gd, existingFigure.data, existingFigure.layout, existingFigure.config); 
-                
+                Plotly.react(gd, existingFigure.data, existingFigure.layout, existingFigure.config || {});
                 window.dash_clientside.clientside.plotlyReactedMap[graphDivId] = currentUiRevision;
-                console.log("[JS animateCarMarkers] Plotly.react call successful. Updated JS reactedUiRevision cache to:", currentUiRevision);
-
-                // For debugging: Log structure after react
-                const postReactGd = document.getElementById(graphDivId);
-                console.log("[JS animateCarMarkers] gd.data after Plotly.react (trace count):", postReactGd.data ? postReactGd.data.length : 'undefined');
-                if (postReactGd.data && postReactGd.data.length === 0) {
-                     console.log("[JS animateCarMarkers] Map appears empty after react (0 data traces). Annotation should be visible.");
-                }
-
+                console.log(`[JS animateCarMarkers] Plotly.react successful. Updated JS reactedUiRevision to: ${currentUiRevision}`);
             } catch (e) {
-                console.error('[JS animateCarMarkers] Error during Plotly.react:', e, 'Figure data:', existingFigure.data, 'Figure layout:', existingFigure.layout);
-                return window.dash_clientside.no_update; 
+                console.error('[JS animateCarMarkers] Error during Plotly.react:', e, 'Figure:', JSON.parse(JSON.stringify(existingFigure)));
+                return window.dash_clientside.no_update;
             }
-        } else {
-            if (!currentUiRevision) console.log("[JS animateCarMarkers] Plotly.react NOT called: currentUiRevision is missing.");
-            else if (reactedUiRevision === currentUiRevision) console.log("[JS animateCarMarkers] Plotly.react NOT called: uirevision from Python matches JS cache.");
-            else if (!existingFigure?.layout) console.log("[JS animateCarMarkers] Plotly.react NOT called: existingFigure.layout is missing.");
         }
-        
+        // --- End Full Redraw Logic ---
+
+        // --- Handle Reset Signal ---
         if (newCarData && newCarData.status === 'reset_map_display') {
-            console.log("[JS animateCarMarkers] Received 'reset_map_display' signal. Map should have been reset by Plotly.react if uirevision changed. Skipping car animation.");
-            return window.dash_clientside.no_update; // Don't try to animate with this signal data
+            console.log("[JS animateCarMarkers] 'reset_map_display' signal. Map should be reset by uirevision change & Plotly.react. No further animation.");
+            return window.dash_clientside.no_update; // Figure was already set by Python Output or Plotly.react
         }
 
-        // --- Animation/Restyle Logic ---
-        // This part should only run if the map has traces for cars
-        
-        if (!newCarData || Object.keys(newCarData).length === 0) {
-            // console.log("[JS animateCarMarkers] No newCarData to animate.");
+        // --- Animation/Restyle Logic for Car Markers ---
+        if (!newCarData || Object.keys(newCarData).length === 0 || (newCarData && newCarData.status)) {
             return window.dash_clientside.no_update;
         }
-        
-        const currentGraphData = gd.data;
-        if (!currentGraphData && Object.keys(newCarData).length > 0 ) { // if gd.data is null/undefined but we have car data, something is wrong after react
-             console.warn("[JS animateCarMarkers] gd.data is null/undefined after react block, but received newCarData. Aborting animation for this cycle.");
-             return window.dash_clientside.no_update;
-        };
-        
-        const dataArray = gd.data || gd._fullData; // Use DOM's current data
-        if (!dataArray || !Array.isArray(dataArray) || dataArray.length === 0) {
-            console.warn("[JS animateCarMarkers] dataArray from gd.data is empty or invalid before building uidToTraceIndex.");
+
+        const currentGraphTraces = gd.data || gd._fullData || existingFigure.data;
+        if (!currentGraphTraces || !Array.isArray(currentGraphTraces) || currentGraphTraces.length === 0) {
+            // console.warn("[JS animateCarMarkers] Graph has no data traces for animation.");
             return window.dash_clientside.no_update;
         }
 
         let uidToTraceIndex = {};
-        let foundUids = false;
-        dataArray.forEach((trace, index) => {
-            if (typeof trace === 'object' && trace !== null && trace.uid) {
+        let carTracesExist = false;
+        currentGraphTraces.forEach((trace, index) => {
+            if (index > 0 && trace && typeof trace.uid !== 'undefined') { // Assuming trace 0 is track
                 uidToTraceIndex[trace.uid] = index;
-                foundUids = true;
+                carTracesExist = true;
             }
         });
 
-        if (!foundUids) {
-            console.warn('No traces with UIDs found.');
+        if (!carTracesExist && Object.keys(newCarData).some(key => key !== 'status' && key !== 'timestamp')) {
+            // console.warn("[JS animateCarMarkers] No car traces with UIDs in graph, but received car data.");
             return window.dash_clientside.no_update;
         }
-        
-        if (gd.layout && (gd.layout.dragmode !== false || gd.layout.xaxis.fixedrange !== true)) {
-            console.log("Forcing layout changes to disable zoom/pan via JS");
-            Plotly.relayout(graphDivId, {
-                'dragmode': false,
-                'xaxis.fixedrange': true, // Disables zoom/pan on x-axis
-                'yaxis.fixedrange': true,  // Disables zoom/pan on y-axis
-                'modebar': false, 'autosizable': true, 'responsive': true
-            });
+        if (!carTracesExist) {
+             return window.dash_clientside.no_update;
         }
 
-        // --- Prepare data updates (common for both methods) ---
-        let traceIndicesToUpdate = [];
-        let restyle_x = [];
-        let restyle_y = [];
-        let restyle_text = [];
-        let restyle_marker_color = [];
-        let restyle_marker_opacity = [];
-        let restyle_textfont_color = []; // <<< To hold text colors for restyle
+        let traceIndicesForPlotly = [];
+        let restyleData = { x: [], y: [], text: [], 'marker.color': [], 'marker.opacity': [], 'textfont.color': [] };
+        let animateFrames = [];
+        let carsProcessedCount = 0;
 
-        // For animate:
-        let animateDataUpdates = [];
-
-
-        for (const racingNumber in newCarData) {
-            const car = newCarData[racingNumber];
-            const traceIndex = uidToTraceIndex[racingNumber];
+        for (const carUID in newCarData) {
+            if (carUID === 'status' || carUID === 'timestamp') continue;
+            const carInfo = newCarData[carUID];
+            const traceIndex = uidToTraceIndex[carUID];
 
             if (traceIndex !== undefined) {
-                if (typeof car.x !== 'number' || typeof car.y !== 'number' || isNaN(car.x) || isNaN(car.y)) {
-                    console.error(`Invalid coordinates for Car ${racingNumber}! Skipping.`);
-                    continue;
-                }
-                
-                const tla = (typeof car.tla === 'string' && car.tla.trim() !== '') ? car.tla : racingNumber.toString();
-                const markerColor = (typeof car.color === 'string' && car.color.startsWith('#') && (car.color.length === 7 || car.color.length === 4)) ? car.color : '#808080';
-                
-                const car_status_string = (typeof car.status === 'string') ? car.status.toLowerCase() : ""; // Ensure lowercase and defined
-                
-                const isRetired = car_status_string.includes('retired');
-                const isInPit = car_status_string.includes('pit');
-                const isStopped = car_status_string.includes('stopped');
-                
-                const isDimmed = isRetired || isInPit || isStopped;
-                const markerOpacityValue = isDimmed ? 0.3 : 1.0;
+                carsProcessedCount++;
+                traceIndicesForPlotly.push(traceIndex);
+                const tla = (typeof carInfo.tla === 'string' && carInfo.tla.trim() !== '') ? carInfo.tla : carUID.toString();
+                const markerColor = (typeof carInfo.color === 'string' && carInfo.color.startsWith('#')) ? carInfo.color : '#808080';
+                const carStatus = (typeof carInfo.status === 'string') ? carInfo.status.toLowerCase() : "";
+                const isDimmed = carStatus.includes('retired') || carStatus.includes('pit') || carStatus.includes('stopped');
+                const markerOpacity = isDimmed ? 0.3 : 1.0;
+                const textFontColor = `rgba(255, 255, 255, ${isDimmed ? 0.35 : 1.0})`;
 
-                const textBaseRgb = "255, 255, 255"; // Assuming base text is white (R, G, B)
-                const textAlpha = isDimmed ? 0.35 : 1.0;    // Text alpha (opacity)
-                const textFontColorValue = `rgba(${textBaseRgb}, ${textAlpha})`;
+                restyleData.x.push(typeof carInfo.x === 'number' ? [carInfo.x] : [null]);
+                restyleData.y.push(typeof carInfo.y === 'number' ? [carInfo.y] : [null]);
+                restyleData.text.push([tla]);
+                restyleData['marker.color'].push(markerColor);
+                restyleData['marker.opacity'].push(markerOpacity);
+                restyleData['textfont.color'].push(textFontColor);
 
-
-                // Data for restyle
-                restyle_x.push([car.x]);
-                restyle_y.push([car.y]);
-                restyle_text.push([tla]);
-                restyle_marker_color.push(markerColor);
-                restyle_marker_opacity.push(markerOpacityValue);
-                restyle_textfont_color.push(textFontColorValue); // <<< ADDED
-
-                // Data for animate (needs to be structured per trace)
-                let singleAnimateTraceUpdate = {
-                    x: [car.x], // Your correction: single array for direct update
-                    y: [car.y],
+                animateFrames.push({
+                    x: typeof carInfo.x === 'number' ? [carInfo.x] : [null],
+                    y: typeof carInfo.y === 'number' ? [carInfo.y] : [null],
                     text: [tla],
-                    marker: { 
-                        color: markerColor,
-                        opacity: markerOpacityValue,
-                    },
-                    textfont: { // <<< ADDED
-                        color: textFontColorValue
-                    }
-                };
-                animateDataUpdates.push(singleAnimateTraceUpdate);
-
-                traceIndicesToUpdate.push(traceIndex);
+                    marker: { color: markerColor, opacity: markerOpacity },
+                    textfont: { color: textFontColor }
+                });
             }
         }
+        
+        currentGraphTraces.forEach((trace, index) => {
+            if (index > 0 && trace && typeof trace.uid !== 'undefined') {
+                if (!newCarData[trace.uid]) { 
+                    if (!traceIndicesForPlotly.includes(index)) {
+                        carsProcessedCount++;
+                        traceIndicesForPlotly.push(index);
+                        restyleData.x.push([null]);
+                        restyleData.y.push([null]);
+                        restyleData.text.push(['']);
+                        restyleData['marker.color'].push('#333333');
+                        restyleData['marker.opacity'].push(0.1);
+                        restyleData['textfont.color'].push('rgba(255,255,255,0.1)');
+                        animateFrames.push({
+                            x: [null], y: [null], text: [''],
+                            marker: { color: '#333333', opacity: 0.1 },
+                            textfont: { color: 'rgba(255,255,255,0.1)' }
+                        });
+                    }
+                }
+            }
+        });
 
-        if (traceIndicesToUpdate.length === 0) {
+        if (carsProcessedCount === 0) {
             return window.dash_clientside.no_update;
         }
 
-        // --- Conditional animation logic ---
-        const DURATION_THRESHOLD_MS = 600; // If update interval is longer than this, use Plotly.animate
-        const finalRestylePayload = {
-            x: restyle_x,
-            y: restyle_y,
-            text: restyle_text,
-            'marker.color': restyle_marker_color,
-            'marker.opacity': restyle_marker_opacity,
-            'textfont.color': restyle_textfont_color // <<< ADDED
-        };
-        
-        let animationDuration = 0; 
+        const DURATION_THRESHOLD_MS = 600;
+        let animationDuration = 0;
         if (window.dash_clientside.clientside._trackMapResizedRecently) {
             animationDuration = 0;
-            // console.log("animateCarMarkers: Snapping due to recent resize.");
-            // Reset the flag after using it for one update cycle
-            // Use a timeout to ensure it's reset after this update might have processed
             if(window.dash_clientside.clientside._resizeTimeoutId) {
                 clearTimeout(window.dash_clientside.clientside._resizeTimeoutId);
             }
             window.dash_clientside.clientside._resizeTimeoutId = setTimeout(() => {
                 window.dash_clientside.clientside._trackMapResizedRecently = false;
-            }, 100); // Reset after a short delay
+            }, 100);
         } else if (updateIntervalDuration && updateIntervalDuration > DURATION_THRESHOLD_MS) {
-            animationDuration = Math.max(50, updateIntervalDuration * 0.90); 
-        } else if (updateIntervalDuration) { 
-            animationDuration = Math.min(50, updateIntervalDuration * 0.5); 
-        }
-        
-        const dataArrayForAnimation = gd.data || gd._fullData;
-        console.log("JS: gd.data before animation/restyle (trace count):", dataArrayForAnimation ? dataArrayForAnimation.length : 'undefined');
-        if (dataArrayForAnimation && dataArrayForAnimation.length > 0) {
-    console.log("JS: First trace name before animation/restyle:", dataArrayForAnimation[0]?.name); // e.g., "Track" or car TLA
+            animationDuration = Math.max(50, updateIntervalDuration * 0.90);
+        } else if (updateIntervalDuration) {
+            animationDuration = Math.min(50, updateIntervalDuration * 0.5);
+            if (animationDuration < 20) animationDuration = 0;
         }
 
         if (animationDuration > 0) {
             try {
-                Plotly.animate(gd, 
-                    { data: animateDataUpdates, traces: traceIndicesToUpdate }, 
-                    {
-                        transition: { duration: animationDuration, easing: 'linear' },
-                        frame: { duration: animationDuration, redraw: false }
-                    }
-                );
-            } catch (e) { console.error('Error during Plotly.animate:', e); }
-        } else { 
+                Plotly.animate(gd, { data: animateFrames, traces: traceIndicesForPlotly }, {
+                    transition: { duration: animationDuration, easing: 'linear' },
+                    frame: { duration: animationDuration, redraw: false }
+                });
+            } catch (e) { console.error('[JS animateCarMarkers] Error during Plotly.animate:', e); }
+        } else {
             try {
-                Plotly.restyle(gd, finalRestylePayload, traceIndicesToUpdate);
-            } catch (e) { console.error('Error during Plotly.restyle:', e); }
+                // Filter restyleData to only include data for traces actually being updated in this call
+                const finalRestyleData = {};
+                Object.keys(restyleData).forEach(key => {
+                    finalRestyleData[key] = [];
+                });
+
+                for(let i=0; i < traceIndicesForPlotly.length; i++) {
+                    Object.keys(restyleData).forEach(key => {
+                        finalRestyleData[key].push(restyleData[key][i]);
+                    });
+                }
+                Plotly.restyle(gd, finalRestyleData, traceIndicesForPlotly);
+            } catch (e) { console.error('[JS animateCarMarkers] Error during Plotly.restyle:', e); }
         }
         return window.dash_clientside.no_update;
     },
-    
-    setupTrackMapResizeListener: function(figure) { 
-        const graphDivId = 'track-map-graph'; 
+
+    setupTrackMapResizeListener: function(figure) {
+        const graphDivId = 'track-map-graph';
         const graphDiv = document.getElementById(graphDivId);
 
-        if (typeof Plotly === 'undefined') {
-            console.warn('Plotly object not found for resize listener.');
-            return dash_clientside.no_update;
+        if (typeof Plotly === 'undefined' || !Plotly) {
+            // console.warn('[JS setupTrackMapResizeListener] Plotly object not found or not initialized.');
+            return window.dash_clientside.no_update;
         }
 
-        if (graphDiv && !window.dash_clientside.clientside._trackMapResizeObserver) { 
-            console.log('Attaching ResizeObserver to track map container\'s parent.');
+        if (graphDiv && !window.dash_clientside.clientside._trackMapResizeObserver) {
+            // console.log('[JS setupTrackMapResizeListener] Attaching ResizeObserver.');
             try {
                 const resizeObserver = new ResizeObserver(entries => {
                     const currentGraphDiv = document.getElementById(graphDivId);
                     if (currentGraphDiv && currentGraphDiv.offsetParent !== null) { 
-                        Plotly.Plots.resize(currentGraphDiv); 
-                        // console.log("ResizeObserver: Called Plotly.Plots.resize.");
-                        
-                        // --- Option C from previous response for autoranging ---
-                        Plotly.relayout(currentGraphDiv, {
-                             'xaxis.autorange': true,
-                             'yaxis.autorange': true
-                        });
-                        // console.log("ResizeObserver: Forced autorange after resize.");
-
-                        // Set a flag that a resize occurred, for animateCarMarkers
+                        Plotly.Plots.resize(currentGraphDiv);
                         window.dash_clientside.clientside._trackMapResizedRecently = true;
-                        // console.log("ResizeObserver: _trackMapResizedRecently = true");
-
-                        // Clear any pending timeout to reset the flag (safety)
                         if(window.dash_clientside.clientside._resizeTimeoutId) {
                             clearTimeout(window.dash_clientside.clientside._resizeTimeoutId);
                         }
-                        // Automatically reset the flag after a short period,
-                        // in case animateCarMarkers doesn't run immediately or misses it.
                         window.dash_clientside.clientside._resizeTimeoutId = setTimeout(() => {
                             window.dash_clientside.clientside._trackMapResizedRecently = false;
-                            // console.log("ResizeObserver: Timeout reset _trackMapResizedRecently = false");
-                        }, 500); // Reset after 500ms
+                        }, 500);
                     }
                 });
-                
-                const wrapperDiv = graphDiv.parentElement; 
+                const wrapperDiv = graphDiv.parentElement;
                 if (wrapperDiv) {
-                    resizeObserver.observe(wrapperDiv); 
+                    resizeObserver.observe(wrapperDiv);
                     window.dash_clientside.clientside._trackMapResizeObserver = resizeObserver;
                 } else {
-                    console.warn('Could not find wrapper div for track map for ResizeObserver.');
+                    // console.warn('[JS setupTrackMapResizeListener] Could not find wrapper div for ResizeObserver.');
                 }
             } catch (e) {
-                console.error("Error setting up ResizeObserver for track map:", e);
+                console.error("[JS setupTrackMapResizeListener] Error setting up ResizeObserver:", e);
             }
         }
-        return dash_clientside.no_update;
+        return window.dash_clientside.no_update;
     }
 };
