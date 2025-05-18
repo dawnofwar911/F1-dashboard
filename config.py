@@ -81,6 +81,17 @@ TEXT_WEATHER_CONDITION_GENERIC = "{condition} conditions" # For placeholder like
 # Track Status
 TEXT_TRACK_STATUS_DEFAULT_LABEL = "CLEAR" # Used in layout.py
 
+# Lap Counter
+TEXT_LAP_COUNTER_DEFAULT = "Lap: -/-"
+TEXT_LAP_COUNTER_AWAITING = "Lap: Awaiting Data..."
+
+# Session Types
+SESSION_TYPE_RACE = "Race"
+SESSION_TYPE_SPRINT = "Sprint" # Assuming "Sprint" is the exact string used for Sprint sessions. Adjust if necessary.
+SESSION_TYPE_QUALI = "Qualifying"
+SESSION_TYPE_PRAFTICE = "Practice"
+ 
+
 # Race Control
 TEXT_RC_WAITING = "Waiting for Race Control messages..."
 TEXT_RC_ERROR = "Error loading RC log."

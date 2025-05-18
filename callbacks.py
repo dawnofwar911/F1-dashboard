@@ -42,6 +42,49 @@ logger = logging.getLogger("F1App.Callbacks")
 # Note: UI revision, height, and margin constants are now in config.py
 # Note: TRACK_STATUS_STYLES and WEATHER_ICON_MAP are now in config.py
 
+@app.callback(
+    Output('lap-counter-display', 'children'),
+    Output('lap-counter-display', 'style'),
+    Input('interval-component-medium', 'n_intervals') # Update with medium frequency
+)
+def update_lap_counter_display(n_intervals):
+    """
+    Updates the lap counter display.
+    Shows "Lap: X/Y" for Race and Sprint sessions, otherwise hides it.
+    """
+    lap_counter_text = config.TEXT_LAP_COUNTER_DEFAULT
+    lap_counter_style = {'fontSize': '1rem', 'fontWeight': 'bold', 'display': 'none'} # Default to hidden
+
+    try:
+        with app_state.app_state_lock:
+            session_type = app_state.session_details.get('Type', None)
+            lap_count_data_payload = app_state.data_store.get('LapCount', {})
+            lap_count_data = lap_count_data_payload.get('data', {}) if isinstance(lap_count_data_payload, dict) else {}
+            if not isinstance(lap_count_data, dict): # Ensure lap_count_data is a dict
+                lap_count_data = {}
+            
+            current_app_status = app_state.app_status.get("state", "Idle")
+
+        # Only display for Race or Sprint sessions and when live or replaying
+        if session_type in [config.SESSION_TYPE_RACE, config.SESSION_TYPE_SPRINT] and \
+           current_app_status in ["Live", "Replaying"]:
+            current_lap = lap_count_data.get('CurrentLap', '-')
+            total_laps = lap_count_data.get('TotalLaps', '-')
+            
+            if current_lap != '-' and total_laps != '-':
+                lap_counter_text = f"Lap: {current_lap}/{total_laps}"
+            else:
+                lap_counter_text = config.TEXT_LAP_COUNTER_AWAITING # Use constant if data is missing
+
+            lap_counter_style['display'] = 'block' # Make it visible
+            lap_counter_style['textAlign'] = 'center' # Center align
+            lap_counter_style['color'] = 'white' # Ensure text is visible on dark header
+
+        return lap_counter_text, lap_counter_style
+
+    except Exception as e:
+        logger.error(f"Error in update_lap_counter_display: {e}", exc_info=True)
+        return config.TEXT_LAP_COUNTER_DEFAULT, {'display': 'none'} # Hide on error
 
 @app.callback(
     Output('connection-status', 'children'),
