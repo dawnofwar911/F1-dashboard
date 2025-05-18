@@ -54,9 +54,8 @@ def update_lap_counter_display(n_intervals):
     otherwise hides the column.
     """
     lap_counter_text = config.TEXT_LAP_COUNTER_DEFAULT
-    # Base classes for the column, then add/remove d-none
-    base_col_classes = "mb-2 mb-lg-0" # Keep existing responsive/margin classes
-    lap_counter_col_className = f"{base_col_classes} d-none" # Default to hidden
+    base_col_classes = "mb-2 mb-lg-0"
+    lap_counter_col_className = f"{base_col_classes} d-none"
 
     try:
         with app_state.app_state_lock:
@@ -67,27 +66,42 @@ def update_lap_counter_display(n_intervals):
                 lap_count_data = {}
             current_app_status = app_state.app_status.get("state", "Idle")
 
+            # Get current and total laps, potentially updating/using last_known_total_laps
+            current_lap_from_data = lap_count_data.get('CurrentLap')
+            total_laps_from_data = lap_count_data.get('TotalLaps')
+
+            # Update last_known_total_laps if a valid TotalLaps is received
+            if total_laps_from_data is not None and total_laps_from_data != '-':
+                try:
+                    app_state.last_known_total_laps = int(total_laps_from_data)
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not convert TotalLaps '{total_laps_from_data}' to int.")
+                    # Keep using the old app_state.last_known_total_laps if conversion fails
+            
+            # Use last_known_total_laps if current is missing
+            actual_total_laps_to_use = app_state.last_known_total_laps
+
+            # For display purposes
+            current_lap_for_display = str(current_lap_from_data) if current_lap_from_data is not None else '-'
+            total_laps_for_display = str(actual_total_laps_to_use) if actual_total_laps_to_use is not None else '--'
+
+
         if session_type in [config.SESSION_TYPE_RACE, config.SESSION_TYPE_SPRINT] and \
            current_app_status in ["Live", "Replaying"]:
-            current_lap = lap_count_data.get('CurrentLap', '-')
-            total_laps = lap_count_data.get('TotalLaps', '-')
 
-            if current_lap != '-' and total_laps != '-':
-                lap_counter_text = f"Lap: {current_lap}/{total_laps}"
+            if current_lap_for_display != '-':
+                lap_counter_text = f"Lap: {current_lap_for_display}/{total_laps_for_display}"
             else:
                 lap_counter_text = config.TEXT_LAP_COUNTER_AWAITING
-
-            # Original column widths: lg=2, md=3, sm=4, xs=12
-            # We add d-block (or simply remove d-none) to make it visible
-            lap_counter_col_className = f"{base_col_classes} col-lg-2 col-md-3 col-sm-4 col-12" # Explicitly set widths
-            # Or, if you prefer to rely on the defaults set in layout and just toggle d-none:
-            # lap_counter_col_className = base_col_classes # Remove d-none to show
+                logger.warning(f"LapCounter showing 'Awaiting': CurrentLap='{current_lap_for_display}', TotalLaps (used)='{total_laps_for_display}' from LapCountData: {lap_count_data}")
+            
+            lap_counter_col_className = f"{base_col_classes} col-lg-2 col-md-3 col-sm-4 col-12"
 
         return lap_counter_text, lap_counter_col_className
 
     except Exception as e:
         logger.error(f"Error in update_lap_counter_display: {e}", exc_info=True)
-        return config.TEXT_LAP_COUNTER_DEFAULT, f"{base_col_classes} d-none" # Hide on error
+        return config.TEXT_LAP_COUNTER_DEFAULT, f"{base_col_classes} d-none"
 
 @app.callback(
     Output('connection-status', 'children'),
@@ -325,7 +339,6 @@ def update_main_data_displays(n):
                 if tyre_base == "-":
                     tyre = "-"
 
-                time_val = driver_state.get('Time', '-')
                 gap = driver_state.get('GapToLeader', '-')
                 interval = utils.get_nested_state(
                     driver_state, 'IntervalToPositionAhead', 'Value', default='-')
@@ -390,7 +403,7 @@ def update_main_data_displays(n):
                 row = {
                     'id': car_num, # Add a unique ID for the row, car_num is good
                     'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre,
-                    'Time': time_val, 'Gap': gap, 'Interval': interval,
+                    'Gap': gap, 'Interval': interval,
                     'Last Lap': last_lap_val, 'Best Lap': best_lap_val,
                     'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_display_val,
                     'Status': status, 'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs,

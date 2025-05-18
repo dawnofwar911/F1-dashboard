@@ -177,7 +177,6 @@ def create_layout():
                     {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '35px', 'minWidth':'35px', 'paddingRight':'2px'},
                     {'if': {'column_id': 'Car'}, 'textAlign': 'left', 'width': '45px', 'minWidth':'45px'},
                     {'if': {'column_id': 'Pits'}, 'textAlign': 'center', 'width': '45px', 'minWidth':'35px'},
-                    {'if': {'column_id': 'Time'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'}, 
                     {'if': {'column_id': 'Interval'}, 'width': '75px', 'minWidth': '65px', 'maxWidth': '80px', 'textAlign': 'right', 'paddingRight':'5px'},
                     {'if': {'column_id': 'Gap'},      'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
                     

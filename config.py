@@ -50,7 +50,7 @@ CHANNEL_MAP = {
 # --- Timing Table Column Definitions ---
 TIMING_TABLE_COLUMNS_CONFIG = [ # Renamed to avoid conflict with layout.py variable
     {"name": "No.", "id": "No."}, {"name": "Car", "id": "Car"}, {"name": "Pos", "id": "Pos"},
-    {"name": "Tyre", "id": "Tyre"}, {"name": "Lap Time", "id": "Time"},
+    {"name": "Tyre", "id": "Tyre"},
     {"name": "Interval", "id": "Interval"}, {"name": "Gap", "id": "Gap"},
     {"name": "Last Lap", "id": "Last Lap"}, {"name": "Best Lap", "id": "Best Lap"},
     {"name": "S1", "id": "S1"}, {"name": "S2", "id": "S2"}, {"name": "S3", "id": "S3"},
