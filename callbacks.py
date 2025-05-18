@@ -331,16 +331,26 @@ def update_main_data_displays(n):
                     driver_state, 'IntervalToPositionAhead', 'Value', default='-')
                 
                 last_lap_val = utils.get_nested_state(
-                    driver_state, 'LastLapTime', 'Value', default='-')
-                best_lap_val = utils.get_nested_state( # This is the driver's personal best lap time string
+                    driver_state, 'LastLapTime', 'Value', default='-')         
+                if last_lap_val is None or last_lap_val == "":
+                    last_lap_val = "-"
+                    
+                best_lap_val = utils.get_nested_state( 
                     driver_state, 'PersonalBestLapTime', 'Value', default='-')
-
+                if best_lap_val is None or best_lap_val == "":
+                    best_lap_val = "-"
+                
                 s1_val = utils.get_nested_state(
                     driver_state, 'Sectors', '0', 'Value', default='-')
+                if s1_val is None or s1_val == "": s1_val = "-"
+                
                 s2_val = utils.get_nested_state(
                     driver_state, 'Sectors', '1', 'Value', default='-')
+                if s2_val is None or s2_val == "": s2_val = "-"
+
                 s3_val = utils.get_nested_state(
                     driver_state, 'Sectors', '2', 'Value', default='-')
+                if s3_val is None or s3_val == "": s3_val = "-"
 
                 reliable_stops = driver_state.get('ReliablePitStops', 0)
                 timing_data_stops = driver_state.get('NumberOfPitStops', 0)
