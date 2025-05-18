@@ -44,47 +44,50 @@ logger = logging.getLogger("F1App.Callbacks")
 
 @app.callback(
     Output('lap-counter-display', 'children'),
-    Output('lap-counter-display', 'style'),
-    Input('interval-component-medium', 'n_intervals') # Update with medium frequency
+    Output('lap-counter-column', 'className'), # Target the column's className
+    Input('interval-component-medium', 'n_intervals')
 )
 def update_lap_counter_display(n_intervals):
     """
     Updates the lap counter display.
-    Shows "Lap: X/Y" for Race and Sprint sessions, otherwise hides it.
+    Shows "Lap: X/Y" for Race and Sprint sessions by adjusting column visibility,
+    otherwise hides the column.
     """
     lap_counter_text = config.TEXT_LAP_COUNTER_DEFAULT
-    lap_counter_style = {'fontSize': '1rem', 'fontWeight': 'bold', 'display': 'none'} # Default to hidden
+    # Base classes for the column, then add/remove d-none
+    base_col_classes = "mb-2 mb-lg-0" # Keep existing responsive/margin classes
+    lap_counter_col_className = f"{base_col_classes} d-none" # Default to hidden
 
     try:
         with app_state.app_state_lock:
             session_type = app_state.session_details.get('Type', None)
             lap_count_data_payload = app_state.data_store.get('LapCount', {})
             lap_count_data = lap_count_data_payload.get('data', {}) if isinstance(lap_count_data_payload, dict) else {}
-            if not isinstance(lap_count_data, dict): # Ensure lap_count_data is a dict
+            if not isinstance(lap_count_data, dict):
                 lap_count_data = {}
-            
             current_app_status = app_state.app_status.get("state", "Idle")
 
-        # Only display for Race or Sprint sessions and when live or replaying
         if session_type in [config.SESSION_TYPE_RACE, config.SESSION_TYPE_SPRINT] and \
            current_app_status in ["Live", "Replaying"]:
             current_lap = lap_count_data.get('CurrentLap', '-')
             total_laps = lap_count_data.get('TotalLaps', '-')
-            
+
             if current_lap != '-' and total_laps != '-':
                 lap_counter_text = f"Lap: {current_lap}/{total_laps}"
             else:
-                lap_counter_text = config.TEXT_LAP_COUNTER_AWAITING # Use constant if data is missing
+                lap_counter_text = config.TEXT_LAP_COUNTER_AWAITING
 
-            lap_counter_style['display'] = 'block' # Make it visible
-            lap_counter_style['textAlign'] = 'center' # Center align
-            lap_counter_style['color'] = 'white' # Ensure text is visible on dark header
+            # Original column widths: lg=2, md=3, sm=4, xs=12
+            # We add d-block (or simply remove d-none) to make it visible
+            lap_counter_col_className = f"{base_col_classes} col-lg-2 col-md-3 col-sm-4 col-12" # Explicitly set widths
+            # Or, if you prefer to rely on the defaults set in layout and just toggle d-none:
+            # lap_counter_col_className = base_col_classes # Remove d-none to show
 
-        return lap_counter_text, lap_counter_style
+        return lap_counter_text, lap_counter_col_className
 
     except Exception as e:
         logger.error(f"Error in update_lap_counter_display: {e}", exc_info=True)
-        return config.TEXT_LAP_COUNTER_DEFAULT, {'display': 'none'} # Hide on error
+        return config.TEXT_LAP_COUNTER_DEFAULT, f"{base_col_classes} d-none" # Hide on error
 
 @app.callback(
     Output('connection-status', 'children'),

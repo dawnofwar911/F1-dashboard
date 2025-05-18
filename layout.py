@@ -93,7 +93,7 @@ def create_layout():
             dbc.Card(
                 dbc.CardBody(
                     html.Div(id='lap-counter-display', children=config.TEXT_LAP_COUNTER_DEFAULT,
-                             style={'fontSize': '1rem', 'fontWeight': 'bold', 'color': 'white', 'display': 'none', 'paddingRight': '15px'}),
+                             style={'fontSize': '1rem', 'fontWeight': 'bold', 'color': 'white', 'paddingRight': '15px'}),
                     className="p-2 text-center",
                     style={'minHeight':'55px', 'display':'flex', 'alignItems':'center', 'justifyContent':'center'}
                 ),
@@ -101,7 +101,8 @@ def create_layout():
                 inverse=True,
                 id="lap-counter-card"
             ),
-            lg=2, md=3, sm=4, xs=12, className="mb-2 mb-lg-0"
+            lg=2, md=3, sm=4, xs=12, className="mb-2 mb-lg-0 d-none", # Start hidden with d-none
+            id='lap-counter-column'
         ),
         dbc.Col(
             dbc.Card(
@@ -118,7 +119,8 @@ def create_layout():
                 color="secondary",
                 inverse=True
             ),
-            lg=3, md=3, sm=8, xs=12, className="mb-2 mb-lg-0"
+            lg=3, md=3, sm=8, xs=12, className="mb-2 mb-lg-0",
+            id='track-status-column' # Added ID for adjusting its visibility/width if needed
         ),
         dbc.Col(
             dbc.Card(
@@ -134,7 +136,8 @@ def create_layout():
             color="light",
             style={'minHeight':'55px'}
         ),
-        lg=7, md=6, sm=12, xs=12
+        lg=7, md=6, sm=12, xs=12,
+        id='weather-column' # Added ID for adjusting its visibility/width if needed
     )
     ], className="mb-3", id='status-weather-bar', align="center")
 
