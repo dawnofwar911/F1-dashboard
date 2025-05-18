@@ -76,6 +76,8 @@ INITIAL_SESSION_BESTS = {
 }
 session_bests = INITIAL_SESSION_BESTS.copy()
 
+last_known_total_laps = None
+
 
 logger = logging.getLogger("F1App.AppState") # Logger for this module
 
@@ -106,6 +108,7 @@ def reset_to_default_state():
         driver_info = INITIAL_DRIVER_INFO.copy() # <<< ENSURE THIS IS RESET IF USED
 
         session_bests = INITIAL_SESSION_BESTS.copy() # <<< ADDED RESET
+        last_known_total_laps = None
 
         while not data_queue.empty():
             try:

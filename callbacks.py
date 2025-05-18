@@ -42,6 +42,66 @@ logger = logging.getLogger("F1App.Callbacks")
 # Note: UI revision, height, and margin constants are now in config.py
 # Note: TRACK_STATUS_STYLES and WEATHER_ICON_MAP are now in config.py
 
+@app.callback(
+    Output('lap-counter-display', 'children'),
+    Output('lap-counter-column', 'className'), # Target the column's className
+    Input('interval-component-medium', 'n_intervals')
+)
+def update_lap_counter_display(n_intervals):
+    """
+    Updates the lap counter display.
+    Shows "Lap: X/Y" for Race and Sprint sessions by adjusting column visibility,
+    otherwise hides the column.
+    """
+    lap_counter_text = config.TEXT_LAP_COUNTER_DEFAULT
+    base_col_classes = "mb-2 mb-lg-0"
+    lap_counter_col_className = f"{base_col_classes} d-none"
+
+    try:
+        with app_state.app_state_lock:
+            session_type = app_state.session_details.get('Type', None)
+            lap_count_data_payload = app_state.data_store.get('LapCount', {})
+            lap_count_data = lap_count_data_payload.get('data', {}) if isinstance(lap_count_data_payload, dict) else {}
+            if not isinstance(lap_count_data, dict):
+                lap_count_data = {}
+            current_app_status = app_state.app_status.get("state", "Idle")
+
+            # Get current and total laps, potentially updating/using last_known_total_laps
+            current_lap_from_data = lap_count_data.get('CurrentLap')
+            total_laps_from_data = lap_count_data.get('TotalLaps')
+
+            # Update last_known_total_laps if a valid TotalLaps is received
+            if total_laps_from_data is not None and total_laps_from_data != '-':
+                try:
+                    app_state.last_known_total_laps = int(total_laps_from_data)
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not convert TotalLaps '{total_laps_from_data}' to int.")
+                    # Keep using the old app_state.last_known_total_laps if conversion fails
+            
+            # Use last_known_total_laps if current is missing
+            actual_total_laps_to_use = app_state.last_known_total_laps
+
+            # For display purposes
+            current_lap_for_display = str(current_lap_from_data) if current_lap_from_data is not None else '-'
+            total_laps_for_display = str(actual_total_laps_to_use) if actual_total_laps_to_use is not None else '--'
+
+
+        if session_type in [config.SESSION_TYPE_RACE, config.SESSION_TYPE_SPRINT] and \
+           current_app_status in ["Live", "Replaying"]:
+
+            if current_lap_for_display != '-':
+                lap_counter_text = f"Lap: {current_lap_for_display}/{total_laps_for_display}"
+            else:
+                lap_counter_text = config.TEXT_LAP_COUNTER_AWAITING
+                logger.warning(f"LapCounter showing 'Awaiting': CurrentLap='{current_lap_for_display}', TotalLaps (used)='{total_laps_for_display}' from LapCountData: {lap_count_data}")
+            
+            lap_counter_col_className = f"{base_col_classes} col-lg-2 col-md-3 col-sm-4 col-12"
+
+        return lap_counter_text, lap_counter_col_className
+
+    except Exception as e:
+        logger.error(f"Error in update_lap_counter_display: {e}", exc_info=True)
+        return config.TEXT_LAP_COUNTER_DEFAULT, f"{base_col_classes} d-none"
 
 @app.callback(
     Output('connection-status', 'children'),
@@ -279,22 +339,31 @@ def update_main_data_displays(n):
                 if tyre_base == "-":
                     tyre = "-"
 
-                time_val = driver_state.get('Time', '-')
                 gap = driver_state.get('GapToLeader', '-')
                 interval = utils.get_nested_state(
                     driver_state, 'IntervalToPositionAhead', 'Value', default='-')
                 
                 last_lap_val = utils.get_nested_state(
-                    driver_state, 'LastLapTime', 'Value', default='-')
-                best_lap_val = utils.get_nested_state( # This is the driver's personal best lap time string
+                    driver_state, 'LastLapTime', 'Value', default='-')         
+                if last_lap_val is None or last_lap_val == "":
+                    last_lap_val = "-"
+                    
+                best_lap_val = utils.get_nested_state( 
                     driver_state, 'PersonalBestLapTime', 'Value', default='-')
-
+                if best_lap_val is None or best_lap_val == "":
+                    best_lap_val = "-"
+                
                 s1_val = utils.get_nested_state(
                     driver_state, 'Sectors', '0', 'Value', default='-')
+                if s1_val is None or s1_val == "": s1_val = "-"
+                
                 s2_val = utils.get_nested_state(
                     driver_state, 'Sectors', '1', 'Value', default='-')
+                if s2_val is None or s2_val == "": s2_val = "-"
+
                 s3_val = utils.get_nested_state(
                     driver_state, 'Sectors', '2', 'Value', default='-')
+                if s3_val is None or s3_val == "": s3_val = "-"
 
                 reliable_stops = driver_state.get('ReliablePitStops', 0)
                 timing_data_stops = driver_state.get('NumberOfPitStops', 0)
@@ -334,7 +403,7 @@ def update_main_data_displays(n):
                 row = {
                     'id': car_num, # Add a unique ID for the row, car_num is good
                     'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre,
-                    'Time': time_val, 'Gap': gap, 'Interval': interval,
+                    'Gap': gap, 'Interval': interval,
                     'Last Lap': last_lap_val, 'Best Lap': best_lap_val,
                     'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_display_val,
                     'Status': status, 'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs,

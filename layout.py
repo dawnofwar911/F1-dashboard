@@ -92,9 +92,24 @@ def create_layout():
         dbc.Col(
             dbc.Card(
                 dbc.CardBody(
+                    html.Div(id='lap-counter-display', children=config.TEXT_LAP_COUNTER_DEFAULT,
+                             style={'fontSize': '1rem', 'fontWeight': 'bold', 'color': 'white', 'paddingRight': '15px'}),
+                    className="p-2 text-center",
+                    style={'minHeight':'55px', 'display':'flex', 'alignItems':'center', 'justifyContent':'center'}
+                ),
+                color="dark",
+                inverse=True,
+                id="lap-counter-card"
+            ),
+            lg=2, md=3, sm=4, xs=12, className="mb-2 mb-lg-0 d-none", # Start hidden with d-none
+            id='lap-counter-column'
+        ),
+        dbc.Col(
+            dbc.Card(
+                dbc.CardBody(
                     html.Div([
                         html.Strong("Track Status: ", style={'marginRight':'5px'}),
-                        html.Span(id='prominent-track-status-text', children=config.TEXT_TRACK_STATUS_DEFAULT_LABEL, # Use constant
+                        html.Span(id='prominent-track-status-text', children=config.TEXT_TRACK_STATUS_DEFAULT_LABEL,
                                   style={'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px'})
                     ]),
                     className="p-2 text-center",
@@ -104,14 +119,15 @@ def create_layout():
                 color="secondary",
                 inverse=True
             ),
-            lg=3, md=4, sm=6, xs=12, className="mb-2 mb-lg-0"
+            lg=3, md=3, sm=8, xs=12, className="mb-2 mb-lg-0",
+            id='track-status-column' # Added ID for adjusting its visibility/width if needed
         ),
         dbc.Col(
             dbc.Card(
                 dbc.CardBody(
                     html.Div([
                     html.Span(id='weather-main-icon', className="me-2", style={'fontSize': '1.5rem'}),
-                    html.Div(id='prominent-weather-display', children=config.TEXT_WEATHER_AWAITING, # Use constant
+                    html.Div(id='prominent-weather-display', children=config.TEXT_WEATHER_AWAITING,
                              style={'fontSize':'0.8rem', 'lineHeight':'1.2'})
                 ], style={'display': 'flex', 'alignItems': 'center'}),
                 className="p-2"
@@ -120,9 +136,10 @@ def create_layout():
             color="light",
             style={'minHeight':'55px'}
         ),
-        lg=9, md=8, sm=6, xs=12
+        lg=7, md=6, sm=12, xs=12,
+        id='weather-column' # Added ID for adjusting its visibility/width if needed
     )
-], className="mb-3", id='status-weather-bar')
+    ], className="mb-3", id='status-weather-bar', align="center")
 
     main_data_zone = dbc.Row([
         dbc.Col([
@@ -160,7 +177,6 @@ def create_layout():
                     {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '35px', 'minWidth':'35px', 'paddingRight':'2px'},
                     {'if': {'column_id': 'Car'}, 'textAlign': 'left', 'width': '45px', 'minWidth':'45px'},
                     {'if': {'column_id': 'Pits'}, 'textAlign': 'center', 'width': '45px', 'minWidth':'35px'},
-                    {'if': {'column_id': 'Time'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'}, 
                     {'if': {'column_id': 'Interval'}, 'width': '75px', 'minWidth': '65px', 'maxWidth': '80px', 'textAlign': 'right', 'paddingRight':'5px'},
                     {'if': {'column_id': 'Gap'},      'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
                     

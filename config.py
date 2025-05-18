@@ -50,7 +50,7 @@ CHANNEL_MAP = {
 # --- Timing Table Column Definitions ---
 TIMING_TABLE_COLUMNS_CONFIG = [ # Renamed to avoid conflict with layout.py variable
     {"name": "No.", "id": "No."}, {"name": "Car", "id": "Car"}, {"name": "Pos", "id": "Pos"},
-    {"name": "Tyre", "id": "Tyre"}, {"name": "Lap Time", "id": "Time"},
+    {"name": "Tyre", "id": "Tyre"},
     {"name": "Interval", "id": "Interval"}, {"name": "Gap", "id": "Gap"},
     {"name": "Last Lap", "id": "Last Lap"}, {"name": "Best Lap", "id": "Best Lap"},
     {"name": "S1", "id": "S1"}, {"name": "S2", "id": "S2"}, {"name": "S3", "id": "S3"},
@@ -80,6 +80,17 @@ TEXT_WEATHER_CONDITION_GENERIC = "{condition} conditions" # For placeholder like
 
 # Track Status
 TEXT_TRACK_STATUS_DEFAULT_LABEL = "CLEAR" # Used in layout.py
+
+# Lap Counter
+TEXT_LAP_COUNTER_DEFAULT = "Lap: -/-"
+TEXT_LAP_COUNTER_AWAITING = "Lap: Awaiting Data..."
+
+# Session Types
+SESSION_TYPE_RACE = "Race"
+SESSION_TYPE_SPRINT = "Sprint" # Assuming "Sprint" is the exact string used for Sprint sessions. Adjust if necessary.
+SESSION_TYPE_QUALI = "Qualifying"
+SESSION_TYPE_PRAFTICE = "Practice"
+ 
 
 # Race Control
 TEXT_RC_WAITING = "Waiting for Race Control messages..."
