@@ -101,6 +101,9 @@ TEXT_TRACK_STATUS_DEFAULT_LABEL = "CLEAR" # Used in layout.py
 TEXT_LAP_COUNTER_DEFAULT = "Lap: -/-"
 TEXT_LAP_COUNTER_AWAITING = "Lap: Awaiting Data..."
 
+# Pit Data
+TEXT_PIT_OUT_DISPLAY = "Pit Out"
+
 # Session Types
 SESSION_TYPE_RACE = "Race"
 SESSION_TYPE_SPRINT = "Sprint" # Assuming "Sprint" is the exact string used for Sprint sessions. Adjust if necessary.

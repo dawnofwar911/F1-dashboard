@@ -308,6 +308,7 @@ def update_main_data_displays(n):
     table_data = []
     timestamp_text = config.TEXT_WAITING_FOR_DATA # Use constant
     start_time = time.monotonic()
+    current_time_for_callbacks = time.time() # Use a consistent time for this callback run
 
     try:
         with app_state.app_state_lock:
@@ -404,6 +405,34 @@ def update_main_data_displays(n):
                     pits_display_val = str(reliable_stops)
                 elif timing_data_stops > 0:
                     pits_display_val = str(timing_data_stops)
+                    
+                is_in_pit_flag = driver_state.get('InPit', False)
+                current_pit_entry_system_time = driver_state.get('current_pit_entry_system_time')
+                last_pit_duration_val = driver_state.get('last_pit_duration')
+                last_pit_duration_processed_ts = driver_state.get('last_pit_duration_timestamp')
+                just_exited_pit_event_ts = driver_state.get('just_exited_pit_event_time')
+
+                pits_display_text_final = pits_display_val # Default to count
+                pit_display_state_for_style = "SHOW_COUNT" 
+                
+                if is_in_pit_flag:
+                    pit_display_state_for_style = "IN_PIT_LIVE" # For red style
+                    if current_pit_entry_system_time:
+                        elapsed_seconds = current_time_for_callbacks - current_pit_entry_system_time
+                        pits_display_text_final = f"In Pit: {elapsed_seconds:.1f}s"
+                    else:
+                        pits_display_text_final = "In Pit" 
+                elif just_exited_pit_event_ts and \
+                     (current_time_for_callbacks - just_exited_pit_event_ts < 10): # Show for 10s after detected exit
+                    if last_pit_duration_val is not None and \
+                       last_pit_duration_processed_ts and \
+                       last_pit_duration_processed_ts >= (just_exited_pit_event_ts - 3): # Allow AppData to be slightly before/at exit event
+                        pits_display_text_final = f"Stop: {last_pit_duration_val:.1f}s"
+                        pit_display_state_for_style = "SHOW_COMPLETED_DURATION" # For blue style
+                    else:
+                        pits_display_text_final = config.TEXT_PIT_OUT_DISPLAY # "Pit Out"
+                        # Default to SHOW_COUNT style or define a specific PIT_OUT_PENDING style if desired
+                # Else, it remains the default pit count and SHOW_COUNT state.
 
                 status = driver_state.get('Status', 'N/A')
 
@@ -461,6 +490,8 @@ def update_main_data_displays(n):
 
                     'IsOverallBestS3_Str': "TRUE" if is_overall_best_s3_flag else "FALSE",
                     'IsPersonalBestS3_Str': "TRUE" if is_s3_personal_best_flag else "FALSE",
+                    
+                    'PitDisplayState_Str': pit_display_state_for_style,
                 }
                 processed_table_data.append(row)
 

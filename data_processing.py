@@ -212,7 +212,7 @@ def _process_driver_list(data):
                     "InPit": False, "Retired": False, "Stopped": False, "PitOut": False,
                     "TyreCompound": "-", "TyreAge": "?", "IsNewTyre": False, "StintsData": {},
                     "NumberOfPitStops": 0, "ReliablePitStops": 0, "CarData": {}, "PositionData": {}, "PreviousPositionData": {},
-                    **default_best_lap_sector_info
+                    **default_best_lap_sector_info,
                     **default_pit_info
                 }
                 app_state.lap_time_history[driver_num_str] = []
