@@ -180,7 +180,7 @@ def create_layout():
                     {'if': {'column_id': 'Pits'}, 
                      'minWidth': '45px',    # Ensure it has enough base space for "In Pit: XX.Xs" or "Stop: XX.Xs"
                      'width': 'auto',       # Allow it to grow based on content
-                     'maxWidth': '100px',   # Prevent it from becoming excessively wide
+                     'maxWidth': '150px',   # Prevent it from becoming excessively wide
                      'textAlign': 'center',
                      'whiteSpace': 'nowrap' # Prefer to keep pit time on one line if possible
                     }, 

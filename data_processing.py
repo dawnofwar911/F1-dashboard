@@ -186,13 +186,14 @@ def _process_driver_list(data):
             }
             
             default_pit_info = {
-                "current_pit_entry_system_time": None,
-                "last_pit_duration": None,
+                "current_pit_entry_system_time": None, # Will be wall time of entry
+                "pit_entry_replay_speed": None,        # Replay speed at the moment of entry
+                "last_pit_duration": None, 
                 "last_pit_duration_timestamp": None,
-                "last_pit_stint_key_ref": None, # To track which stint provided the last duration
-                "just_exited_pit_event_time": None, # Timestamp of InPit changing False from True
-                "final_live_pit_time_display": None,
-                "final_live_pit_time_display_timestamp": None,
+                "last_pit_stint_key_ref": None, 
+                "just_exited_pit_event_time": None,
+                "final_live_pit_time_text": None, 
+                "final_live_pit_time_display_timestamp": None 
             }
             
             if is_new_driver:
@@ -234,48 +235,56 @@ def _process_driver_list(data):
         logger.warning(f"Unexpected DriverList stream data format: {type(data)}. Cannot process.")
 
 
-def _process_timing_data(data):
+def _process_timing_data(data): # Using your provided function structure
     if not app_state.timing_state: return
 
     if isinstance(data, dict) and 'Lines' in data and isinstance(data['Lines'], dict):
         for car_num_str, line_data in data['Lines'].items():
             driver_current_state = app_state.timing_state.get(car_num_str)
             if driver_current_state and isinstance(line_data, dict):
-                original_last_lap_time_info = driver_current_state.get('LastLapTime', {}).copy()
-                
+                # This was the line causing the error in your logs.
+                # It needs to be defined before its first use.
+                original_last_lap_time_info = driver_current_state.get('LastLapTime', {}).copy() 
+                                
+                # <<< Pit entry/exit detection and final time calculation logic moved here >>>
                 was_previously_in_pit = driver_current_state.get('InPit', False)
-                is_currently_in_pit_from_feed = line_data.get('InPit', was_previously_in_pit) 
+                # is_currently_in_pit_from_feed should use the 'InPit' from line_data if available
+                is_currently_in_pit_from_feed = line_data.get('InPit', was_previously_in_pit)
 
                 if is_currently_in_pit_from_feed and not was_previously_in_pit: # Just entered pits
                     driver_current_state['current_pit_entry_system_time'] = time.time()
+                    driver_current_state['pit_entry_replay_speed'] = app_state.replay_speed # Store replay speed at entry
                     driver_current_state['final_live_pit_time_text'] = None 
                     driver_current_state['final_live_pit_time_display_timestamp'] = None
                     driver_current_state['just_exited_pit_event_time'] = None 
-                    logger.info(f"[PIT_INFO] Car {car_num_str} ENTERED PIT (TimingData).")
+                    logger.info(f"[PIT_INFO] Car {car_num_str} ENTERED PIT (TimingData). EntryWallTime: {driver_current_state['current_pit_entry_system_time']:.2f}, EntryReplaySpeed: {driver_current_state['pit_entry_replay_speed']}x")
                 
                 elif not is_currently_in_pit_from_feed and was_previously_in_pit: # Just exited pits
-                    entry_time_wall_clock = driver_current_state.get('current_pit_entry_system_time')
+                    entry_wall_time = driver_current_state.get('current_pit_entry_system_time')
+                    speed_at_entry = driver_current_state.get('pit_entry_replay_speed', 1.0) 
                     
-                    if entry_time_wall_clock is not None:
-                        final_elapsed_wall_time = time.time() - entry_time_wall_clock
-                        
-                        current_replay_speed = app_state.replay_speed 
-                        if not isinstance(current_replay_speed, (float, int)) or current_replay_speed <= 0:
-                            current_replay_speed = 1.0 # Default to 1x if invalid
-                        
-                        # Adjust the elapsed time by the replay speed
-                        adjusted_elapsed_time = final_elapsed_wall_time * current_replay_speed
-                        
-                        driver_current_state['final_live_pit_time_text'] = f"Stop: {adjusted_elapsed_time:.1f}s" 
-                        driver_current_state['final_live_pit_time_display_timestamp'] = time.time()
-                        logger.info(f"[PIT_INFO] Car {car_num_str} EXITED PIT (TimingData). Wall time: {final_elapsed_wall_time:.2f}s, ReplaySpeed: {current_replay_speed}x, Adjusted displayed time: {adjusted_elapsed_time:.1f}s. Final text: '{driver_current_state['final_live_pit_time_text']}'")
-                    else:
-                        logger.debug(f"[PIT_DEBUG] Car {car_num_str} EXITED PIT (TimingData), but no current_pit_entry_system_time. Setting just_exited_pit_event_time only.")
+                    if not isinstance(speed_at_entry, (float, int)) or speed_at_entry <= 0:
+                        logger.warning(f"Car {car_num_str}: Invalid speed_at_entry '{speed_at_entry}', defaulting to 1.0.")
+                        speed_at_entry = 1.0
 
-                    driver_current_state.pop('current_pit_entry_system_time', None) 
+                    if entry_wall_time is not None:
+                        final_elapsed_wall_time = time.time() - entry_wall_time
+                        
+                        # Adjust the elapsed wall time by the replay speed that was active AT ENTRY
+                        adjusted_elapsed_session_time = final_elapsed_wall_time * speed_at_entry
+                        
+                        driver_current_state['final_live_pit_time_text'] = f"Stop: {adjusted_elapsed_session_time:.1f}s" 
+                        driver_current_state['final_live_pit_time_display_timestamp'] = time.time()
+                        logger.info(f"[PIT_INFO] Car {car_num_str} EXITED PIT (TimingData). WallTimeInPit: {final_elapsed_wall_time:.2f}s, SpeedAtEntry: {speed_at_entry}x, AdjustedSessionTime: {adjusted_elapsed_session_time:.1f}s. FinalText: '{driver_current_state['final_live_pit_time_text']}'")
+                    else:
+                        logger.debug(f"[PIT_DEBUG] Car {car_num_str} EXITED PIT (TimingData), but no current_pit_entry_system_time. Setting just_exited_pit_event_time.")
+
+                    driver_current_state['current_pit_entry_system_time'] = None 
+                    driver_current_state['pit_entry_replay_speed'] = None 
                     driver_current_state['just_exited_pit_event_time'] = time.time() 
                 
                 # Update general timing fields (InPit, PitOut, etc.)
+                # This will correctly set driver_current_state['InPit'] based on the current line_data
                 for key in ["Position", "Time", "GapToLeader", "InPit", "Retired", "Stopped", "PitOut", "NumberOfLaps", "NumberOfPitStops"]:
                      if key in line_data: 
                          if key == "NumberOfPitStops":
