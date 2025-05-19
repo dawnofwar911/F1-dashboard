@@ -160,8 +160,8 @@ def update_session_and_weather_info(n):
     session_info_str = config.TEXT_SESSION_INFO_AWAITING # Use constant
     weather_details_spans = []
     main_weather_icon = config.WEATHER_ICON_MAP["default"] # Use constant
-    weather_card_color = "light"
-    weather_card_inverse = False
+    weather_card_color = "light" # Default to "light"
+    weather_card_inverse = False # Dark text on "light" background
 
     try:
         with app_state.app_state_lock:
@@ -196,27 +196,44 @@ def update_session_and_weather_info(n):
         is_raining = rainfall_val == '1' or rainfall_val == 1
 
         overall_condition = "default"
-        weather_card_color = "light"
-        weather_card_inverse = False
-
+        # <<< MODIFIED: Weather card color logic >>>
         if is_raining:
             overall_condition = "rain"
-            weather_card_color = "info"
-            weather_card_inverse = True
+            weather_card_color = "info" 
+            weather_card_inverse = True 
         elif air_temp is not None and humidity is not None:
-            if air_temp > 25 and humidity < 60 :
+            if air_temp > 25 and humidity < 60 : # Sunny and relatively dry
                 overall_condition = "sunny"
-                weather_card_color = "warning"
-                weather_card_inverse = False
-            elif humidity >= 75 or air_temp < 15:
+                weather_card_color = "warning" # Keep Bootstrap "warning" yellow
+                weather_card_inverse = True    # <<< CHANGED to True for light text on yellow
+            elif humidity >= 75 or air_temp < 15: # Humid or cool
                 overall_condition = "cloudy"
-                weather_card_color = "secondary"
-                weather_card_inverse = True
-        elif air_temp is not None:
-             if air_temp > 28: overall_condition = "sunny"
-             elif air_temp < 10: overall_condition = "cloudy"
+                weather_card_color = "secondary" 
+                weather_card_inverse = True 
+            else: 
+                overall_condition = "partly_cloudy" 
+                weather_card_color = "light"
+                weather_card_inverse = False
+        elif air_temp is not None: 
+             if air_temp > 28:
+                 overall_condition = "sunny"
+                 weather_card_color = "warning" # Keep Bootstrap "warning" yellow
+                 weather_card_inverse = True    # <<< CHANGED to True for light text on yellow
+             elif air_temp < 10:
+                 overall_condition = "cloudy"
+                 weather_card_color = "secondary"
+                 weather_card_inverse = True
+             else: 
+                overall_condition = "partly_cloudy"
+                weather_card_color = "light"
+                weather_card_inverse = False
+        else: 
+            overall_condition = "default"
+            weather_card_color = "light"
+            weather_card_inverse = False
 
-        main_weather_icon = config.WEATHER_ICON_MAP.get(overall_condition, config.WEATHER_ICON_MAP["default"]) # Use constant
+
+        main_weather_icon = config.WEATHER_ICON_MAP.get(overall_condition, config.WEATHER_ICON_MAP["default"]) 
 
         if air_temp is not None: weather_details_spans.append(html.Span(f"Air: {air_temp:.1f}°C", className="me-3"))
         if track_temp is not None: weather_details_spans.append(html.Span(f"Track: {track_temp:.1f}°C", className="me-3"))
@@ -229,22 +246,36 @@ def update_session_and_weather_info(n):
                  except (ValueError, TypeError): wind_str += f" ({wind_direction})"
             weather_details_spans.append(html.Span(wind_str, className="me-3"))
 
-        if is_raining and overall_condition != "rain":
+        # Ensure "RAIN" text color contrasts with its card
+        # Default is white text if weather_card_inverse is True (e.g. for "info" card)
+        # If card were light, we'd want dark blue text for "RAIN"
+        rain_text_color_on_light_card = "#007bff" # Example blue
+        rain_text_color_on_dark_card = "white"
+
+        if is_raining:
+            # Remove any pre-existing "RAIN" span to avoid duplication if logic changes
+            weather_details_spans = [s for s in weather_details_spans if not (isinstance(s, html.Span) and getattr(s, 'children', '') == "RAIN")]
+            
+            current_rain_text_color = rain_text_color_on_dark_card if weather_card_inverse else rain_text_color_on_light_card
+            if overall_condition == "rain" and weather_card_color == "light": # Explicitly handle if rain card is "light"
+                 current_rain_text_color = rain_text_color_on_light_card
+            
             weather_details_spans.append(html.Span("RAIN", className="me-2 fw-bold",
-                                         style={'color':'#007bff'}))
+                                         style={'color': current_rain_text_color} ))
+
 
         if not weather_details_spans and overall_condition == "default":
-            final_weather_display_children = [html.Em(config.TEXT_WEATHER_UNAVAILABLE)] # Use constant
+            final_weather_display_children = [html.Em(config.TEXT_WEATHER_UNAVAILABLE)] 
         elif not weather_details_spans and overall_condition != "default":
-             final_weather_display_children = [html.Em(config.TEXT_WEATHER_CONDITION_GENERIC.format(condition=overall_condition.capitalize()))] # Use constant
+             final_weather_display_children = [html.Em(config.TEXT_WEATHER_CONDITION_GENERIC.format(condition=overall_condition.replace("_"," ").title()))] 
         else:
             final_weather_display_children = weather_details_spans
+        
 
         return session_info_str, html.Div(children=final_weather_display_children), main_weather_icon, weather_card_color, weather_card_inverse
 
     except Exception as e:
         logger.error(f"Session/Weather Display Error in callback: {e}", exc_info=True)
-        # Use constants
         return config.TEXT_SESSION_INFO_ERROR, config.TEXT_WEATHER_ERROR, config.WEATHER_ICON_MAP["default"], "light", False
 
 
