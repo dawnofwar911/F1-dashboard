@@ -64,13 +64,20 @@ CHANNEL_MAP = {
 }
 
 # --- Timing Table Column Definitions ---
-TIMING_TABLE_COLUMNS_CONFIG = [ # Renamed to avoid conflict with layout.py variable
-    {"name": "No.", "id": "No."}, {"name": "Car", "id": "Car"}, {"name": "Pos", "id": "Pos"},{"name": "Pits", "id": "Pits"},
-    {"name": "Tyre", "id": "Tyre"},
-    {"name": "Interval", "id": "Interval"}, {"name": "Gap", "id": "Gap"},
-    {"name": "Last Lap", "id": "Last Lap"}, {"name": "Best Lap", "id": "Best Lap"},
-    {"name": "S1", "id": "S1"}, {"name": "S2", "id": "S2"}, {"name": "S3", "id": "S3"},
-    {"name": "Status", "id": "Status"},
+TIMING_TABLE_COLUMNS_CONFIG = [
+    {'name': 'Pos', 'id': 'Pos'},
+    {'name': 'No.', 'id': 'No.'},
+    {'name': 'Driver', 'id': 'Car'},      # 'Car' is the ID for TLA
+    {'name': 'Tyre', 'id': 'Tyre'},        # Moved Tyre up
+    {'name': 'Interval', 'id': 'Interval'},
+    {'name': 'Last Lap', 'id': 'Last Lap'},
+    {'name': 'Best Lap', 'id': 'Best Lap'},
+    {'name': 'S1', 'id': 'S1'},
+    {'name': 'S2', 'id': 'S2'},
+    {'name': 'S3', 'id': 'S3'},
+    {'name': 'Pits', 'id': 'Pits'},        # Will be filtered out if not Race/Sprint
+    {'name': 'Status', 'id': 'Status'},
+    {'name': 'Gap', 'id': 'Gap'},          # Will be filtered out if not Race/Sprint
 ]
 
 # --- UI Constants: Text & Messages ---

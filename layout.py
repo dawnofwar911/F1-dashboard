@@ -20,7 +20,7 @@ def create_layout():
         replay_file_options = []
 
     # Use TIMING_TABLE_COLUMNS_CONFIG from config.py
-    timing_table_columns = config.TIMING_TABLE_COLUMNS_CONFIG #
+    # timing_table_columns = config.TIMING_TABLE_COLUMNS_CONFIG #
 
     tyre_style_base = {'textAlign': 'center', 'fontWeight': 'bold', 'border': '1px solid #444'}
     
@@ -146,7 +146,8 @@ def create_layout():
             html.H4("Live Timing"),
             html.P(id='timing-data-timestamp', children=config.TEXT_WAITING_FOR_DATA, style={'fontSize':'0.8rem', 'color':'grey', 'marginBottom':'2px'}), # Use constant
             dash_table.DataTable(
-                id='timing-data-actual-table', columns=timing_table_columns, data=[],
+                id='timing-data-actual-table', 
+                # columns prop will be set by a callback,
                 fixed_rows={'headers': True},
                 style_table={'height': '720px', 'minHeight': '650px', 'overflowY': 'auto', 'overflowX': 'auto'},
                 style_cell={ # General cell styling
