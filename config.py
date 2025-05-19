@@ -28,10 +28,26 @@ LIVE_DATA_FILENAME_FALLBACK_PREFIX = "F1LiveData"
 NEGOTIATE_URL_BASE = "https://livetiming.formula1.com/signalr"
 WEBSOCKET_URL_BASE = "wss://livetiming.formula1.com/signalr"
 HUB_NAME = "Streaming"
-STREAMS_TO_SUBSCRIBE = ["Heartbeat", "CarData.z", "Position.z", "ExtrapolatedClock",
-                        "TimingAppData", "TimingData", "TimingStats", "TrackStatus",
-                        "SessionData", "DriverList", "RaceControlMessages", "SessionInfo",
-                        "LapCount"]
+STREAMS_TO_SUBSCRIBE = ["Heartbeat",
+        "CarData.z",
+        "Position.z",
+        "ExtrapolatedClock",
+        "TopThree",
+        "RcmSeries",
+        "TimingStats",
+        "TimingAppData",
+        "WeatherData",
+        "TrackStatus",
+        "SessionStatus",
+        "DriverList",
+        "RaceControlMessages",
+        "SessionInfo",
+        "SessionData",
+        "LapCount",
+        "TimingData",
+        "TeamRadio",
+        "PitLaneTimeCollection",
+        "ChampionshipPrediction"]
 SIGNALR_CLIENT_PROTOCOL = "1.5"
 REQUESTS_TIMEOUT_SECONDS = 15
 USER_AGENT_NEGOTIATE = "Python SignalRClient"
