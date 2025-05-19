@@ -119,6 +119,48 @@ def _process_timing_app_data(data):
                                          logger.warning(f"Driver {car_num_str}: Error converting StartLaps/NumberOfLaps for age calc: {e}. Stint: {latest_stint_key}")
                         else:
                             logger.warning(f"Driver {car_num_str}: Data for Stint {latest_stint_key} is not a dict: {type(latest_stint_info)}")
+                        # Iterate through previous stints to find the most recent completed pit stop
+                        if len(stints_payload) > 1: # Means there's at least one completed stint
+                            # The second to last stint in stints_payload is the one ending in the most recent pit stop
+                            # if stints are ordered chronologically by their key (0, 1, 2...)
+                            try:
+                                stint_keys = sorted(stints_payload.keys(), key=int)
+                                if len(stint_keys) >= 2: # Need at least two stints for a completed pitstop
+                                    # The stint *before* the current one is the one that ended with a pit stop.
+                                    # The `stint_keys[-2]` is the key for the stint that *ended* with the last pit stop.
+                                    # The `stint_keys[-1]` is the key for the *current* stint *after* the last pit stop.
+                                    # The PitInTime and PitOutTime for the stop *between* these two stints
+                                    # would be associated with the *start* of the current stint (key: stint_keys[-1])
+                                    # or potentially recorded on the *end* of the previous stint (key: stint_keys[-2])
+                                    # F1 live timing often puts PitInTime/PitOutTime on the stint *following* the pitstop.
+                                    
+                                    last_completed_stint_key = stint_keys[-1] # Key of the stint *after* the pit stop
+                                    last_completed_stint_data = stints_payload.get(last_completed_stint_key)
+
+                                    if last_completed_stint_data and \
+                                       'PitInTime' in last_completed_stint_data and \
+                                       'PitOutTime' in last_completed_stint_data:
+                                        
+                                        pit_in_time_str = last_completed_stint_data['PitInTime']
+                                        pit_out_time_str = last_completed_stint_data['PitOutTime']
+
+                                        pit_in_seconds = utils.parse_feed_time_to_seconds(pit_in_time_str)
+                                        pit_out_seconds = utils.parse_feed_time_to_seconds(pit_out_time_str)
+
+                                        if pit_in_seconds is not None and pit_out_seconds is not None and pit_out_seconds >= pit_in_seconds:
+                                            duration = round(pit_out_seconds - pit_in_seconds, 1)
+                                            # Check if this is a new duration to avoid re-setting timestamp
+                                            if driver_current_state.get('last_pit_duration') != duration or \
+                                               driver_current_state.get('last_pit_stint_key_ref') != last_completed_stint_key:
+                                                driver_current_state['last_pit_duration'] = duration
+                                                driver_current_state['last_pit_duration_timestamp'] = time.time()
+                                                driver_current_state['last_pit_stint_key_ref'] = last_completed_stint_key # To identify this specific stop
+                                                logger.info(f"Driver {car_num_str}: Updated last_pit_duration to {duration}s from Stint {last_completed_stint_key}.")
+                                        else:
+                                            logger.warning(f"Driver {car_num_str}: Could not calculate valid duration for Stint {last_completed_stint_key}. In: {pit_in_time_str}, Out: {pit_out_time_str}")
+                            except Exception as e_pit_duration:
+                                logger.error(f"Driver {car_num_str}: Error calculating pit duration from StintsData: {e_pit_duration}", exc_info=True)
+
                     except (ValueError, IndexError, KeyError, TypeError) as e:
                          logger.error(f"Driver {car_num_str}: Error processing Stints data in TimingAppData: {e} - Data: {stints_payload}", exc_info=False)
 
@@ -150,6 +192,14 @@ def _process_driver_list(data):
                 "IsOverallBestSector": [False, False, False] 
             }
             
+            default_pit_info = {
+                "current_pit_entry_system_time": None,
+                "last_pit_duration": None,
+                "last_pit_duration_timestamp": None,
+                "last_pit_stint_key_ref": None, # To track which stint provided the last duration
+                "just_exited_pit_event_time": None # Timestamp of InPit changing False from True
+            }
+            
             if is_new_driver:
                 app_state.timing_state[driver_num_str] = {
                     "RacingNumber": driver_info.get("RacingNumber", driver_num_str), "Tla": tla_from_stream,
@@ -162,7 +212,8 @@ def _process_driver_list(data):
                     "InPit": False, "Retired": False, "Stopped": False, "PitOut": False,
                     "TyreCompound": "-", "TyreAge": "?", "IsNewTyre": False, "StintsData": {},
                     "NumberOfPitStops": 0, "ReliablePitStops": 0, "CarData": {}, "PositionData": {}, "PreviousPositionData": {},
-                    **default_best_lap_sector_info 
+                    **default_best_lap_sector_info
+                    **default_pit_info
                 }
                 app_state.lap_time_history[driver_num_str] = []
                 app_state.telemetry_data[driver_num_str] = {} 
@@ -178,6 +229,7 @@ def _process_driver_list(data):
                 default_timing_values = { "Position": "-", "Time": "-", "GapToLeader": "-", "IntervalToPositionAhead": {"Value": "-"}, "LastLapTime": {}, "BestLapTime": {}, "Sectors": {}, "Status": "On Track", "InPit": False, "Retired": False, "Stopped": False, "PitOut": False, "TyreCompound": "-", "TyreAge": "?", "IsNewTyre": False, "StintsData": {}, "NumberOfPitStops": 0, "ReliablePitStops": 0, "CarData": {}, "PositionData": {}, "PreviousPositionData": {}}
                 for key, default_val in default_timing_values.items(): current_driver_state.setdefault(key, default_val)
                 for key, default_val in default_best_lap_sector_info.items(): current_driver_state.setdefault(key, default_val) 
+                for key, default_val in default_pit_info.items(): current_driver_state.setdefault(key, default_val)
 
                 if driver_num_str not in app_state.lap_time_history: app_state.lap_time_history[driver_num_str] = []
                 if driver_num_str not in app_state.telemetry_data: app_state.telemetry_data[driver_num_str] = {}
@@ -195,6 +247,25 @@ def _process_timing_data(data):
             driver_current_state = app_state.timing_state.get(car_num_str)
             if driver_current_state and isinstance(line_data, dict):
                 original_last_lap_time_info = driver_current_state.get('LastLapTime', {}).copy()
+                
+                was_previously_in_pit = driver_current_state.get('InPit', False)
+                is_currently_in_pit = line_data.get('InPit', was_previously_in_pit) # Use new value if present
+
+                if is_currently_in_pit and not was_previously_in_pit: # Just entered pits
+                    driver_current_state['current_pit_entry_system_time'] = time.time()
+                    driver_current_state.pop('just_exited_pit_event_time', None) # Clear exit flag
+                    logger.debug(f"Driver {car_num_str} entered pit. Stored entry system time.")
+                elif not is_currently_in_pit and was_previously_in_pit: # Just exited pits
+                    driver_current_state.pop('current_pit_entry_system_time', None)
+                    driver_current_state['just_exited_pit_event_time'] = time.time() # Mark exit event
+                    logger.debug(f"Driver {car_num_str} exited pit. Stored exit system time.")
+                
+                # Clear just_exited_pit_event_time if driver is no longer PitOut and not InPit either
+                # (meaning they are back on track normally after a pit exit sequence)
+                is_pit_out = line_data.get('PitOut', driver_current_state.get('PitOut', False))
+                if not is_currently_in_pit and not is_pit_out and driver_current_state.get('just_exited_pit_event_time'):
+                    # Consider clearing it after a delay in callbacks, or if a new lap starts
+                    pass # Handled by callback timeout for now
 
                 # Update general timing fields
                 for key in ["Position", "Time", "GapToLeader", "InPit", "Retired", "Stopped", "PitOut", "NumberOfLaps", "NumberOfPitStops"]:
@@ -355,19 +426,6 @@ def _process_timing_data(data):
                             }
                             app_state.lap_time_history[car_num_str].append(lap_entry)
                             logger.debug(f"Added Lap {lap_number_for_this_time} for {car_num_str}: {new_lap_time_str} ({lap_time_seconds}s) on {compound_for_lap}, ValidForHistory: {is_valid_lap_time_for_history}")
-                            
-                            # --- REMOVED PROACTIVE SECTOR RESET FROM HERE ---
-                            # logger.debug(f"New lap {lap_number_for_this_time} completed by {car_num_str}. Resetting displayed sector values to '-' for next lap anticipation.")
-                            # for i_reset in range(3):
-                            #    s_idx_reset_str = str(i_reset)
-                            #    if s_idx_reset_str in driver_current_state["Sectors"] and isinstance(driver_current_state["Sectors"][s_idx_reset_str], dict):
-                            #        driver_current_state["Sectors"][s_idx_reset_str]["Value"] = "-"
-                            #        driver_current_state["Sectors"][s_idx_reset_str]["PersonalFastest"] = False
-                            #        driver_current_state["Sectors"][s_idx_reset_str]["OverallFastest"] = False
-                            #    else: 
-                            #        driver_current_state["Sectors"][s_idx_reset_str] = {"Value": "-", "PersonalFastest": False, "OverallFastest": False}
-                            # --- END OF REMOVED BLOCK ---
-
 
         # --- Post-loop updates for overall best flags on driver states ---
         overall_best_lap_holder = app_state.session_bests["OverallBestLapTime"]["DriverNumber"]
