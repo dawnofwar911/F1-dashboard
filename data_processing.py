@@ -634,6 +634,9 @@ def data_processing_loop():
             stream_name = item['stream']
             actual_data = item['data']
             timestamp = item.get('timestamp')
+            
+            if stream_name == "PitLaneTimeCollection":
+                logger.info(f"DEBUG: Received PitLaneTimeCollection: {actual_data}")
 
             with app_state.app_state_lock:
                 app_state.data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
