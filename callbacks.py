@@ -62,7 +62,7 @@ def update_timing_table_columns(n_intervals):
     all_columns = config.TIMING_TABLE_COLUMNS_CONFIG
     
     # Define columns that are primarily relevant for Race/Sprint sessions
-    race_sprint_specific_column_ids = ['Pits', 'Gap'] 
+    race_sprint_specific_column_ids = ['Pits'] 
     
     if session_type is None: 
         logger.debug("Session type is None, hiding race/sprint specific columns by default.")
@@ -352,6 +352,7 @@ def update_main_data_displays(n):
 
     try:
         with app_state.app_state_lock:
+            session_type = app_state.session_details.get('Type', None) #
             timing_state_copy = app_state.timing_state.copy()
             data_store_copy = app_state.data_store
             # Get a snapshot of overall bests to ensure consistency for this update
@@ -388,6 +389,7 @@ def update_main_data_displays(n):
                 racing_no = driver_state.get("RacingNumber", car_num)
                 tla = driver_state.get("Tla", "N/A")
                 pos = driver_state.get('Position', '-')
+                pos_str = str(pos)
                 compound = driver_state.get('TyreCompound', '-')
                 age = driver_state.get('TyreAge', '?')
                 is_new = driver_state.get('IsNewTyre', False)
@@ -410,11 +412,35 @@ def update_main_data_displays(n):
                 tyre = f"{tyre_base}{new_tyre_indicator}"
                 if tyre_base == "-":
                     tyre = "-"
-
-                gap = driver_state.get('GapToLeader', '-')
-                interval = utils.get_nested_state(
-                    driver_state, 'IntervalToPositionAhead', 'Value', default='-')
+                    
+                interval_val = utils.get_nested_state(driver_state, 'IntervalToPositionAhead', 'Value', default='-') #
+                gap_val = driver_state.get('GapToLeader', '-') #
+            
+                interval_display_text = str(interval_val).strip() if interval_val not in [None, "", "-"] else "-"
+                gap_display_text = str(gap_val).strip() if gap_val not in [None, "", "-"] else "-"
+            
+                # Line 1: Interval (bold)
+                bold_interval_text = f"**{interval_display_text}**"
+                interval_gap_markdown = ""
+                is_p1 = (pos_str == '1')
+            
+                show_gap = not is_p1 and \
+                           session_type in [config.SESSION_TYPE_RACE, config.SESSION_TYPE_SPRINT] and \
+                           gap_display_text != "-" #
+            
+                if show_gap:
+                    normal_weight_gap_text = gap_display_text
+                    # Attempt CommonMark hard line break: two spaces followed by a newline character (\n)
+                    interval_gap_markdown = f"{bold_interval_text}\\\n{normal_weight_gap_text}" # Backslash then newline
+                else:
+                    # P1, OR Not a Race/Sprint session, OR Gap data is "-":
+                    # Only show Interval data.
+                    if interval_display_text == "-":
+                        interval_gap_markdown = "-" # Single non-bold dash for cleaner look
+                    else:
+                        interval_gap_markdown = bold_interval_text
                 
+                            
                 last_lap_val = utils.get_nested_state(
                     driver_state, 'LastLapTime', 'Value', default='-')         
                 if last_lap_val is None or last_lap_val == "":
@@ -526,7 +552,7 @@ def update_main_data_displays(n):
                 row = {
                     'id': car_num, # Add a unique ID for the row, car_num is good
                     'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre,
-                    'Gap': gap, 'Interval': interval,
+                    'IntervalGap': interval_gap_markdown, # New combined field
                     'Last Lap': last_lap_val, 'Best Lap': best_lap_val,
                     'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_text_to_display,
                     'Status': status, 'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs,

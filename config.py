@@ -68,8 +68,9 @@ TIMING_TABLE_COLUMNS_CONFIG = [
     {'name': 'Pos', 'id': 'Pos'},
     {'name': 'No.', 'id': 'No.'},
     {'name': 'Driver', 'id': 'Car'},      # 'Car' is the ID for TLA
-    {'name': 'Tyre', 'id': 'Tyre'},        # Moved Tyre up
-    {'name': 'Interval', 'id': 'Interval'},
+    {'name': 'Tyre', 'id': 'Tyre'},
+    # New combined column for Interval and Gap
+    {'name': 'Int / Gap', 'id': 'IntervalGap', 'presentation': 'markdown'}, # ADD THIS
     {'name': 'Last Lap', 'id': 'Last Lap'},
     {'name': 'Best Lap', 'id': 'Best Lap'},
     {'name': 'S1', 'id': 'S1'},
@@ -77,7 +78,7 @@ TIMING_TABLE_COLUMNS_CONFIG = [
     {'name': 'S3', 'id': 'S3'},
     {'name': 'Pits', 'id': 'Pits'},        # Will be filtered out if not Race/Sprint
     {'name': 'Status', 'id': 'Status'},
-    {'name': 'Gap', 'id': 'Gap'},          # Will be filtered out if not Race/Sprint
+    # The individual 'Interval' and 'Gap' columns have been removed.
 ]
 
 # --- UI Constants: Text & Messages ---
