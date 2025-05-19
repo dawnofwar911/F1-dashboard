@@ -23,16 +23,16 @@ def create_layout():
     timing_table_columns = config.TIMING_TABLE_COLUMNS_CONFIG #
 
     tyre_style_base = {'textAlign': 'center', 'fontWeight': 'bold', 'border': '1px solid #444'}
-
-    # <<< ADDED BEST LAP/SECTOR STYLES --- START >>>
+    
     # Define standard styles for personal and overall bests for readability
     # Colors can be moved to config.py if preferred
     PERSONAL_BEST_STYLE = {'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold'} # Green (Bootstrap success-like)
     OVERALL_BEST_STYLE = {'backgroundColor': '#6f42c1', 'color': 'white', 'fontWeight': 'bold'}  # Purple (Bootstrap purple-like)
     REGULAR_LAP_SECTOR_STYLE = {'backgroundColor': '#ffc107', 'color': '#343a40', 'fontWeight': 'normal'} # Bootstrap warning yellow, dark text
     # Ensure these styles are distinct enough from tyre colors
-    # <<< ADDED BEST LAP/SECTOR STYLES --- END >>>
-
+    
+    IN_PIT_STYLE = {'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'} 
+    PIT_DURATION_STYLE = {'backgroundColor': '#007bff', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'} # Bootstrap primary blue
 
     stores_and_intervals = html.Div([
         dcc.Interval(id='interval-component-map-animation', interval=100, n_intervals=0),
@@ -149,12 +149,13 @@ def create_layout():
                 id='timing-data-actual-table', columns=timing_table_columns, data=[],
                 fixed_rows={'headers': True},
                 style_table={'height': '720px', 'minHeight': '650px', 'overflowY': 'auto', 'overflowX': 'auto'},
-                style_cell={
-                    'minWidth': '30px', 'width': '60px', 'maxWidth': '170px',
-                    'overflow': 'hidden', 'textOverflow': 'ellipsis',
+                style_cell={ # General cell styling
+                    'minWidth': '30px', 'width': 'auto', # Let width be auto by default
+                    'overflow': 'hidden', 'textOverflow': 'ellipsis', # Standard for handling overflow
                     'textAlign': 'left', 'padding': '3px 5px', 'fontSize':'0.8rem',
                     'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white',
-                    'whiteSpace': 'normal', 'height': 'auto'
+                    'whiteSpace': 'normal', # Allow wrapping if necessary
+                    'height': 'auto'
                 },
                 style_header={
                     'backgroundColor': 'rgb(30, 30, 30)', 'fontWeight': 'bold',
@@ -176,7 +177,13 @@ def create_layout():
                     {'if': {'column_id': 'Pos'}, 'textAlign': 'center', 'fontWeight': 'bold', 'width': '35px', 'minWidth':'35px'},
                     {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '35px', 'minWidth':'35px', 'paddingRight':'2px'},
                     {'if': {'column_id': 'Car'}, 'textAlign': 'left', 'width': '45px', 'minWidth':'45px'},
-                    {'if': {'column_id': 'Pits'}, 'textAlign': 'center', 'width': '45px', 'minWidth':'35px'},
+                    {'if': {'column_id': 'Pits'}, 
+                     'minWidth': '45px',    # Ensure it has enough base space for "In Pit: XX.Xs" or "Stop: XX.Xs"
+                     'width': 'auto',       # Allow it to grow based on content
+                     'maxWidth': '150px',   # Prevent it from becoming excessively wide
+                     'textAlign': 'center',
+                     'whiteSpace': 'nowrap' # Prefer to keep pit time on one line if possible
+                    }, 
                     {'if': {'column_id': 'Interval'}, 'width': '75px', 'minWidth': '65px', 'maxWidth': '80px', 'textAlign': 'right', 'paddingRight':'5px'},
                     {'if': {'column_id': 'Gap'},      'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
                     
@@ -199,6 +206,10 @@ def create_layout():
                     {'if': {'column_id': 'S1',       'filter_query': '{IsOverallBestS1_Str} = "TRUE" && {S1} != "-"'}, **OVERALL_BEST_STYLE},
                     {'if': {'column_id': 'S2',       'filter_query': '{IsOverallBestS2_Str} = "TRUE" && {S2} != "-"'}, **OVERALL_BEST_STYLE},
                     {'if': {'column_id': 'S3',       'filter_query': '{IsOverallBestS3_Str} = "TRUE" && {S3} != "-"'}, **OVERALL_BEST_STYLE},
+                    
+                    # Conditional styling for Pits column
+                    {'if': {'column_id': 'Pits', 'filter_query': '{PitDisplayState_Str} = "IN_PIT_LIVE"'}, **IN_PIT_STYLE},
+                    {'if': {'column_id': 'Pits', 'filter_query': '{PitDisplayState_Str} = "SHOW_COMPLETED_DURATION"'}, **PIT_DURATION_STYLE},
                     
                     # Default styling for lap and sector times (width, alignment) - These should come AFTER color styling
                     {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},

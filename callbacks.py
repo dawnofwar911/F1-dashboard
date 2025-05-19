@@ -160,8 +160,8 @@ def update_session_and_weather_info(n):
     session_info_str = config.TEXT_SESSION_INFO_AWAITING # Use constant
     weather_details_spans = []
     main_weather_icon = config.WEATHER_ICON_MAP["default"] # Use constant
-    weather_card_color = "light"
-    weather_card_inverse = False
+    weather_card_color = "light" # Default to "light"
+    weather_card_inverse = False # Dark text on "light" background
 
     try:
         with app_state.app_state_lock:
@@ -196,27 +196,44 @@ def update_session_and_weather_info(n):
         is_raining = rainfall_val == '1' or rainfall_val == 1
 
         overall_condition = "default"
-        weather_card_color = "light"
-        weather_card_inverse = False
-
+        # <<< MODIFIED: Weather card color logic >>>
         if is_raining:
             overall_condition = "rain"
-            weather_card_color = "info"
-            weather_card_inverse = True
+            weather_card_color = "info" 
+            weather_card_inverse = True 
         elif air_temp is not None and humidity is not None:
-            if air_temp > 25 and humidity < 60 :
+            if air_temp > 25 and humidity < 60 : # Sunny and relatively dry
                 overall_condition = "sunny"
-                weather_card_color = "warning"
-                weather_card_inverse = False
-            elif humidity >= 75 or air_temp < 15:
+                weather_card_color = "warning" # Keep Bootstrap "warning" yellow
+                weather_card_inverse = True    # <<< CHANGED to True for light text on yellow
+            elif humidity >= 75 or air_temp < 15: # Humid or cool
                 overall_condition = "cloudy"
-                weather_card_color = "secondary"
-                weather_card_inverse = True
-        elif air_temp is not None:
-             if air_temp > 28: overall_condition = "sunny"
-             elif air_temp < 10: overall_condition = "cloudy"
+                weather_card_color = "secondary" 
+                weather_card_inverse = True 
+            else: 
+                overall_condition = "partly_cloudy" 
+                weather_card_color = "light"
+                weather_card_inverse = False
+        elif air_temp is not None: 
+             if air_temp > 28:
+                 overall_condition = "sunny"
+                 weather_card_color = "warning" # Keep Bootstrap "warning" yellow
+                 weather_card_inverse = True    # <<< CHANGED to True for light text on yellow
+             elif air_temp < 10:
+                 overall_condition = "cloudy"
+                 weather_card_color = "secondary"
+                 weather_card_inverse = True
+             else: 
+                overall_condition = "partly_cloudy"
+                weather_card_color = "light"
+                weather_card_inverse = False
+        else: 
+            overall_condition = "default"
+            weather_card_color = "light"
+            weather_card_inverse = False
 
-        main_weather_icon = config.WEATHER_ICON_MAP.get(overall_condition, config.WEATHER_ICON_MAP["default"]) # Use constant
+
+        main_weather_icon = config.WEATHER_ICON_MAP.get(overall_condition, config.WEATHER_ICON_MAP["default"]) 
 
         if air_temp is not None: weather_details_spans.append(html.Span(f"Air: {air_temp:.1f}°C", className="me-3"))
         if track_temp is not None: weather_details_spans.append(html.Span(f"Track: {track_temp:.1f}°C", className="me-3"))
@@ -229,22 +246,36 @@ def update_session_and_weather_info(n):
                  except (ValueError, TypeError): wind_str += f" ({wind_direction})"
             weather_details_spans.append(html.Span(wind_str, className="me-3"))
 
-        if is_raining and overall_condition != "rain":
+        # Ensure "RAIN" text color contrasts with its card
+        # Default is white text if weather_card_inverse is True (e.g. for "info" card)
+        # If card were light, we'd want dark blue text for "RAIN"
+        rain_text_color_on_light_card = "#007bff" # Example blue
+        rain_text_color_on_dark_card = "white"
+
+        if is_raining:
+            # Remove any pre-existing "RAIN" span to avoid duplication if logic changes
+            weather_details_spans = [s for s in weather_details_spans if not (isinstance(s, html.Span) and getattr(s, 'children', '') == "RAIN")]
+            
+            current_rain_text_color = rain_text_color_on_dark_card if weather_card_inverse else rain_text_color_on_light_card
+            if overall_condition == "rain" and weather_card_color == "light": # Explicitly handle if rain card is "light"
+                 current_rain_text_color = rain_text_color_on_light_card
+            
             weather_details_spans.append(html.Span("RAIN", className="me-2 fw-bold",
-                                         style={'color':'#007bff'}))
+                                         style={'color': current_rain_text_color} ))
+
 
         if not weather_details_spans and overall_condition == "default":
-            final_weather_display_children = [html.Em(config.TEXT_WEATHER_UNAVAILABLE)] # Use constant
+            final_weather_display_children = [html.Em(config.TEXT_WEATHER_UNAVAILABLE)] 
         elif not weather_details_spans and overall_condition != "default":
-             final_weather_display_children = [html.Em(config.TEXT_WEATHER_CONDITION_GENERIC.format(condition=overall_condition.capitalize()))] # Use constant
+             final_weather_display_children = [html.Em(config.TEXT_WEATHER_CONDITION_GENERIC.format(condition=overall_condition.replace("_"," ").title()))] 
         else:
             final_weather_display_children = weather_details_spans
+        
 
         return session_info_str, html.Div(children=final_weather_display_children), main_weather_icon, weather_card_color, weather_card_inverse
 
     except Exception as e:
         logger.error(f"Session/Weather Display Error in callback: {e}", exc_info=True)
-        # Use constants
         return config.TEXT_SESSION_INFO_ERROR, config.TEXT_WEATHER_ERROR, config.WEATHER_ICON_MAP["default"], "light", False
 
 
@@ -277,6 +308,7 @@ def update_main_data_displays(n):
     table_data = []
     timestamp_text = config.TEXT_WAITING_FOR_DATA # Use constant
     start_time = time.monotonic()
+    current_time_for_callbacks = time.time() # Use a consistent time for this callback run
 
     try:
         with app_state.app_state_lock:
@@ -373,6 +405,22 @@ def update_main_data_displays(n):
                     pits_display_val = str(reliable_stops)
                 elif timing_data_stops > 0:
                     pits_display_val = str(timing_data_stops)
+                
+                pit_display_state_for_style = "SHOW_COUNT"
+                    
+                is_in_pit_flag = driver_state.get('InPit', False)
+                current_pit_entry_system_time = driver_state.get('current_pit_entry_system_time')
+                last_pit_duration_val = driver_state.get('last_pit_duration')
+                last_pit_duration_processed_ts = driver_state.get('last_pit_duration_timestamp')
+                just_exited_pit_event_ts = driver_state.get('just_exited_pit_event_time')
+
+                reliable_stops = driver_state.get('ReliablePitStops', 0)
+                timing_data_stops = driver_state.get('NumberOfPitStops', 0) # This is an int
+                pits_count_default_text = '0'
+                if reliable_stops > 0:
+                    pits_count_default_text = str(reliable_stops)
+                elif timing_data_stops > 0:
+                    pits_count_default_text = str(timing_data_stops)
 
                 status = driver_state.get('Status', 'N/A')
 
@@ -399,13 +447,48 @@ def update_main_data_displays(n):
                 is_overall_best_s2_flag = driver_state.get('IsOverallBestSector', [False]*3)[1]
                 is_overall_best_s3_flag = driver_state.get('IsOverallBestSector', [False]*3)[2]
                 # <<< ADDED BEST LAP/SECTOR FLAGS FOR STYLING --- END >>>
+                
+                is_in_pit_flag = driver_state.get('InPit', False)
+                entry_wall_time = driver_state.get('current_pit_entry_system_time') # Renamed for clarity
+                speed_at_entry = driver_state.get('pit_entry_replay_speed', 1.0) # Get speed at pit entry
+                if not isinstance(speed_at_entry, (float, int)) or speed_at_entry <= 0:
+                    speed_at_entry = 1.0
+    
+                final_live_pit_text = driver_state.get('final_live_pit_time_text')
+                final_live_pit_text_ts = driver_state.get('final_live_pit_time_display_timestamp')
+                
+                # Default pits display (your original pits_display_val logic)
+                reliable_stops = driver_state.get('ReliablePitStops', 0)
+                timing_data_stops = driver_state.get('NumberOfPitStops', 0)
+                pits_text_to_display = '0' 
+                if reliable_stops > 0: pits_text_to_display = str(reliable_stops)
+                elif timing_data_stops > 0: pits_text_to_display = str(timing_data_stops)
+                
+                pit_display_state_for_style = "SHOW_COUNT"       
+    
+                if is_in_pit_flag:
+                    pit_display_state_for_style = "IN_PIT_LIVE"
+                    if entry_wall_time:
+                        current_wall_time_elapsed = current_time_for_callbacks - entry_wall_time
+                        # Scale the live timer by the replay speed that was active at pit entry
+                        live_game_time_elapsed = current_wall_time_elapsed * speed_at_entry 
+                        pits_text_to_display = f"In Pit: {live_game_time_elapsed:.1f}s"
+                    else:
+                        pits_text_to_display = "In Pit" # Should ideally not happen if entry_wall_time is always set
+                
+                elif final_live_pit_text and \
+                     final_live_pit_text_ts and \
+                     (current_time_for_callbacks - final_live_pit_text_ts < 15): # Show for 15 seconds
+                    
+                    pits_text_to_display = final_live_pit_text 
+                    pit_display_state_for_style = "SHOW_COMPLETED_DURATION" 
 
                 row = {
                     'id': car_num, # Add a unique ID for the row, car_num is good
                     'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre,
                     'Gap': gap, 'Interval': interval,
                     'Last Lap': last_lap_val, 'Best Lap': best_lap_val,
-                    'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_display_val,
+                    'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_text_to_display,
                     'Status': status, 'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs,
 
                    # Original boolean flags (can keep them if used elsewhere, or remove if only string versions are needed for table)
@@ -430,6 +513,8 @@ def update_main_data_displays(n):
 
                     'IsOverallBestS3_Str': "TRUE" if is_overall_best_s3_flag else "FALSE",
                     'IsPersonalBestS3_Str': "TRUE" if is_s3_personal_best_flag else "FALSE",
+                    
+                    'PitDisplayState_Str': pit_display_state_for_style,
                 }
                 processed_table_data.append(row)
 

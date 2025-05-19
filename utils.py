@@ -44,6 +44,39 @@ def create_empty_figure_with_message(height, uirevision, message, margins):
                          'showarrow': False, 'font': {'size': 12}}]
     })
 
+def parse_feed_time_to_seconds(time_str: str) -> float | None:
+    """
+    Parses a time string from the feed (e.g., "00:19:50.716" or "01:23.456") into total seconds.
+    Handles formats MM:SS.ms and HH:MM:SS.ms.
+    """
+    if not time_str or not isinstance(time_str, str):
+        return None
+    try:
+        parts = time_str.split(':')
+        if len(parts) == 3:  # HH:MM:SS.ms
+            h = int(parts[0])
+            m = int(parts[1])
+            s_ms_parts = parts[2].split('.')
+            s = int(s_ms_parts[0])
+            ms = int(s_ms_parts[1]) if len(s_ms_parts) > 1 else 0
+            return h * 3600 + m * 60 + s + (ms / 1000.0)
+        elif len(parts) == 2:  # MM:SS.ms
+            m = int(parts[0])
+            s_ms_parts = parts[1].split('.')
+            s = int(s_ms_parts[0])
+            ms = int(s_ms_parts[1]) if len(s_ms_parts) > 1 else 0
+            return m * 60 + s + (ms / 1000.0)
+        else: # Try to parse if it's just seconds.milliseconds
+            s_ms_parts = time_str.split('.')
+            if len(s_ms_parts) <= 2: # Avoids splitting on multiple dots if any
+                s = int(s_ms_parts[0])
+                ms = int(s_ms_parts[1]) if len(s_ms_parts) > 1 else 0
+                return s + (ms / 1000.0)
+            return None
+    except (ValueError, TypeError, IndexError) as e:
+        # logger_utils.warning(f"Could not parse feed time string '{time_str}': {e}") # Optional logging
+        return None
+
 def parse_lap_time_to_seconds(time_str: str):
     """
     Parses an F1 lap time string (e.g., "1:23.456" or "58.789") into total seconds.

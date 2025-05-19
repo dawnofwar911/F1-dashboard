@@ -28,10 +28,26 @@ LIVE_DATA_FILENAME_FALLBACK_PREFIX = "F1LiveData"
 NEGOTIATE_URL_BASE = "https://livetiming.formula1.com/signalr"
 WEBSOCKET_URL_BASE = "wss://livetiming.formula1.com/signalr"
 HUB_NAME = "Streaming"
-STREAMS_TO_SUBSCRIBE = ["Heartbeat", "CarData.z", "Position.z", "ExtrapolatedClock",
-                        "TimingAppData", "TimingData", "TimingStats", "TrackStatus",
-                        "SessionData", "DriverList", "RaceControlMessages", "SessionInfo",
-                        "LapCount"]
+STREAMS_TO_SUBSCRIBE = ["Heartbeat",
+        "CarData.z",
+        "Position.z",
+        "ExtrapolatedClock",
+        "TopThree",
+        "RcmSeries",
+        "TimingStats",
+        "TimingAppData",
+        "WeatherData",
+        "TrackStatus",
+        "SessionStatus",
+        "DriverList",
+        "RaceControlMessages",
+        "SessionInfo",
+        "SessionData",
+        "LapCount",
+        "TimingData",
+        "TeamRadio",
+        "PitLaneTimeCollection",
+        "ChampionshipPrediction"]
 SIGNALR_CLIENT_PROTOCOL = "1.5"
 REQUESTS_TIMEOUT_SECONDS = 15
 USER_AGENT_NEGOTIATE = "Python SignalRClient"
@@ -49,12 +65,12 @@ CHANNEL_MAP = {
 
 # --- Timing Table Column Definitions ---
 TIMING_TABLE_COLUMNS_CONFIG = [ # Renamed to avoid conflict with layout.py variable
-    {"name": "No.", "id": "No."}, {"name": "Car", "id": "Car"}, {"name": "Pos", "id": "Pos"},
+    {"name": "No.", "id": "No."}, {"name": "Car", "id": "Car"}, {"name": "Pos", "id": "Pos"},{"name": "Pits", "id": "Pits"},
     {"name": "Tyre", "id": "Tyre"},
     {"name": "Interval", "id": "Interval"}, {"name": "Gap", "id": "Gap"},
     {"name": "Last Lap", "id": "Last Lap"}, {"name": "Best Lap", "id": "Best Lap"},
     {"name": "S1", "id": "S1"}, {"name": "S2", "id": "S2"}, {"name": "S3", "id": "S3"},
-    {"name": "Pits", "id": "Pits"}, {"name": "Status", "id": "Status"},
+    {"name": "Status", "id": "Status"},
 ]
 
 # --- UI Constants: Text & Messages ---
@@ -84,6 +100,9 @@ TEXT_TRACK_STATUS_DEFAULT_LABEL = "CLEAR" # Used in layout.py
 # Lap Counter
 TEXT_LAP_COUNTER_DEFAULT = "Lap: -/-"
 TEXT_LAP_COUNTER_AWAITING = "Lap: Awaiting Data..."
+
+# Pit Data
+TEXT_PIT_OUT_DISPLAY = "Pit Out"
 
 # Session Types
 SESSION_TYPE_RACE = "Race"
