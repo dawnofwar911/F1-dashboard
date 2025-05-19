@@ -23,16 +23,16 @@ def create_layout():
     timing_table_columns = config.TIMING_TABLE_COLUMNS_CONFIG #
 
     tyre_style_base = {'textAlign': 'center', 'fontWeight': 'bold', 'border': '1px solid #444'}
-
-    # <<< ADDED BEST LAP/SECTOR STYLES --- START >>>
+    
     # Define standard styles for personal and overall bests for readability
     # Colors can be moved to config.py if preferred
     PERSONAL_BEST_STYLE = {'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold'} # Green (Bootstrap success-like)
     OVERALL_BEST_STYLE = {'backgroundColor': '#6f42c1', 'color': 'white', 'fontWeight': 'bold'}  # Purple (Bootstrap purple-like)
     REGULAR_LAP_SECTOR_STYLE = {'backgroundColor': '#ffc107', 'color': '#343a40', 'fontWeight': 'normal'} # Bootstrap warning yellow, dark text
     # Ensure these styles are distinct enough from tyre colors
-    # <<< ADDED BEST LAP/SECTOR STYLES --- END >>>
-
+    
+    IN_PIT_STYLE = {'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'} 
+    PIT_DURATION_STYLE = {'backgroundColor': '#007bff', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'} # Bootstrap primary blue
 
     stores_and_intervals = html.Div([
         dcc.Interval(id='interval-component-map-animation', interval=100, n_intervals=0),
@@ -199,6 +199,10 @@ def create_layout():
                     {'if': {'column_id': 'S1',       'filter_query': '{IsOverallBestS1_Str} = "TRUE" && {S1} != "-"'}, **OVERALL_BEST_STYLE},
                     {'if': {'column_id': 'S2',       'filter_query': '{IsOverallBestS2_Str} = "TRUE" && {S2} != "-"'}, **OVERALL_BEST_STYLE},
                     {'if': {'column_id': 'S3',       'filter_query': '{IsOverallBestS3_Str} = "TRUE" && {S3} != "-"'}, **OVERALL_BEST_STYLE},
+                    
+                    # Conditional styling for Pits column
+                    {'if': {'column_id': 'Pits', 'filter_query': '{PitDisplayState_Str} = "IN_PIT_LIVE"'}, **IN_PIT_STYLE},
+                    {'if': {'column_id': 'Pits', 'filter_query': '{PitDisplayState_Str} = "SHOW_COMPLETED_DURATION"'}, **PIT_DURATION_STYLE},
                     
                     # Default styling for lap and sector times (width, alignment) - These should come AFTER color styling
                     {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
