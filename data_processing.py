@@ -119,47 +119,36 @@ def _process_timing_app_data(data):
                                          logger.warning(f"Driver {car_num_str}: Error converting StartLaps/NumberOfLaps for age calc: {e}. Stint: {latest_stint_key}")
                         else:
                             logger.warning(f"Driver {car_num_str}: Data for Stint {latest_stint_key} is not a dict: {type(latest_stint_info)}")
-                        # Iterate through previous stints to find the most recent completed pit stop
-                        if len(stints_payload) > 1: # Means there's at least one completed stint
-                            # The second to last stint in stints_payload is the one ending in the most recent pit stop
-                            # if stints are ordered chronologically by their key (0, 1, 2...)
-                            try:
-                                stint_keys = sorted(stints_payload.keys(), key=int)
-                                if len(stint_keys) >= 2: # Need at least two stints for a completed pitstop
-                                    # The stint *before* the current one is the one that ended with a pit stop.
-                                    # The `stint_keys[-2]` is the key for the stint that *ended* with the last pit stop.
-                                    # The `stint_keys[-1]` is the key for the *current* stint *after* the last pit stop.
-                                    # The PitInTime and PitOutTime for the stop *between* these two stints
-                                    # would be associated with the *start* of the current stint (key: stint_keys[-1])
-                                    # or potentially recorded on the *end* of the previous stint (key: stint_keys[-2])
-                                    # F1 live timing often puts PitInTime/PitOutTime on the stint *following* the pitstop.
-                                    
-                                    last_completed_stint_key = stint_keys[-1] # Key of the stint *after* the pit stop
-                                    last_completed_stint_data = stints_payload.get(last_completed_stint_key)
+                        if isinstance(latest_stint_info, dict) and \
+                           'PitInTime' in latest_stint_info and latest_stint_info['PitInTime'] and \
+                           'PitOutTime' in latest_stint_info and latest_stint_info['PitOutTime']:
+                            
+                            pit_in_time_str = latest_stint_info['PitInTime']
+                            pit_out_time_str = latest_stint_info['PitOutTime']
+                            
+                            logger.debug(f"[PIT_DEBUG] Car {car_num_str}, Stint {latest_stint_key_str}: Found PitInTime='{pit_in_time_str}', PitOutTime='{pit_out_time_str}'")
 
-                                    if last_completed_stint_data and \
-                                       'PitInTime' in last_completed_stint_data and \
-                                       'PitOutTime' in last_completed_stint_data:
-                                        
-                                        pit_in_time_str = last_completed_stint_data['PitInTime']
-                                        pit_out_time_str = last_completed_stint_data['PitOutTime']
+                            pit_in_seconds = utils.parse_feed_time_to_seconds(pit_in_time_str)
+                            pit_out_seconds = utils.parse_feed_time_to_seconds(pit_out_time_str)
+                            
+                            logger.debug(f"[PIT_DEBUG] Car {car_num_str}, Stint {latest_stint_key_str}: Parsed PitInSec={pit_in_seconds}, PitOutSec={pit_out_seconds}")
 
-                                        pit_in_seconds = utils.parse_feed_time_to_seconds(pit_in_time_str)
-                                        pit_out_seconds = utils.parse_feed_time_to_seconds(pit_out_time_str)
-
-                                        if pit_in_seconds is not None and pit_out_seconds is not None and pit_out_seconds >= pit_in_seconds:
-                                            duration = round(pit_out_seconds - pit_in_seconds, 1)
-                                            # Check if this is a new duration to avoid re-setting timestamp
-                                            if driver_current_state.get('last_pit_duration') != duration or \
-                                               driver_current_state.get('last_pit_stint_key_ref') != last_completed_stint_key:
-                                                driver_current_state['last_pit_duration'] = duration
-                                                driver_current_state['last_pit_duration_timestamp'] = time.time()
-                                                driver_current_state['last_pit_stint_key_ref'] = last_completed_stint_key # To identify this specific stop
-                                                logger.info(f"Driver {car_num_str}: Updated last_pit_duration to {duration}s from Stint {last_completed_stint_key}.")
-                                        else:
-                                            logger.warning(f"Driver {car_num_str}: Could not calculate valid duration for Stint {last_completed_stint_key}. In: {pit_in_time_str}, Out: {pit_out_time_str}")
-                            except Exception as e_pit_duration:
-                                logger.error(f"Driver {car_num_str}: Error calculating pit duration from StintsData: {e_pit_duration}", exc_info=True)
+                            if pit_in_seconds is not None and pit_out_seconds is not None and pit_out_seconds >= pit_in_seconds:
+                                duration = round(pit_out_seconds - pit_in_seconds, 1)
+                                logger.info(f"[PIT_INFO] Car {car_num_str}, Stint {latest_stint_key_str}: Calculated pit duration: {duration}s.")
+                                
+                                # Check if this is a new duration for this specific stint to avoid redundant updates of timestamp
+                                if driver_current_state.get('last_pit_stint_key_ref') != latest_stint_key_str or \
+                                   driver_current_state.get('last_pit_duration') != duration:
+                                    driver_current_state['last_pit_duration'] = duration
+                                    driver_current_state['last_pit_duration_timestamp'] = time.time()
+                                    driver_current_state['last_pit_stint_key_ref'] = latest_stint_key_str
+                                    logger.info(f"[PIT_INFO] Car {car_num_str}: Stored last_pit_duration={duration}s, last_pit_duration_timestamp={driver_current_state['last_pit_duration_timestamp']:.2f}, stint_ref={latest_stint_key_str}.")
+                                else:
+                                    logger.debug(f"[PIT_DEBUG] Car {car_num_str}, Stint {latest_stint_key_str}: Duration {duration}s already processed.")
+                            else:
+                                logger.warning(f"[PIT_WARN] Car {car_num_str}, Stint {latest_stint_key_str}: Invalid parsed times or out_time < in_time. PitInSec={pit_in_seconds}, PitOutSec={pit_out_seconds}")
+                        # <<< END LOGGING FOR PIT STOP DURATION CALCULATION >>>
 
                     except (ValueError, IndexError, KeyError, TypeError) as e:
                          logger.error(f"Driver {car_num_str}: Error processing Stints data in TimingAppData: {e} - Data: {stints_payload}", exc_info=False)
@@ -167,9 +156,13 @@ def _process_timing_app_data(data):
                     driver_current_state['TyreCompound'] = current_compound
                     driver_current_state['TyreAge'] = current_age
                     driver_current_state['IsNewTyre'] = is_new_tyre
-    elif data:
-         logger.warning(f"Unexpected TimingAppData format received: {type(data)}")
+        else: # Stints_payload is not a dict or is empty
+            if 'Stints' in line_data: # Check if 'Stints' key exists but is empty/invalid
+                 logger.debug(f"Car {car_num_str}: Stints data received but empty or not a dict: {stints_payload}")
 
+
+    elif data: # If data is not None but also not the expected dict structure
+         logger.warning(f"Unexpected TimingAppData format received: {type(data)}")
 
 def _process_driver_list(data):
     """ Helper to process DriverList data ONLY from the stream """
@@ -197,7 +190,9 @@ def _process_driver_list(data):
                 "last_pit_duration": None,
                 "last_pit_duration_timestamp": None,
                 "last_pit_stint_key_ref": None, # To track which stint provided the last duration
-                "just_exited_pit_event_time": None # Timestamp of InPit changing False from True
+                "just_exited_pit_event_time": None, # Timestamp of InPit changing False from True
+                "final_live_pit_time_display": None,
+                "final_live_pit_time_display_timestamp": None,
             }
             
             if is_new_driver:
@@ -249,27 +244,47 @@ def _process_timing_data(data):
                 original_last_lap_time_info = driver_current_state.get('LastLapTime', {}).copy()
                 
                 was_previously_in_pit = driver_current_state.get('InPit', False)
-                is_currently_in_pit = line_data.get('InPit', was_previously_in_pit) # Use new value if present
+                is_currently_in_pit_from_feed = line_data.get('InPit', was_previously_in_pit) 
 
-                if is_currently_in_pit and not was_previously_in_pit: # Just entered pits
+                if is_currently_in_pit_from_feed and not was_previously_in_pit: # Just entered pits
                     driver_current_state['current_pit_entry_system_time'] = time.time()
-                    driver_current_state.pop('just_exited_pit_event_time', None) # Clear exit flag
-                    logger.debug(f"Driver {car_num_str} entered pit. Stored entry system time.")
-                elif not is_currently_in_pit and was_previously_in_pit: # Just exited pits
-                    driver_current_state.pop('current_pit_entry_system_time', None)
-                    driver_current_state['just_exited_pit_event_time'] = time.time() # Mark exit event
-                    logger.debug(f"Driver {car_num_str} exited pit. Stored exit system time.")
+                    driver_current_state['final_live_pit_time_text'] = None 
+                    driver_current_state['final_live_pit_time_display_timestamp'] = None
+                    driver_current_state['just_exited_pit_event_time'] = None 
+                    logger.info(f"[PIT_INFO] Car {car_num_str} ENTERED PIT (TimingData).")
                 
-                # Clear just_exited_pit_event_time if driver is no longer PitOut and not InPit either
-                # (meaning they are back on track normally after a pit exit sequence)
-                is_pit_out = line_data.get('PitOut', driver_current_state.get('PitOut', False))
-                if not is_currently_in_pit and not is_pit_out and driver_current_state.get('just_exited_pit_event_time'):
-                    # Consider clearing it after a delay in callbacks, or if a new lap starts
-                    pass # Handled by callback timeout for now
+                elif not is_currently_in_pit_from_feed and was_previously_in_pit: # Just exited pits
+                    entry_time_wall_clock = driver_current_state.get('current_pit_entry_system_time')
+                    
+                    if entry_time_wall_clock is not None:
+                        final_elapsed_wall_time = time.time() - entry_time_wall_clock
+                        
+                        current_replay_speed = app_state.replay_speed 
+                        if not isinstance(current_replay_speed, (float, int)) or current_replay_speed <= 0:
+                            current_replay_speed = 1.0 # Default to 1x if invalid
+                        
+                        # Adjust the elapsed time by the replay speed
+                        adjusted_elapsed_time = final_elapsed_wall_time * current_replay_speed
+                        
+                        driver_current_state['final_live_pit_time_text'] = f"Stop: {adjusted_elapsed_time:.1f}s" 
+                        driver_current_state['final_live_pit_time_display_timestamp'] = time.time()
+                        logger.info(f"[PIT_INFO] Car {car_num_str} EXITED PIT (TimingData). Wall time: {final_elapsed_wall_time:.2f}s, ReplaySpeed: {current_replay_speed}x, Adjusted displayed time: {adjusted_elapsed_time:.1f}s. Final text: '{driver_current_state['final_live_pit_time_text']}'")
+                    else:
+                        logger.debug(f"[PIT_DEBUG] Car {car_num_str} EXITED PIT (TimingData), but no current_pit_entry_system_time. Setting just_exited_pit_event_time only.")
 
-                # Update general timing fields
+                    driver_current_state.pop('current_pit_entry_system_time', None) 
+                    driver_current_state['just_exited_pit_event_time'] = time.time() 
+                
+                # Update general timing fields (InPit, PitOut, etc.)
                 for key in ["Position", "Time", "GapToLeader", "InPit", "Retired", "Stopped", "PitOut", "NumberOfLaps", "NumberOfPitStops"]:
-                     if key in line_data: driver_current_state[key] = line_data[key]
+                     if key in line_data: 
+                         if key == "NumberOfPitStops":
+                             try:
+                                 driver_current_state[key] = int(line_data[key])
+                             except (ValueError, TypeError):
+                                 driver_current_state.setdefault(key, 0)
+                         else:
+                            driver_current_state[key] = line_data[key]
 
                 # Update BestLapTime (driver's personal best)
                 if "BestLapTime" in line_data:

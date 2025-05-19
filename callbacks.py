@@ -405,6 +405,8 @@ def update_main_data_displays(n):
                     pits_display_val = str(reliable_stops)
                 elif timing_data_stops > 0:
                     pits_display_val = str(timing_data_stops)
+                
+                pit_display_state_for_style = "SHOW_COUNT"
                     
                 is_in_pit_flag = driver_state.get('InPit', False)
                 current_pit_entry_system_time = driver_state.get('current_pit_entry_system_time')
@@ -412,27 +414,13 @@ def update_main_data_displays(n):
                 last_pit_duration_processed_ts = driver_state.get('last_pit_duration_timestamp')
                 just_exited_pit_event_ts = driver_state.get('just_exited_pit_event_time')
 
-                pits_display_text_final = pits_display_val # Default to count
-                pit_display_state_for_style = "SHOW_COUNT" 
-                
-                if is_in_pit_flag:
-                    pit_display_state_for_style = "IN_PIT_LIVE" # For red style
-                    if current_pit_entry_system_time:
-                        elapsed_seconds = current_time_for_callbacks - current_pit_entry_system_time
-                        pits_display_text_final = f"In Pit: {elapsed_seconds:.1f}s"
-                    else:
-                        pits_display_text_final = "In Pit" 
-                elif just_exited_pit_event_ts and \
-                     (current_time_for_callbacks - just_exited_pit_event_ts < 10): # Show for 10s after detected exit
-                    if last_pit_duration_val is not None and \
-                       last_pit_duration_processed_ts and \
-                       last_pit_duration_processed_ts >= (just_exited_pit_event_ts - 3): # Allow AppData to be slightly before/at exit event
-                        pits_display_text_final = f"Stop: {last_pit_duration_val:.1f}s"
-                        pit_display_state_for_style = "SHOW_COMPLETED_DURATION" # For blue style
-                    else:
-                        pits_display_text_final = config.TEXT_PIT_OUT_DISPLAY # "Pit Out"
-                        # Default to SHOW_COUNT style or define a specific PIT_OUT_PENDING style if desired
-                # Else, it remains the default pit count and SHOW_COUNT state.
+                reliable_stops = driver_state.get('ReliablePitStops', 0)
+                timing_data_stops = driver_state.get('NumberOfPitStops', 0) # This is an int
+                pits_count_default_text = '0'
+                if reliable_stops > 0:
+                    pits_count_default_text = str(reliable_stops)
+                elif timing_data_stops > 0:
+                    pits_count_default_text = str(timing_data_stops)
 
                 status = driver_state.get('Status', 'N/A')
 
@@ -459,13 +447,47 @@ def update_main_data_displays(n):
                 is_overall_best_s2_flag = driver_state.get('IsOverallBestSector', [False]*3)[1]
                 is_overall_best_s3_flag = driver_state.get('IsOverallBestSector', [False]*3)[2]
                 # <<< ADDED BEST LAP/SECTOR FLAGS FOR STYLING --- END >>>
+                
+                is_in_pit_flag = driver_state.get('InPit', False)
+                current_pit_entry_system_time = driver_state.get('current_pit_entry_system_time')
+                
+                final_live_pit_text = driver_state.get('final_live_pit_time_text')
+                final_live_pit_text_ts = driver_state.get('final_live_pit_time_display_timestamp')
+                
+                # Default pits display is the count (your original pits_display_val)
+                reliable_stops = driver_state.get('ReliablePitStops', 0)
+                timing_data_stops = driver_state.get('NumberOfPitStops', 0)
+                pits_text_to_display = '0' 
+                if reliable_stops > 0:
+                    pits_text_to_display = str(reliable_stops)
+                elif timing_data_stops > 0:
+                    pits_text_to_display = str(timing_data_stops)
+                
+                pit_display_state_for_style = "SHOW_COUNT" 
+
+                if is_in_pit_flag:
+                    pit_display_state_for_style = "IN_PIT_LIVE"
+                    if current_pit_entry_system_time:
+                        elapsed_seconds = current_time_for_callbacks - current_pit_entry_system_time
+                        # The live timer itself still shows wall-clock elapsed time
+                        pits_text_to_display = f"In Pit: {elapsed_seconds:.1f}s"
+                    else:
+                        pits_text_to_display = "In Pit"
+                # If NOT InPit, check if we should display the "final_live_pit_time_text" (which is now replay-speed adjusted)
+                elif final_live_pit_text and \
+                     final_live_pit_text_ts and \
+                     (current_time_for_callbacks - final_live_pit_text_ts < 15): # Show for 15 seconds
+                    
+                    pits_text_to_display = final_live_pit_text # This is "Stop: XX.Xs" (adjusted)
+                    pit_display_state_for_style = "SHOW_COMPLETED_DURATION" 
+                # Else, it defaults to pit_count_text and SHOW_COUNT state
 
                 row = {
                     'id': car_num, # Add a unique ID for the row, car_num is good
                     'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre,
                     'Gap': gap, 'Interval': interval,
                     'Last Lap': last_lap_val, 'Best Lap': best_lap_val,
-                    'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_display_val,
+                    'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_text_to_display,
                     'Status': status, 'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs,
 
                    # Original boolean flags (can keep them if used elsewhere, or remove if only string versions are needed for table)
