@@ -43,6 +43,46 @@ logger = logging.getLogger("F1App.Callbacks")
 # Note: TRACK_STATUS_STYLES and WEATHER_ICON_MAP are now in config.py
 
 @app.callback(
+    Output('timing-data-actual-table', 'columns'),
+    Input('interval-component-medium', 'n_intervals') # Trigger based on an interval
+    # Consider adding State('session-info-display', 'children') or a dcc.Store 
+    # if you want to trigger more specifically on session type changes,
+    # but interval-component-medium should catch session updates.
+)
+def update_timing_table_columns(n_intervals):
+    """
+    Dynamically sets the columns for the timing table based on the session type.
+    The 'Pits' column is only shown for Race or Sprint sessions.
+    """
+    with app_state.app_state_lock:
+        session_type = app_state.session_details.get('Type', None)
+    
+    # Assuming config.TIMING_TABLE_COLUMNS_CONFIG is a list of dicts, 
+    # where each dict has at least an 'id' and 'name' key.
+    all_columns = config.TIMING_TABLE_COLUMNS_CONFIG
+    
+    # Define columns that are primarily relevant for Race/Sprint sessions
+    race_sprint_specific_column_ids = ['Pits', 'Gap'] 
+    
+    if session_type is None: 
+        logger.debug("Session type is None, hiding race/sprint specific columns by default.")
+        columns_to_display = [
+            col for col in all_columns if col.get('id') not in race_sprint_specific_column_ids
+        ]
+        return columns_to_display
+
+    if session_type in [config.SESSION_TYPE_RACE, config.SESSION_TYPE_SPRINT]:
+        logger.debug(f"Session is '{session_type}', showing all relevant columns including Pits, Gap.")
+        return all_columns
+    else:
+        logger.debug(f"Session is '{session_type}', hiding Pits, Gap columns.")
+        columns_to_display = [
+            col for col in all_columns if col.get('id') not in race_sprint_specific_column_ids
+        ]
+        return columns_to_display
+
+
+@app.callback(
     Output('lap-counter-display', 'children'),
     Output('lap-counter-column', 'className'), # Target the column's className
     Input('interval-component-medium', 'n_intervals')
