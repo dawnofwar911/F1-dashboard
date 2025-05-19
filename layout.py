@@ -149,12 +149,13 @@ def create_layout():
                 id='timing-data-actual-table', columns=timing_table_columns, data=[],
                 fixed_rows={'headers': True},
                 style_table={'height': '720px', 'minHeight': '650px', 'overflowY': 'auto', 'overflowX': 'auto'},
-                style_cell={
-                    'minWidth': '30px', 'width': '60px', 'maxWidth': '170px',
-                    'overflow': 'hidden', 'textOverflow': 'ellipsis',
+                style_cell={ # General cell styling
+                    'minWidth': '30px', 'width': 'auto', # Let width be auto by default
+                    'overflow': 'hidden', 'textOverflow': 'ellipsis', # Standard for handling overflow
                     'textAlign': 'left', 'padding': '3px 5px', 'fontSize':'0.8rem',
                     'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white',
-                    'whiteSpace': 'normal', 'height': 'auto'
+                    'whiteSpace': 'normal', # Allow wrapping if necessary
+                    'height': 'auto'
                 },
                 style_header={
                     'backgroundColor': 'rgb(30, 30, 30)', 'fontWeight': 'bold',
@@ -176,7 +177,13 @@ def create_layout():
                     {'if': {'column_id': 'Pos'}, 'textAlign': 'center', 'fontWeight': 'bold', 'width': '35px', 'minWidth':'35px'},
                     {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '35px', 'minWidth':'35px', 'paddingRight':'2px'},
                     {'if': {'column_id': 'Car'}, 'textAlign': 'left', 'width': '45px', 'minWidth':'45px'},
-                    {'if': {'column_id': 'Pits'}, 'textAlign': 'center', 'width': '45px', 'minWidth':'35px'},
+                    {'if': {'column_id': 'Pits'}, 
+                     'minWidth': '45px',    # Ensure it has enough base space for "In Pit: XX.Xs" or "Stop: XX.Xs"
+                     'width': 'auto',       # Allow it to grow based on content
+                     'maxWidth': '100px',   # Prevent it from becoming excessively wide
+                     'textAlign': 'center',
+                     'whiteSpace': 'nowrap' # Prefer to keep pit time on one line if possible
+                    }, 
                     {'if': {'column_id': 'Interval'}, 'width': '75px', 'minWidth': '65px', 'maxWidth': '80px', 'textAlign': 'right', 'paddingRight':'5px'},
                     {'if': {'column_id': 'Gap'},      'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
                     

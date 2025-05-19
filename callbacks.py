@@ -470,9 +470,9 @@ def update_main_data_displays(n):
                     if current_pit_entry_system_time:
                         elapsed_seconds = current_time_for_callbacks - current_pit_entry_system_time
                         # The live timer itself still shows wall-clock elapsed time
-                        pits_text_to_display = f"In Pit: {elapsed_seconds:.1f}s"
+                        pits_text_to_display = f"Pit: {elapsed_seconds:.1f}s"
                     else:
-                        pits_text_to_display = "In Pit"
+                        pits_text_to_display = "Pit"
                 # If NOT InPit, check if we should display the "final_live_pit_time_text" (which is now replay-speed adjusted)
                 elif final_live_pit_text and \
                      final_live_pit_text_ts and \
