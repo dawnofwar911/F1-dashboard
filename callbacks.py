@@ -276,27 +276,44 @@ def update_connection_status(n):
     Input('interval-component-slow', 'n_intervals')
 )
 def update_session_and_weather_info(n):
-    session_info_str = config.TEXT_SESSION_INFO_AWAITING # Use constant
+    session_info_str = config.TEXT_SESSION_INFO_AWAITING
     weather_details_spans = []
-    main_weather_icon = config.WEATHER_ICON_MAP["default"] # Use constant
-    weather_card_color = "light" # Default to "light"
-    weather_card_inverse = False # Dark text on "light" background
+    
+    with app_state.app_state_lock:
+        # Overall condition state
+        overall_condition = app_state.last_known_overall_weather_condition
+        weather_card_color = app_state.last_known_weather_card_color
+        weather_card_inverse = app_state.last_known_weather_card_inverse
+        main_weather_icon_key = app_state.last_known_main_weather_icon_key
+
+        # Detailed weather metrics state (these will be our display fallbacks)
+        air_temp_to_display = app_state.last_known_air_temp
+        track_temp_to_display = app_state.last_known_track_temp
+        humidity_to_display = app_state.last_known_humidity
+        pressure_to_display = app_state.last_known_pressure
+        wind_speed_to_display = app_state.last_known_wind_speed
+        wind_direction_to_display = app_state.last_known_wind_direction
+        # This specific rainfall value is primarily for the "RAIN" text logic
+        rainfall_val_for_text = app_state.last_known_rainfall_val
+
+        # Get current session and new weather data payload
+        local_session_details = app_state.session_details.copy()
+        raw_weather_payload = app_state.data_store.get('WeatherData', {})
+        current_weather_data_payload = raw_weather_payload.get('data', {}) if isinstance(raw_weather_payload, dict) else {}
+        if not isinstance(current_weather_data_payload, dict):
+            current_weather_data_payload = {}
+
+    # Initialize icon based on persisted overall state
+    current_main_weather_icon = config.WEATHER_ICON_MAP.get(main_weather_icon_key, config.WEATHER_ICON_MAP["default"])
 
     try:
-        with app_state.app_state_lock:
-            local_session_details = app_state.session_details.copy()
-            raw_weather_payload = app_state.data_store.get('WeatherData', {})
-            local_weather_data = raw_weather_payload.get('data', {}) if isinstance(raw_weather_payload, dict) else {}
-            if not isinstance(local_weather_data, dict):
-                local_weather_data = {}
-
+        # Session Info part (remains the same)
         meeting = local_session_details.get('Meeting', {}).get('Name', '?')
-        session_name = local_session_details.get('Name', '?')
-        circuit = local_session_details.get('Circuit', {}).get('ShortName', '?')
+        # ... (rest of session info string building) ...
         parts = []
-        if circuit != '?': parts.append(f"{circuit}")
+        if local_session_details.get('Circuit', {}).get('ShortName', '?') != '?': parts.append(f"{local_session_details.get('Circuit', {}).get('ShortName', '?')}")
         if meeting != '?': parts.append(f"{meeting}")
-        if session_name != '?': parts.append(f"Session: {session_name}")
+        if local_session_details.get('Name', '?') != '?': parts.append(f"Session: {local_session_details.get('Name', '?')}")
         if parts: session_info_str = " | ".join(parts)
 
 
@@ -305,82 +322,145 @@ def update_session_and_weather_info(n):
             try: return float(value)
             except (ValueError, TypeError): return default
 
-        air_temp = safe_float(local_weather_data.get('AirTemp'))
-        track_temp = safe_float(local_weather_data.get('TrackTemp'))
-        humidity = safe_float(local_weather_data.get('Humidity'))
-        pressure = safe_float(local_weather_data.get('Pressure'))
-        wind_speed = safe_float(local_weather_data.get('WindSpeed'))
-        wind_direction = local_weather_data.get('WindDirection')
-        rainfall_val = local_weather_data.get('Rainfall')
-        is_raining = rainfall_val == '1' or rainfall_val == 1
+        # --- Step 2: Process new weather data if available and update detailed metrics ---
+        # These variables will hold values from the CURRENT data stream, or None
+        parsed_air_temp = safe_float(current_weather_data_payload.get('AirTemp'))
+        parsed_track_temp = safe_float(current_weather_data_payload.get('TrackTemp'))
+        parsed_humidity = safe_float(current_weather_data_payload.get('Humidity'))
+        parsed_pressure = safe_float(current_weather_data_payload.get('Pressure'))
+        parsed_wind_speed = safe_float(current_weather_data_payload.get('WindSpeed'))
+        parsed_wind_direction = current_weather_data_payload.get('WindDirection') # String or None
+        parsed_rainfall_val = current_weather_data_payload.get('Rainfall')      # String '0', '1' or None
 
-        overall_condition = "default"
-        # <<< MODIFIED: Weather card color logic >>>
-        if is_raining:
-            overall_condition = "rain"
-            weather_card_color = "info" 
-            weather_card_inverse = True 
-        elif air_temp is not None and humidity is not None:
-            if air_temp > 25 and humidity < 60 : # Sunny and relatively dry
-                overall_condition = "sunny"
-                weather_card_color = "warning" # Keep Bootstrap "warning" yellow
-                weather_card_inverse = True    # <<< CHANGED to True for light text on yellow
-            elif humidity >= 75 or air_temp < 15: # Humid or cool
-                overall_condition = "cloudy"
-                weather_card_color = "secondary" 
-                weather_card_inverse = True 
-            else: 
-                overall_condition = "partly_cloudy" 
-                weather_card_color = "light"
-                weather_card_inverse = False
-        elif air_temp is not None: 
-             if air_temp > 28:
-                 overall_condition = "sunny"
-                 weather_card_color = "warning" # Keep Bootstrap "warning" yellow
-                 weather_card_inverse = True    # <<< CHANGED to True for light text on yellow
-             elif air_temp < 10:
-                 overall_condition = "cloudy"
-                 weather_card_color = "secondary"
-                 weather_card_inverse = True
-             else: 
-                overall_condition = "partly_cloudy"
-                weather_card_color = "light"
-                weather_card_inverse = False
-        else: 
-            overall_condition = "default"
-            weather_card_color = "light"
-            weather_card_inverse = False
+        # Update display values and persisted app_state for each detailed metric
+        # if new data for it is valid (not None). Otherwise, retain the loaded last_known value for display.
+        with app_state.app_state_lock:
+            if parsed_air_temp is not None:
+                air_temp_to_display = parsed_air_temp
+                app_state.last_known_air_temp = parsed_air_temp
+            if parsed_track_temp is not None:
+                track_temp_to_display = parsed_track_temp
+                app_state.last_known_track_temp = parsed_track_temp
+            if parsed_humidity is not None:
+                humidity_to_display = parsed_humidity
+                app_state.last_known_humidity = parsed_humidity
+            if parsed_pressure is not None:
+                pressure_to_display = parsed_pressure
+                app_state.last_known_pressure = parsed_pressure
+            if parsed_wind_speed is not None:
+                wind_speed_to_display = parsed_wind_speed
+                app_state.last_known_wind_speed = parsed_wind_speed
+            if parsed_wind_direction is not None: # Allow empty string as valid update
+                wind_direction_to_display = parsed_wind_direction
+                app_state.last_known_wind_direction = parsed_wind_direction
+            if parsed_rainfall_val is not None:
+                rainfall_val_for_text = parsed_rainfall_val # Update for current display logic
+                app_state.last_known_rainfall_val = parsed_rainfall_val
 
 
-        main_weather_icon = config.WEATHER_ICON_MAP.get(overall_condition, config.WEATHER_ICON_MAP["default"]) 
+        # --- Step 3: Determine and persist OVERALL weather condition (icon, card color) ---
+        new_overall_condition_determined_this_update = False
+        current_cycle_is_raining = parsed_rainfall_val == '1' or parsed_rainfall_val == 1
 
-        if air_temp is not None: weather_details_spans.append(html.Span(f"Air: {air_temp:.1f}°C", className="me-3"))
-        if track_temp is not None: weather_details_spans.append(html.Span(f"Track: {track_temp:.1f}°C", className="me-3"))
-        if humidity is not None: weather_details_spans.append(html.Span(f"Hum: {humidity:.0f}%", className="me-3"))
-        if pressure is not None: weather_details_spans.append(html.Span(f"Press: {pressure:.0f}hPa", className="me-3"))
-        if wind_speed is not None:
-            wind_str = f"Wind: {wind_speed:.1f}m/s"
-            if wind_direction is not None:
-                 try: wind_str += f" ({int(wind_direction)}°)"
-                 except (ValueError, TypeError): wind_str += f" ({wind_direction})"
+        # Use parsed_air_temp and parsed_humidity for determining *new* overall condition
+        # Fallback to currently displayed (potentially old) air_temp_to_display etc. for condition logic
+        # if new parsed values are None, to maintain stability of overall condition.
+        # However, it's better to make overall condition determination rely *only* on fresh data if possible.
+        # If fresh data is insufficient for overall, the old overall persists.
+
+        temp_overall_condition_candidate = overall_condition # Start with persisted overall
+        temp_card_color_candidate = weather_card_color
+        temp_card_inverse_candidate = weather_card_inverse
+        
+        # Only try to change overall condition if there's relevant new data
+        if parsed_rainfall_val is not None or parsed_air_temp is not None or parsed_humidity is not None:
+            new_overall_condition_determined_this_update = True # Attempt to determine
+            
+            # Default to a neutral if we are re-evaluating based on new partial data
+            effective_air_temp_for_condition = parsed_air_temp if parsed_air_temp is not None else air_temp_to_display
+            effective_humidity_for_condition = parsed_humidity if parsed_humidity is not None else humidity_to_display
+
+            if current_cycle_is_raining: # Prioritize current rain data
+                temp_overall_condition_candidate = "rain"
+                temp_card_color_candidate = "info"
+                temp_card_inverse_candidate = True
+            elif effective_air_temp_for_condition is not None and effective_humidity_for_condition is not None:
+                if effective_air_temp_for_condition > 25 and effective_humidity_for_condition < 60:
+                    temp_overall_condition_candidate = "sunny"
+                    temp_card_color_candidate = "warning"
+                    temp_card_inverse_candidate = True
+                elif effective_humidity_for_condition >= 75 or effective_air_temp_for_condition < 15:
+                    temp_overall_condition_candidate = "cloudy"
+                    temp_card_color_candidate = "secondary"
+                    temp_card_inverse_candidate = True
+                else:
+                    temp_overall_condition_candidate = "partly_cloudy"
+                    temp_card_color_candidate = "light"
+                    temp_card_inverse_candidate = False
+            elif effective_air_temp_for_condition is not None: # Only air temp
+                if effective_air_temp_for_condition > 28:
+                    temp_overall_condition_candidate = "sunny"
+                    temp_card_color_candidate = "warning"
+                    temp_card_inverse_candidate = True
+                elif effective_air_temp_for_condition < 10:
+                    temp_overall_condition_candidate = "cloudy"
+                    temp_card_color_candidate = "secondary"
+                    temp_card_inverse_candidate = True
+                else:
+                    temp_overall_condition_candidate = "partly_cloudy"
+                    temp_card_color_candidate = "light"
+                    temp_card_inverse_candidate = False
+            elif parsed_rainfall_val is not None and not current_cycle_is_raining: 
+                # If rainfall data came in and it's explicitly NOT raining,
+                # and we couldn't determine based on temp/humidity, default to something sensible
+                # This helps clear a "rain" state if rain stops but other data is missing.
+                temp_overall_condition_candidate = "default" 
+                temp_card_color_candidate = "light"
+                temp_card_inverse_candidate = False
+            else:
+                # Not enough new data to change the overall condition from what was persisted
+                new_overall_condition_determined_this_update = False
+
+
+        if new_overall_condition_determined_this_update:
+            overall_condition = temp_overall_condition_candidate
+            weather_card_color = temp_card_color_candidate
+            weather_card_inverse = temp_card_inverse_candidate
+            main_weather_icon_key = overall_condition # Key for icon map
+
+            with app_state.app_state_lock:
+                app_state.last_known_overall_weather_condition = overall_condition
+                app_state.last_known_weather_card_color = weather_card_color
+                app_state.last_known_weather_card_inverse = weather_card_inverse
+                app_state.last_known_main_weather_icon_key = main_weather_icon_key
+        
+        current_main_weather_icon = config.WEATHER_ICON_MAP.get(main_weather_icon_key, config.WEATHER_ICON_MAP["default"])
+
+        # --- Step 4: Build weather_details_spans using the 'to_display' values ---
+        if air_temp_to_display is not None: weather_details_spans.append(html.Span(f"Air: {air_temp_to_display:.1f}°C", className="me-3"))
+        if track_temp_to_display is not None: weather_details_spans.append(html.Span(f"Track: {track_temp_to_display:.1f}°C", className="me-3"))
+        if humidity_to_display is not None: weather_details_spans.append(html.Span(f"Hum: {humidity_to_display:.0f}%", className="me-3"))
+        if pressure_to_display is not None: weather_details_spans.append(html.Span(f"Press: {pressure_to_display:.0f}hPa", className="me-3"))
+        if wind_speed_to_display is not None:
+            wind_str = f"Wind: {wind_speed_to_display:.1f}m/s"
+            if wind_direction_to_display is not None and str(wind_direction_to_display).strip(): # Check if not None and not empty
+                 try: wind_str += f" ({int(wind_direction_to_display)}°)" # Try int conversion
+                 except (ValueError, TypeError): wind_str += f" ({wind_direction_to_display})" # Fallback to string if not int
             weather_details_spans.append(html.Span(wind_str, className="me-3"))
 
-        # Ensure "RAIN" text color contrasts with its card
-        # Default is white text if weather_card_inverse is True (e.g. for "info" card)
-        # If card were light, we'd want dark blue text for "RAIN"
-        rain_text_color_on_light_card = "#007bff" # Example blue
+        # "RAIN" text display logic, based on the most up-to-date rainfall_val_for_text
+        is_raining_for_text_span = rainfall_val_for_text == '1' or rainfall_val_for_text == 1
+        
+        rain_text_color_on_light_card = "#007bff"
         rain_text_color_on_dark_card = "white"
 
-        if is_raining:
-            # Remove any pre-existing "RAIN" span to avoid duplication if logic changes
+        if is_raining_for_text_span:
             weather_details_spans = [s for s in weather_details_spans if not (isinstance(s, html.Span) and getattr(s, 'children', '') == "RAIN")]
-            
             current_rain_text_color = rain_text_color_on_dark_card if weather_card_inverse else rain_text_color_on_light_card
-            if overall_condition == "rain" and weather_card_color == "light": # Explicitly handle if rain card is "light"
+            # Ensure RAIN text color is correct even if overall card is light but it's raining
+            if overall_condition == "rain" and weather_card_color == "light":
                  current_rain_text_color = rain_text_color_on_light_card
-            
-            weather_details_spans.append(html.Span("RAIN", className="me-2 fw-bold",
-                                         style={'color': current_rain_text_color} ))
+            weather_details_spans.append(html.Span("RAIN", className="me-2 fw-bold", style={'color': current_rain_text_color}))
 
 
         if not weather_details_spans and overall_condition == "default":
@@ -390,13 +470,15 @@ def update_session_and_weather_info(n):
         else:
             final_weather_display_children = weather_details_spans
         
-
-        return session_info_str, html.Div(children=final_weather_display_children), main_weather_icon, weather_card_color, weather_card_inverse
+        return session_info_str, html.Div(children=final_weather_display_children), current_main_weather_icon, weather_card_color, weather_card_inverse
 
     except Exception as e:
         logger.error(f"Session/Weather Display Error in callback: {e}", exc_info=True)
-        return config.TEXT_SESSION_INFO_ERROR, config.TEXT_WEATHER_ERROR, config.WEATHER_ICON_MAP["default"], "light", False
-
+        return (config.TEXT_SESSION_INFO_ERROR, 
+                config.TEXT_WEATHER_ERROR, 
+                config.WEATHER_ICON_MAP["default"], 
+                "light", 
+                False)
 
 @app.callback(
     Output('prominent-track-status-text', 'children'),

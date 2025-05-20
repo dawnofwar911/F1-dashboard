@@ -95,6 +95,29 @@ session_bests = INITIAL_SESSION_BESTS.copy()
 
 last_known_total_laps = None
 
+INITIAL_LAST_KNOWN_OVERALL_WEATHER_CONDITION = "default"
+INITIAL_LAST_KNOWN_WEATHER_CARD_COLOR = "light"
+INITIAL_LAST_KNOWN_WEATHER_CARD_INVERSE = False
+INITIAL_LAST_KNOWN_MAIN_WEATHER_ICON_KEY = "default" # Store the key for the icon
+INITIAL_LAST_KNOWN_AIR_TEMP = None
+INITIAL_LAST_KNOWN_TRACK_TEMP = None
+INITIAL_LAST_KNOWN_HUMIDITY = None
+INITIAL_LAST_KNOWN_PRESSURE = None
+INITIAL_LAST_KNOWN_WIND_SPEED = None
+INITIAL_LAST_KNOWN_WIND_DIRECTION = None
+INITIAL_LAST_KNOWN_RAINFALL_VAL = None # For the "RAIN" text persistence
+
+last_known_overall_weather_condition = INITIAL_LAST_KNOWN_OVERALL_WEATHER_CONDITION
+last_known_weather_card_color = INITIAL_LAST_KNOWN_WEATHER_CARD_COLOR
+last_known_weather_card_inverse = INITIAL_LAST_KNOWN_WEATHER_CARD_INVERSE
+last_known_main_weather_icon_key = INITIAL_LAST_KNOWN_MAIN_WEATHER_ICON_KEY
+last_known_air_temp = INITIAL_LAST_KNOWN_AIR_TEMP
+last_known_track_temp = INITIAL_LAST_KNOWN_TRACK_TEMP
+last_known_humidity = INITIAL_LAST_KNOWN_HUMIDITY
+last_known_pressure = INITIAL_LAST_KNOWN_PRESSURE
+last_known_wind_speed = INITIAL_LAST_KNOWN_WIND_SPEED
+last_known_wind_direction = INITIAL_LAST_KNOWN_WIND_DIRECTION
+last_known_rainfall_val = INITIAL_LAST_KNOWN_RAINFALL_VAL
 
 logger = logging.getLogger("F1App.AppState") # Logger for this module
 
@@ -109,8 +132,14 @@ def reset_to_default_state():
         global app_status, data_store, timing_state, lap_time_history, track_status_data
         global session_details, race_control_log, track_coordinates_cache, telemetry_data, driver_info
         global live_data_file, is_saving_active, current_recording_filename
-        global session_bests # <<< ADDED
+        global session_bests
         global extrapolated_clock_info
+        global last_known_total_laps 
+        global last_known_overall_weather_condition, last_known_weather_card_color
+        global last_known_weather_card_inverse, last_known_main_weather_icon_key
+        global last_known_air_temp, last_known_track_temp, last_known_humidity
+        global last_known_pressure, last_known_wind_speed, last_known_wind_direction
+        global last_known_rainfall_val
 
         app_status = INITIAL_APP_STATUS.copy()
         data_store = INITIAL_DATA_STORE.copy()
@@ -129,6 +158,18 @@ def reset_to_default_state():
 
         session_bests = INITIAL_SESSION_BESTS.copy() # <<< ADDED RESET
         last_known_total_laps = None
+        
+        last_known_overall_weather_condition = INITIAL_LAST_KNOWN_OVERALL_WEATHER_CONDITION
+        last_known_weather_card_color = INITIAL_LAST_KNOWN_WEATHER_CARD_COLOR
+        last_known_weather_card_inverse = INITIAL_LAST_KNOWN_WEATHER_CARD_INVERSE
+        last_known_main_weather_icon_key = INITIAL_LAST_KNOWN_MAIN_WEATHER_ICON_KEY
+        last_known_air_temp = INITIAL_LAST_KNOWN_AIR_TEMP
+        last_known_track_temp = INITIAL_LAST_KNOWN_TRACK_TEMP
+        last_known_humidity = INITIAL_LAST_KNOWN_HUMIDITY
+        last_known_pressure = INITIAL_LAST_KNOWN_PRESSURE
+        last_known_wind_speed = INITIAL_LAST_KNOWN_WIND_SPEED
+        last_known_wind_direction = INITIAL_LAST_KNOWN_WIND_DIRECTION
+        last_known_rainfall_val = INITIAL_LAST_KNOWN_RAINFALL_VAL
 
         while not data_queue.empty():
             try:
