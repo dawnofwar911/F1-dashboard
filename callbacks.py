@@ -62,7 +62,7 @@ def update_timing_table_columns(n_intervals):
     all_columns = config.TIMING_TABLE_COLUMNS_CONFIG
     
     # Define columns that are primarily relevant for Race/Sprint sessions
-    race_sprint_specific_column_ids = ['Pits'] 
+    race_sprint_specific_column_ids = ['Pits', 'IntervalGap'] 
     
     if session_type is None: 
         logger.debug("Session type is None, hiding race/sprint specific columns by default.")
@@ -428,10 +428,12 @@ def update_main_data_displays(n):
                            session_type in [config.SESSION_TYPE_RACE, config.SESSION_TYPE_SPRINT] and \
                            gap_display_text != "-" #
             
-                if show_gap:
+                if show_gap and interval_val != "":
                     normal_weight_gap_text = gap_display_text
                     # Attempt CommonMark hard line break: two spaces followed by a newline character (\n)
                     interval_gap_markdown = f"{bold_interval_text}\\\n{normal_weight_gap_text}" # Backslash then newline
+                elif interval_val == "":
+                    interval_gap_markdown =""
                 else:
                     # P1, OR Not a Race/Sprint session, OR Gap data is "-":
                     # Only show Interval data.
@@ -439,6 +441,7 @@ def update_main_data_displays(n):
                         interval_gap_markdown = "-" # Single non-bold dash for cleaner look
                     else:
                         interval_gap_markdown = bold_interval_text
+                    
                 
                             
                 last_lap_val = utils.get_nested_state(
