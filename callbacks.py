@@ -173,7 +173,7 @@ def update_lap_and_session_info(n_intervals):
                     if not segment_label or segment_label == "Unknown": session_timer_label_text = "Time Left:"
                 
                 if not (session_timer_label_text == "Time Left:" and session_time_str != "00:00:00" and displayed_remaining_seconds == 0):
-                    session_time_str = format_seconds_to_time_str(displayed_remaining_seconds)
+                    session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds)
 
             elif session_type_lower.startswith("practice"):
                 lap_counter_div_style = {'display': 'none'} # Hide lap counter div
@@ -191,7 +191,7 @@ def update_lap_and_session_info(n_intervals):
                     adjusted_elapsed_time = time_since_last_capture * current_replay_speed
                     calculated_remaining = q_state["official_segment_remaining_seconds"] - adjusted_elapsed_time #
                     displayed_remaining_seconds = max(0, calculated_remaining)
-                    session_time_str = format_seconds_to_time_str(displayed_remaining_seconds)
+                    session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds)
                 else: 
                     session_time_str = app_state.extrapolated_clock_info.get("Remaining", "00:00:00") if hasattr(app_state, 'extrapolated_clock_info') else "00:00:00" #
             
@@ -1065,7 +1065,7 @@ def update_current_session_id_for_map(n_intervals, existing_session_id_in_store)
     current_session_id = f"{year}_{circuit_key}"
 
     if current_session_id != existing_session_id_in_store:
-        logger.info(
+        logger.debug(
             f"Updating current-track-layout-cache-key-store to: {current_session_id}")
         return current_session_id
 
@@ -1099,25 +1099,25 @@ def toggle_clientside_interval(connect_clicks, replay_clicks,
                 f"Replay button clicked, but no file selected ({config.TEXT_REPLAY_SELECT_FILE}). Clientside interval remains disabled.") # Use constant
             return True
 
-        logger.info(
+        logger.debug(
             f"Attempting to enable clientside-update-interval due to '{triggered_id}'.")
         return False
 
     elif triggered_id == 'stop-reset-button':
-        logger.info(
+        logger.debug(
             f"Disabling clientside-update-interval due to '{triggered_id}'.")
         return True
 
     elif triggered_id == 'interval-component-fast':
         if current_app_s in ["Live", "Replaying"]:
             if currently_disabled:
-                logger.info(
+                logger.debug(
                     f"Fast interval: App is '{current_app_s}', enabling clientside interval.")
                 return False
             return no_update
         else:
             if not currently_disabled:
-                logger.info(
+                logger.debug(
                     f"Fast interval: App is '{current_app_s}', disabling clientside interval.")
                 return True
             return no_update
@@ -1192,7 +1192,7 @@ def update_clientside_interval_speed(replay_speed, interval_disabled):
     base_interval_ms = 1250 # Base interval for car marker updates on map
     new_interval_ms = max(350, int(base_interval_ms / speed)) # Ensure it doesn't go too fast
 
-    logger.info(f"Adjusting clientside-update-interval to {new_interval_ms}ms for replay speed {speed}x")
+    logger.debug(f"Adjusting clientside-update-interval to {new_interval_ms}ms for replay speed {speed}x")
     return new_interval_ms
 
 @app.callback(
@@ -1456,4 +1456,4 @@ app.clientside_callback(
     prevent_initial_call='initial_duplicate' # Avoids running on initial load before figure exists
 )
 
-logger.info("Callback definitions processed") #
+print("Callback definitions processed") #

@@ -107,7 +107,8 @@ def _update_current_qualifying_segment_based_on_status(session_status_from_feed)
     # Only try to infer segment from EC if session status indicates it's running/starting
     # and we have a remaining time string from EC.
     if session_status_from_feed == "Started" and remaining_from_ec_str:
-        remaining_s = utils._parse_time_to_seconds(remaining_from_ec_str)
+        remaining_s = utils.parse_session_time_to_seconds(
+            remaining_from_ec_str)
         
         for seg_name, dur_s in default_durations_s.items():
             # If EC remaining time is very close to a segment's full duration
@@ -116,7 +117,7 @@ def _update_current_qualifying_segment_based_on_status(session_status_from_feed)
                 # or if the state indicates we are between segments, update it.
                 if current_segment_in_state != seg_name or \
                    current_segment_in_state in ["Between Segments", "Ended", None, "Unknown"]:
-                    logger.info(f"Segment '{seg_name}' confirmed/set by ExtrapolatedClock reset (Remaining: {remaining_s}s, Expected: {dur_s}s)")
+                    logger.debug(f"Segment '{seg_name}' confirmed/set by ExtrapolatedClock reset (Remaining: {remaining_s}s, Expected: {dur_s}s)")
                     app_state.qualifying_segment_state["current_segment"] = seg_name
                     # This is an official signal for the start of this segment's timing
                     app_state.qualifying_segment_state["official_segment_remaining_seconds"] = remaining_s # Use actual EC remaining_s
@@ -241,6 +242,8 @@ def _process_timing_app_data(data):
                             
                             pit_in_time_str = latest_stint_info['PitInTime']
                             pit_out_time_str = latest_stint_info['PitOutTime']
+                            latest_stint_key_str = latest_stint_key
+                            
                             
                             logger.debug(f"[PIT_DEBUG] Car {car_num_str}, Stint {latest_stint_key_str}: Found PitInTime='{pit_in_time_str}', PitOutTime='{pit_out_time_str}'")
 
@@ -251,7 +254,7 @@ def _process_timing_app_data(data):
 
                             if pit_in_seconds is not None and pit_out_seconds is not None and pit_out_seconds >= pit_in_seconds:
                                 duration = round(pit_out_seconds - pit_in_seconds, 1)
-                                logger.info(f"[PIT_INFO] Car {car_num_str}, Stint {latest_stint_key_str}: Calculated pit duration: {duration}s.")
+                                logger.debug(f"[PIT_INFO] Car {car_num_str}, Stint {latest_stint_key_str}: Calculated pit duration: {duration}s.")
                                 
                                 # Check if this is a new duration for this specific stint to avoid redundant updates of timestamp
                                 if driver_current_state.get('last_pit_stint_key_ref') != latest_stint_key_str or \
@@ -259,7 +262,7 @@ def _process_timing_app_data(data):
                                     driver_current_state['last_pit_duration'] = duration
                                     driver_current_state['last_pit_duration_timestamp'] = time.time()
                                     driver_current_state['last_pit_stint_key_ref'] = latest_stint_key_str
-                                    logger.info(f"[PIT_INFO] Car {car_num_str}: Stored last_pit_duration={duration}s, last_pit_duration_timestamp={driver_current_state['last_pit_duration_timestamp']:.2f}, stint_ref={latest_stint_key_str}.")
+                                    logger.debug(f"[PIT_INFO] Car {car_num_str}: Stored last_pit_duration={duration}s, last_pit_duration_timestamp={driver_current_state['last_pit_duration_timestamp']:.2f}, stint_ref={latest_stint_key_str}.")
                                 else:
                                     logger.debug(f"[PIT_DEBUG] Car {car_num_str}, Stint {latest_stint_key_str}: Duration {duration}s already processed.")
                             else:
@@ -373,7 +376,7 @@ def _process_timing_data(data): # Using your provided function structure
                     driver_current_state['final_live_pit_time_text'] = None 
                     driver_current_state['final_live_pit_time_display_timestamp'] = None
                     driver_current_state['just_exited_pit_event_time'] = None 
-                    logger.info(f"[PIT_INFO] Car {car_num_str} ENTERED PIT (TimingData). EntryWallTime: {driver_current_state['current_pit_entry_system_time']:.2f}, EntryReplaySpeed: {driver_current_state['pit_entry_replay_speed']}x")
+                    logger.debug(f"[PIT_INFO] Car {car_num_str} ENTERED PIT (TimingData). EntryWallTime: {driver_current_state['current_pit_entry_system_time']:.2f}, EntryReplaySpeed: {driver_current_state['pit_entry_replay_speed']}x")
                 
                 elif not is_currently_in_pit_from_feed and was_previously_in_pit: # Just exited pits
                     entry_wall_time = driver_current_state.get('current_pit_entry_system_time')
@@ -391,7 +394,7 @@ def _process_timing_data(data): # Using your provided function structure
                         
                         driver_current_state['final_live_pit_time_text'] = f"Stop: {adjusted_elapsed_session_time:.1f}s" 
                         driver_current_state['final_live_pit_time_display_timestamp'] = time.time()
-                        logger.info(f"[PIT_INFO] Car {car_num_str} EXITED PIT (TimingData). WallTimeInPit: {final_elapsed_wall_time:.2f}s, SpeedAtEntry: {speed_at_entry}x, AdjustedSessionTime: {adjusted_elapsed_session_time:.1f}s. FinalText: '{driver_current_state['final_live_pit_time_text']}'")
+                        logger.debug(f"[PIT_INFO] Car {car_num_str} EXITED PIT (TimingData). WallTimeInPit: {final_elapsed_wall_time:.2f}s, SpeedAtEntry: {speed_at_entry}x, AdjustedSessionTime: {adjusted_elapsed_session_time:.1f}s. FinalText: '{driver_current_state['final_live_pit_time_text']}'")
                     else:
                         logger.debug(f"[PIT_DEBUG] Car {car_num_str} EXITED PIT (TimingData), but no current_pit_entry_system_time. Setting just_exited_pit_event_time.")
 
@@ -499,7 +502,7 @@ def _process_timing_data(data): # Using your provided function structure
                                 if is_sector_segment_valid_for_ob and \
                                    (overall_best_s_time_from_state_val is None or sector_seconds < overall_best_s_time_from_state_val):
                                     app_state.session_bests["OverallBestSectors"][i] = {"Value": sector_seconds, "DriverNumber": car_num_str}
-                                    logger.info(f"New Overall Best S{i+1}: {sector_val_str} ({sector_seconds}s) by {car_num_str}")
+                                    logger.debug(f"New Overall Best S{i+1}: {sector_val_str} ({sector_seconds}s) by {car_num_str}")
                 # Ensure all 3 sector dictionaries exist even if not in current message, and their 'Value' is not "" or None
                 # This was the user's main point of confusion: clearing too early or to ""
                 for i_ensure in range(3):
@@ -544,7 +547,7 @@ def _process_timing_data(data): # Using your provided function structure
                         if is_lap_valid_for_overall_best and \
                            (current_overall_best_lap_seconds_from_state_val is None or lap_time_seconds < current_overall_best_lap_seconds_from_state_val):
                             app_state.session_bests["OverallBestLapTime"] = {"Value": new_lap_time_str, "DriverNumber": car_num_str}
-                            logger.info(f"New Overall Best Lap: {new_lap_time_str} ({lap_time_seconds}s) by {car_num_str} (valid lap conditions met)")
+                            logger.debug(f"New Overall Best Lap: {new_lap_time_str} ({lap_time_seconds}s) by {car_num_str} (valid lap conditions met)")
                         
                         current_completed_laps = driver_current_state.get('NumberOfLaps', 0)
                         lap_number_for_this_time = current_completed_laps 
@@ -783,7 +786,7 @@ def _process_session_info(data):
         old_session_type = app_state.session_details.get("Type", "").lower()
 
         if new_session_type != old_session_type or new_session_type not in ["qualifying", "sprint shootout"]:
-            logger.info(f"SessionInfo: Resetting qualifying_segment_state due to session type change or non-quali type ('{new_session_type}').")
+            logger.debug(f"SessionInfo: Resetting qualifying_segment_state due to session type change or non-quali type ('{new_session_type}').")
             app_state.qualifying_segment_state = app_state.INITIAL_QUALIFYING_SEGMENT_STATE.copy()
         
         app_state.session_details['Type'] = data.get('Type') # Update type after comparison
@@ -812,10 +815,10 @@ def _process_session_info(data):
 
         needs_fetch = False
         if new_session_key:
-            logger.info(f"DataProcessing: SessionKey '{new_session_key}' set from SessionInfo.")
+            logger.debug(f"DataProcessing: SessionKey '{new_session_key}' set from SessionInfo.")
             cached_session_key = app_state.track_coordinates_cache.get('session_key')
             if old_session_key != new_session_key or cached_session_key != new_session_key:
-                 logger.info(f"DataProcessing: Proactive track fetch needed for {new_session_key} (Old: {old_session_key}, Cached: {cached_session_key})")
+                 logger.debug(f"DataProcessing: Proactive track fetch needed for {new_session_key} (Old: {old_session_key}, Cached: {cached_session_key})")
                  needs_fetch = True
             else:
                  logger.debug(f"DataProcessing: Cache key {new_session_key} seems current. No fetch triggered by SessionInfo.")
@@ -831,10 +834,10 @@ def _process_session_info(data):
                   daemon=True
              )
              fetch_thread.start()
-             logger.info(f"DataProcessing: Background track fetch thread started for {new_session_key}.")
+             logger.debug(f"DataProcessing: Background track fetch thread started for {new_session_key}.")
 
         session_key_log = app_state.session_details.get('SessionKey', 'N/A')
-        logger.info(f"Processed SessionInfo: Meeting='{meeting_info.get('Name', '?')}', Circuit='{circuit_info.get('Name', '?')}', Session='{data.get('Name', '?')}', Stored SessionKey: {session_key_log}")
+        logger.debug(f"Processed SessionInfo: Meeting='{meeting_info.get('Name', '?')}', Circuit='{circuit_info.get('Name', '?')}', Session='{data.get('Name', '?')}', Stored SessionKey: {session_key_log}")
 
     except Exception as e: logger.error(f"Error processing SessionInfo: {e}", exc_info=True)
 
@@ -846,8 +849,6 @@ def data_processing_loop():
     log_interval_seconds = 15 
     log_interval_items = 500  
     loop_counter = 0
-
-    logger.info("Data processing thread started.")
 
     while True:
         loop_counter += 1
@@ -892,9 +893,6 @@ def data_processing_loop():
             stream_name = item['stream']
             actual_data = item['data']
             timestamp = item.get('timestamp')
-            
-            if stream_name == "PitLaneTimeCollection":
-                logger.info(f"DEBUG: Received PitLaneTimeCollection: {actual_data}")
 
             with app_state.app_state_lock:
                 app_state.data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}

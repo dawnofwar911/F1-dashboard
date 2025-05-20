@@ -455,5 +455,5 @@ def create_layout():
         app_footer
     ], fluid=True, className="dbc dbc-slate p-2") 
 
-    print("Layout created.") #
+    logger.info("Layout created.") #
     return app_layout
