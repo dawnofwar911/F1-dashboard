@@ -33,47 +33,62 @@ raw_message_formatter = logging.Formatter(config.LOG_FORMAT_RAW_MESSAGE) # <<< U
 def setup_logging():
     """Configures logging for the application."""
     # Use constant for log format
-    log_formatter = logging.Formatter(config.LOG_FORMAT_DEFAULT)
-    log_level_main = logging.INFO
-    log_level_signalr = logging.INFO
+    log_formatter = logging.Formatter(config.LOG_FORMAT_DEFAULT) # Assuming config.LOG_FORMAT_DEFAULT is defined
 
-    root_logger = logging.getLogger("F1App")
-    root_logger.setLevel(min(log_level_main, log_level_signalr))
+    # --- Configure the ACTUAL Python Root Logger ---
+    actual_root_logger = logging.getLogger() # Get the root logger
+    actual_root_logger.setLevel(logging.INFO) # Set a permissive level at root; control via specific logger levels
 
-    if not root_logger.hasHandlers():
-        main_console_handler = logging.StreamHandler(sys.stdout)
-        main_console_handler.setFormatter(log_formatter)
-        main_console_handler.setLevel(log_level_main)
-        root_logger.addHandler(main_console_handler)
-        root_logger.info("Main application logger configured.")
-    else:
-         root_logger.info("Main application logger already configured.")
+    # Clear any existing handlers from the root logger to prevent duplication
+    # This is important if the script is re-run in an environment or if other libs call basicConfig.
+    if actual_root_logger.hasHandlers():
+        print(f"Root logger initially has handlers: {actual_root_logger.handlers}. Clearing them.", file=sys.stderr)
+        actual_root_logger.handlers.clear()
 
-    signalr_logger = logging.getLogger("signalrcore") # Default logger for the signalrcore library
-    signalr_logger.setLevel(log_level_signalr) # Set level for signalrcore library
-    # Add a handler if not already configured by root or other means (e.g. if library adds its own)
-    if not any(isinstance(h, logging.StreamHandler) for h in signalr_logger.handlers) and not signalr_logger.propagate:
-        signalr_console_handler = logging.StreamHandler(sys.stdout)
-        signalr_console_handler.setFormatter(log_formatter) # Use same main formatter
-        signalr_console_handler.setLevel(logging.INFO) # Keep SignalR console output less verbose
-        signalr_logger.addHandler(signalr_console_handler)
-        signalr_logger.info("SignalR console handler added for signalrcore library.")
-    elif signalr_logger.propagate and root_logger.hasHandlers():
-        signalr_logger.info("SignalR logs will propagate to root F1App logger.")
-    else:
-        signalr_logger.info("SignalR logger (signalrcore) already has handlers or propagation is off without local handlers.")
+    # Add OUR desired console handler to the root logger
+    root_console_handler = logging.StreamHandler(sys.stdout)
+    root_console_handler.setFormatter(log_formatter)
+    actual_root_logger.addHandler(root_console_handler)
+    print(f"Root logger configured with handler: {actual_root_logger.handlers}", file=sys.stderr)
 
 
-    # Werkzeug (Dash's underlying server) logger
+    # --- Configure F1App Logger (your application's main logger) ---
+    f1_app_logger = logging.getLogger("F1App")
+    f1_app_logger.setLevel(logging.INFO) # Set desired level for your app's components
+    f1_app_logger.propagate = True # Ensure it propagates to the root logger (default, but good to be explicit)
+    # No need to add a handler here; it will use the root's handler.
+    f1_app_logger.info("F1App application logger level set. Will use root handler.")
+
+
+    # --- Set levels for Library Loggers (they will propagate to the root handler) ---
+    # The key is that THEY should not add their own console handlers if we want single output via root.
+    
+    # For SignalRCoreClient, we set the level here.
+    # Handler management will be done in signalr_client.py AFTER its own setup.
+    logging.getLogger("SignalRCoreClient").setLevel(logging.WARNING)
+    
+    # For the base "signalrcore" logger, if it's used.
+    logging.getLogger("signalrcore").setLevel(logging.WARNING)
+
+
+    # --- Configure Werkzeug Logger ---
     werkzeug_logger = logging.getLogger('werkzeug')
-    if config.DASH_DEBUG_MODE: # More verbose werkzeug if Dash debug is on
-        werkzeug_logger.setLevel(logging.INFO)
-    else:
-        werkzeug_logger.setLevel(logging.ERROR) # Quieter in "production"
+    werkzeug_logger.setLevel(logging.ERROR if not config.DASH_DEBUG_MODE else logging.INFO)
+    werkzeug_logger.propagate = True # Let it use the root handler
+    # Clear any handlers it might have by default if they cause issues
+    if werkzeug_logger.hasHandlers(): # Check and clear Werkzeug's own handlers
+         module_logger_temp = logging.getLogger("F1App") # Use your app logger for this meta-log
+         module_logger_temp.info(f"Werkzeug logger has handlers: {werkzeug_logger.handlers}. Clearing them.")
+         werkzeug_logger.handlers.clear()
+    f1_app_logger.info(f"Werkzeug logger level set to {logging.getLevelName(werkzeug_logger.getEffectiveLevel())}. Will use root handler.")
 
+
+    # --- Set levels for other potentially noisy libraries ---
     logging.getLogger('requests').setLevel(logging.WARNING)
     logging.getLogger('urllib3').setLevel(logging.WARNING)
     logging.getLogger('fastf1').setLevel(logging.INFO)
+
+    actual_root_logger.info("Root logger configured. Specific loggers will propagate to it.")
 
 
 # --- Main Execution Logic ---

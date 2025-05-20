@@ -11,6 +11,7 @@ import uuid
 import urllib.parse
 import time # Only needed if adding delays/sleeps
 import datetime # For on_message timestamp fallback
+import sys
 
 # SignalR Core imports
 from signalrcore.hub_connection_builder import HubConnectionBuilder
@@ -29,6 +30,7 @@ hub_connection = None
 connection_thread = None
 
 main_logger = logging.getLogger("F1App.SignalR")
+module_logger = logging.getLogger("F1App.SignalR") 
 
 # --- Connection Functions ---
 
@@ -90,7 +92,7 @@ def run_connection_manual_neg(target_url, headers_for_ws):
     hub_connection = None
     try:
         main_logger.info("Connection thread: Initializing HubConnection...")
-        hub_connection = (
+        hub_connection_builder = (
             HubConnectionBuilder()
             .with_url(target_url, options={
                 "verify_ssl": True,
@@ -98,9 +100,27 @@ def run_connection_manual_neg(target_url, headers_for_ws):
                 "skip_negotiation": True
                 })
             .with_hub_protocol(JsonHubProtocol())
-            .configure_logging(logging.DEBUG) # Uses F1App.SignalR logger
-            .build()
+            # This call below likely configures the "SignalRCoreClient" logger,
+            # potentially adding a default handler by the library.
+            .configure_logging(logging.WARNING) 
         )
+        hub_connection = hub_connection_builder.build()
+        
+        library_logger_name = "SignalRCoreClient"
+        signalrcore_lib_logger = logging.getLogger(library_logger_name)
+        
+        # Crucially, clear any handlers the library might have just added by its .configure_logging()
+        # This prevents the library logger from outputting directly to console.
+        if signalrcore_lib_logger.hasHandlers():
+            module_logger.info(f"'{library_logger_name}' logger (pre-clear) has handlers: {signalrcore_lib_logger.handlers}")
+            signalrcore_lib_logger.handlers.clear()
+            module_logger.info(f"Cleared existing handlers from '{library_logger_name}' logger (post-hub-build).")
+        
+        # Level was set in main.py. Ensure propagation is enabled so it uses the root handler.
+        signalrcore_lib_logger.setLevel(logging.WARNING) # Ensure it's INFO
+        signalrcore_lib_logger.propagate = True 
+        
+        module_logger.info(f"'{library_logger_name}' library logger: handlers cleared, level={logging.getLevelName(signalrcore_lib_logger.getEffectiveLevel())}, propagate=True.")
 
         if not hub_connection or not hasattr(hub_connection, 'send'):
             raise HubConnectionError(config.TEXT_SIGNALR_BUILD_HUB_FAILED) # Use constant
