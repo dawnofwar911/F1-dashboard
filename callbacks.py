@@ -62,7 +62,7 @@ def update_timing_table_columns(n_intervals):
     all_columns = config.TIMING_TABLE_COLUMNS_CONFIG
     
     # Define columns that are primarily relevant for Race/Sprint sessions
-    race_sprint_specific_column_ids = ['Pits'] 
+    race_sprint_specific_column_ids = ['Pits', 'IntervalGap'] 
     
     if session_type is None: 
         logger.debug("Session type is None, hiding race/sprint specific columns by default.")
@@ -363,7 +363,7 @@ def update_main_data_displays(n):
             overall_session_bests_s3_val = app_state.session_bests["OverallBestSectors"][2]["Value"]
 
 
-        excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
+        excluded_streams = ['DriverList', 'Position.z', 'CarData.z', 'Position',
                             'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat']
         sorted_streams = sorted(
             [s for s in data_store_copy.keys() if s not in excluded_streams])
