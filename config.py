@@ -239,4 +239,4 @@ LOG_REPLAY_FILE_STOP_MSG_PREFIX = "\n# Recording Stopped: "
 MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE = "https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
 MULTIVIEWER_API_USER_AGENT = 'F1-Dash/0.5' # Increment version or make more dynamic
 
-print("DEBUG: config module loaded (with extensive UI and text constants)")
+print("DEBUG: config module loaded")

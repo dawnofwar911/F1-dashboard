@@ -430,4 +430,4 @@ def stop_replay():
     logger.info("Stop replay sequence complete.")
 
 
-print("DEBUG: replay module loaded (with config constant usage)")
+print("DEBUG: replay module loaded")

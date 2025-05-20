@@ -928,4 +928,4 @@ def data_processing_loop():
 
     logger.info(f"Data processing thread finished. Final app_state.stop_event status: {app_state.stop_event.is_set()}")
 
-print("DEBUG: data_processing module loaded (with refined best lap/sector logic)")
+print("DEBUG: data_processing module loaded")

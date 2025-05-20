@@ -1456,4 +1456,4 @@ app.clientside_callback(
     prevent_initial_call='initial_duplicate' # Avoids running on initial load before figure exists
 )
 
-logger.info("Callback definitions processed (now using constants from config.py and helpers from utils.py, and added best lap/sector flags to table data).") #
+logger.info("Callback definitions processed") #

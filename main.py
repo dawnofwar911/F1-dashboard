@@ -182,4 +182,4 @@ if __name__ == '__main__':
 
         logger.info("Shutdown complete."); print("\n --- App Exited --- \n")
 
-print("DEBUG: main module loaded (with config constant usage for logging and FastF1 cache dir)")
+print("DEBUG: main module loaded")

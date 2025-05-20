@@ -512,4 +512,4 @@ class RecordDataFilter(logging.Filter):
             return False
 
 
-print("DEBUG: utils module loaded (with create_empty_figure helper, config usage, and corrected parse_lap_time_to_seconds)")
+print("DEBUG: utils module loaded")

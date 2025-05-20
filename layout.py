@@ -10,7 +10,7 @@ import replay # For get_replay_files
 
 def create_layout():
     logger = logging.getLogger("F1App.Layout")
-    logger.info("Creating application layout (using constants from config.py)...")
+    logger.info("Creating application layout...")
 
     try:
         replay.ensure_replay_dir_exists() #
@@ -455,5 +455,5 @@ def create_layout():
         app_footer
     ], fluid=True, className="dbc dbc-slate p-2") 
 
-    logger.info("Layout created using constants from config.py and added best lap/sector styling.") #
+    print("Layout created.") #
     return app_layout
