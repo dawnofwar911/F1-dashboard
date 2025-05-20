@@ -31,6 +31,28 @@ import config
 logger = logging.getLogger("F1App.Utils")
 main_logger = logging.getLogger("F1App.Utils") # Consider consolidating loggers if they serve the same purpose
 
+def format_seconds_to_time_str(total_seconds):
+    if total_seconds < 0:
+        total_seconds = 0
+    hours, remainder = divmod(int(total_seconds), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    else:
+        return f"{minutes:02d}:{seconds:02d}"
+
+def _parse_time_to_seconds(time_str):
+    if not time_str or time_str == "-":
+        return 0
+    parts = list(map(int, time_str.split(':')))
+    if len(parts) == 3: # HH:MM:SS
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    elif len(parts) == 2: # MM:SS
+        return parts[0] * 60 + parts[1]
+    elif len(parts) == 1: # SS (less likely for "Remaining")
+        return parts[0]
+    return 0
+
 def create_empty_figure_with_message(height, uirevision, message, margins):
     """Helper to create a consistent empty figure with a message."""
     return go.Figure(layout={

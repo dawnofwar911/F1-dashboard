@@ -4,6 +4,7 @@ Contains all the Dash callback functions for the application.
 Handles UI updates, user actions, and plot generation.
 """
 import datetime
+from datetime import datetime, timezone, timedelta # Ensure these are imported
 import pytz # Not strictly used in this version, but often useful with F1 data
 import logging
 import json
@@ -83,65 +84,143 @@ def update_timing_table_columns(n_intervals):
 
 
 @app.callback(
-    Output('lap-counter-display', 'children'),
-    Output('lap-counter-column', 'className'), # Target the column's className
-    Input('interval-component-medium', 'n_intervals')
+    [Output('lap-counter', 'children'),         # This is for the "X/Y" part
+     Output('lap-counter-div', 'style'),        # For showing/hiding the "Laps: X/Y" section
+     Output('session-timer-label', 'children'), # Label like "Q1:", "Time Left:"
+     Output('session-timer', 'children'),       # The timer value "MM:SS"
+     Output('session-timer-div', 'style')],     # For showing/hiding the session timer section
+    [Input('interval-component-fast', 'n_intervals')]
 )
-def update_lap_counter_display(n_intervals):
-    """
-    Updates the lap counter display.
-    Shows "Lap: X/Y" for Race and Sprint sessions by adjusting column visibility,
-    otherwise hides the column.
-    """
-    lap_counter_text = config.TEXT_LAP_COUNTER_DEFAULT
-    base_col_classes = "mb-2 mb-lg-0"
-    lap_counter_col_className = f"{base_col_classes} d-none"
+def update_lap_and_session_info(n_intervals):
+    # Default values: sections hidden, placeholder text for values
+    lap_value_str = "--/--" # Default for the X/Y part
+    lap_counter_div_style = {'display': 'none'} 
+    session_timer_label_text = ""
+    session_time_str = ""
+    session_timer_div_style = {'display': 'none'}
 
     try:
         with app_state.app_state_lock:
-            session_type = app_state.session_details.get('Type', None)
-            lap_count_data_payload = app_state.data_store.get('LapCount', {})
+            current_app_overall_status = app_state.app_status.get("state", "Idle") #
+
+            if current_app_overall_status not in ["Live", "Replaying"]:
+                # Return defaults: lap counter and session timer sections are hidden.
+                # The lap_value_str is "--/--" but its container div is hidden.
+                return lap_value_str, lap_counter_div_style, session_timer_label_text, session_time_str, session_timer_div_style
+
+            # Proceed if Live or Replaying
+            session_type = app_state.session_details.get('Type', "Unknown")
+            current_session_feed_status = app_state.session_details.get('SessionStatus', 'Unknown')
+            current_replay_speed = app_state.replay_speed #
+
+            # Lap Counter Logic (for the X/Y part)
+            lap_count_data_payload = app_state.data_store.get('LapCount', {}) #
             lap_count_data = lap_count_data_payload.get('data', {}) if isinstance(lap_count_data_payload, dict) else {}
-            if not isinstance(lap_count_data, dict):
-                lap_count_data = {}
-            current_app_status = app_state.app_status.get("state", "Idle")
+            if not isinstance(lap_count_data, dict): lap_count_data = {}
 
-            # Get current and total laps, potentially updating/using last_known_total_laps
-            current_lap_from_data = lap_count_data.get('CurrentLap')
-            total_laps_from_data = lap_count_data.get('TotalLaps')
+            current_lap_from_feed = lap_count_data.get('CurrentLap')
+            total_laps_from_feed = lap_count_data.get('TotalLaps')
 
-            # Update last_known_total_laps if a valid TotalLaps is received
-            if total_laps_from_data is not None and total_laps_from_data != '-':
+            if total_laps_from_feed is not None and total_laps_from_feed != '-':
                 try:
-                    app_state.last_known_total_laps = int(total_laps_from_data)
+                    app_state.last_known_total_laps = int(total_laps_from_feed) #
                 except (ValueError, TypeError):
-                    logger.warning(f"Could not convert TotalLaps '{total_laps_from_data}' to int.")
-                    # Keep using the old app_state.last_known_total_laps if conversion fails
+                    pass 
+
+            actual_total_laps_to_display = app_state.last_known_total_laps if app_state.last_known_total_laps is not None else '--'
+            current_lap_to_display = str(current_lap_from_feed) if current_lap_from_feed is not None else '-'
             
-            # Use last_known_total_laps if current is missing
-            actual_total_laps_to_use = app_state.last_known_total_laps
+            session_type_lower = session_type.lower()
 
-            # For display purposes
-            current_lap_for_display = str(current_lap_from_data) if current_lap_from_data is not None else '-'
-            total_laps_for_display = str(actual_total_laps_to_use) if actual_total_laps_to_use is not None else '--'
+            if session_type_lower in [config.SESSION_TYPE_RACE.lower(), config.SESSION_TYPE_SPRINT.lower()]:
+                lap_counter_div_style = {'display': 'inline-block', 'margin-right': '20px'} # Show lap counter div
+                session_timer_div_style = {'display': 'none'} # Hide session timer div
+                
+                if current_lap_to_display != '-':
+                    lap_value_str = f"{current_lap_to_display}/{actual_total_laps_to_display}"
+                else:
+                    # Your config.TEXT_LAP_COUNTER_AWAITING is "Lap: Awaiting Data..."
+                    # We only want the "Awaiting Data..." part or similar for the value.
+                    lap_value_str = "Awaiting Data..." # Or f"-/{actual_total_laps_to_display}"
+                                                        # Or strip "Lap: " from config.TEXT_LAP_COUNTER_AWAITING
+                # session_timer_label_text and session_time_str remain "" as div is hidden
 
+            elif session_type_lower in ["qualifying", "sprint shootout"]:
+                lap_counter_div_style = {'display': 'none'} # Hide lap counter div
+                session_timer_div_style = {'display': 'inline-block'} # Show session timer div
+                lap_value_str = "" # Lap value not shown
 
-        if session_type in [config.SESSION_TYPE_RACE, config.SESSION_TYPE_SPRINT] and \
-           current_app_status in ["Live", "Replaying"]:
+                q_state = app_state.qualifying_segment_state #
+                segment_label = q_state.get("current_segment", "") #
+                session_timer_label_text = f"{segment_label}:" if segment_label and segment_label not in ["Unknown", "Between Segments", "Ended"] else "Time Left:"
+                displayed_remaining_seconds = 0
 
-            if current_lap_for_display != '-':
-                lap_counter_text = f"Lap: {current_lap_for_display}/{total_laps_for_display}"
-            else:
-                lap_counter_text = config.TEXT_LAP_COUNTER_AWAITING
-                logger.warning(f"LapCounter showing 'Awaiting': CurrentLap='{current_lap_for_display}', TotalLaps (used)='{total_laps_for_display}' from LapCountData: {lap_count_data}")
+                if q_state.get("last_official_time_capture_utc") and \
+                   q_state.get("official_segment_remaining_seconds") is not None and \
+                   segment_label and segment_label not in ["Unknown", "Between Segments", "Ended"] and \
+                   current_session_feed_status not in ["Suspended", "Aborted", "Finished", "Ends", "NotStarted"]:
+                    now_utc = datetime.now(timezone.utc)
+                    time_since_last_capture = (now_utc - q_state["last_official_time_capture_utc"]).total_seconds() #
+                    adjusted_elapsed_time = time_since_last_capture * current_replay_speed
+                    calculated_remaining = q_state["official_segment_remaining_seconds"] - adjusted_elapsed_time #
+                    displayed_remaining_seconds = max(0, calculated_remaining)
+                elif segment_label in ["Between Segments", "Ended"]:
+                    displayed_remaining_seconds = 0
+                    if segment_label == "Between Segments": session_timer_label_text = "Next Up:"
+                    elif segment_label == "Ended": session_timer_label_text = "Session Ended:"
+                else:
+                    session_time_str = app_state.extrapolated_clock_info.get("Remaining", "00:00:00") if hasattr(app_state, 'extrapolated_clock_info') else "00:00:00" #
+                    if not segment_label or segment_label == "Unknown": session_timer_label_text = "Time Left:"
+                
+                if not (session_timer_label_text == "Time Left:" and session_time_str != "00:00:00" and displayed_remaining_seconds == 0):
+                    session_time_str = format_seconds_to_time_str(displayed_remaining_seconds)
+
+            elif session_type_lower.startswith("practice"):
+                lap_counter_div_style = {'display': 'none'} # Hide lap counter div
+                session_timer_div_style = {'display': 'inline-block'} # Show session timer div
+                lap_value_str = ""
+                session_timer_label_text = "Time Left:"
+                q_state = app_state.qualifying_segment_state #
+                displayed_remaining_seconds = 0
+                if q_state.get("last_official_time_capture_utc") and \
+                   q_state.get("official_segment_remaining_seconds") is not None and \
+                   q_state.get("current_segment") == "Practice" and \
+                   current_session_feed_status not in ["Suspended", "Aborted", "Finished", "Ends", "NotStarted"]:
+                    now_utc = datetime.now(timezone.utc)
+                    time_since_last_capture = (now_utc - q_state["last_official_time_capture_utc"]).total_seconds() #
+                    adjusted_elapsed_time = time_since_last_capture * current_replay_speed
+                    calculated_remaining = q_state["official_segment_remaining_seconds"] - adjusted_elapsed_time #
+                    displayed_remaining_seconds = max(0, calculated_remaining)
+                    session_time_str = format_seconds_to_time_str(displayed_remaining_seconds)
+                else: 
+                    session_time_str = app_state.extrapolated_clock_info.get("Remaining", "00:00:00") if hasattr(app_state, 'extrapolated_clock_info') else "00:00:00" #
             
-            lap_counter_col_className = f"{base_col_classes} col-lg-2 col-md-3 col-sm-4 col-12"
+            else: # Default for unknown session types when app is "Live" or "Replaying"
+                lap_counter_div_style = {'display': 'inline-block', 'margin-right': '20px'} # Show laps
+                session_timer_div_style = {'display': 'inline-block'} # Show timer
+                lap_value_str = f"{current_lap_to_display}/{actual_total_laps_to_display}"
+                if current_lap_to_display == '-': # If current lap is unknown
+                    # Strip "Lap: " from your config constant if it exists and is suitable
+                    awaiting_text_value = config.TEXT_LAP_COUNTER_AWAITING.replace("Lap: ", "") if hasattr(config, 'TEXT_LAP_COUNTER_AWAITING') else "Awaiting Data..." #
+                    lap_value_str = awaiting_text_value
 
-        return lap_counter_text, lap_counter_col_className
+                session_timer_label_text = "Time:"
+                if hasattr(app_state, 'extrapolated_clock_info'):
+                    generic_time = app_state.extrapolated_clock_info.get("Remaining", app_state.extrapolated_clock_info.get("Clock")) #
+                    session_time_str = generic_time if generic_time else "00:00:00"
+                else:
+                    session_time_str = "00:00:00"
 
     except Exception as e:
-        logger.error(f"Error in update_lap_counter_display: {e}", exc_info=True)
-        return config.TEXT_LAP_COUNTER_DEFAULT, f"{base_col_classes} d-none"
+        logger.error(f"Error in update_lap_and_session_info: {e}", exc_info=True)
+        lap_value_str = "--/--" # Fallback value part
+        lap_counter_div_style = {'display': 'none'}
+        session_timer_div_style = {'display': 'none'}
+        session_timer_label_text = "" 
+        session_time_str = ""       
+
+    return lap_value_str, lap_counter_div_style, session_timer_label_text, session_time_str, session_timer_div_style
+
 
 @app.callback(
     Output('connection-status', 'children'),

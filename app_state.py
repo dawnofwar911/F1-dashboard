@@ -65,6 +65,23 @@ is_saving_active = False
 record_live_data = False # Default
 current_recording_filename = None
 
+INITIAL_EXTRAPOLATED_CLOCK_INFO = {
+    "Utc": None,
+    "Remaining": "00:00:00",  # Default value
+    "Extrapolating": False,
+    "Timestamp": None  # To store when we received the data
+}
+extrapolated_clock_info = INITIAL_EXTRAPOLATED_CLOCK_INFO.copy()
+
+INITIAL_QUALIFYING_SEGMENT_STATE = {
+    "current_segment": None,  # e.g., "Q1", "Q2", "Q3", "SQ1", "SQ2", "SQ3", "Between Segments", "Ended"
+    "official_segment_remaining_seconds": 0, # Time from ExtrapolatedClock when segment started/synced
+    "last_official_time_capture_utc": None,  # datetime object (wall clock UTC)
+    "last_capture_replay_speed": 1.0,        # Replay speed at time of capture
+    "session_status_at_capture": None        # e.g. "Started", "Running"
+}
+qualifying_segment_state = INITIAL_QUALIFYING_SEGMENT_STATE.copy()
+
 # --- Session Best Times ---
 INITIAL_SESSION_BESTS = {
     "OverallBestLapTime": {"Value": None, "DriverNumber": None},
@@ -93,6 +110,7 @@ def reset_to_default_state():
         global session_details, race_control_log, track_coordinates_cache, telemetry_data, driver_info
         global live_data_file, is_saving_active, current_recording_filename
         global session_bests # <<< ADDED
+        global extrapolated_clock_info
 
         app_status = INITIAL_APP_STATUS.copy()
         data_store = INITIAL_DATA_STORE.copy()
@@ -100,6 +118,8 @@ def reset_to_default_state():
         lap_time_history = INITIAL_LAP_TIME_HISTORY.copy()
         track_status_data = INITIAL_TRACK_STATUS_DATA.copy()
         session_details = INITIAL_SESSION_DETAILS.copy()
+        extrapolated_clock_info = INITIAL_EXTRAPOLATED_CLOCK_INFO.copy() # Reset it
+        qualifying_segment_state = INITIAL_QUALIFYING_SEGMENT_STATE.copy() # Reset new state
         
         race_control_log.clear()
 
