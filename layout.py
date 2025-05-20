@@ -88,58 +88,93 @@ def create_layout():
         )
     ], className="mb-3", id='control-zone-wrapper')
 
-    status_weather_bar = dbc.Row([
+    lap_and_session_time_info_component = html.Div(
+        [
+            # Lap Counter Div
+            html.Div(
+                [
+                    html.Span("Laps: ", className='lap-time-label', id='lap-counter-label'),
+                    html.Span("0/0", id='lap-counter', className='lap-time-value')
+                ],
+                id='lap-counter-div',
+                className='lap-time-info-item', # You might want specific styling for these items
+                style={'display': 'inline-block', 'margin-right': '20px', 'color': 'white', 
+                       'font-size': '0.9rem'} # Example style
+            ),
+            # Session Timer / Extrapolated Clock Div
+            html.Div(
+                [
+                    html.Span(id='session-timer-label', className='lap-time-label', 
+                              style={'margin-right': '5px', 'color': 'white', 'font-size': '0.9rem'}), # Example style
+                    html.Span("00:00:00", id='session-timer', className='lap-time-value',
+                              style={'color': 'white', 'font-weight': 'bold', 'font-size': '0.9rem'}) # Example style
+                ],
+                id='session-timer-div',
+                className='lap-time-info-item', # You might want specific styling
+                style={'display': 'inline-block'}
+            )
+        ],
+        id='lap-time-info', # Container ID
+        className='lap-time-info-container text-center', # Added text-center for alignment within the card
+        style={'padding': '0px'} # Adjust padding if needed to fit card body
+    )
+
+    status_weather_bar = dbc.Row([ #
         dbc.Col(
             dbc.Card(
                 dbc.CardBody(
-                    html.Div(id='lap-counter-display', children=config.TEXT_LAP_COUNTER_DEFAULT,
-                             style={'fontSize': '1rem', 'fontWeight': 'bold', 'color': 'white', 'paddingRight': '15px'}),
-                    className="p-2 text-center",
+                    children=[lap_and_session_time_info_component], # <= NEW CONTENT INSERTED HERE
+                    className="p-2", # Adjusted padding of card body
                     style={'minHeight':'55px', 'display':'flex', 'alignItems':'center', 'justifyContent':'center'}
                 ),
                 color="dark",
                 inverse=True,
-                id="lap-counter-card"
+                id="lap-session-timer-card" # Renamed ID for clarity
             ),
-            lg=2, md=3, sm=4, xs=12, className="mb-2 mb-lg-0 d-none", # Start hidden with d-none
-            id='lap-counter-column'
+            # Adjust lg, md, sm, xs to control width. This might need to be wider.
+            # The className "d-none" will be removed by a callback if this element should always be visible
+            # or conditionally made visible. For now, let's assume it's part of this bar.
+            # If this column should *only* appear for Race/Quali/Practice, callback will handle visibility of its content.
+            # The old 'lap-counter-column' was 'd-none'. Let's make this one visible and control content inside.
+            lg=4, md=5, sm=12, xs=12, className="mb-2 mb-lg-0", 
+            id='lap-session-timer-column' # Renamed ID
         ),
-        dbc.Col(
-            dbc.Card(
-                dbc.CardBody(
-                    html.Div([
-                        html.Strong("Track Status: ", style={'marginRight':'5px'}),
-                        html.Span(id='prominent-track-status-text', children=config.TEXT_TRACK_STATUS_DEFAULT_LABEL,
-                                  style={'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px'})
-                    ]),
-                    className="p-2 text-center",
-                    style={'minHeight':'55px', 'display':'flex', 'alignItems':'center', 'justifyContent':'center'}
-                ),
-                id='prominent-track-status-card',
-                color="secondary",
-                inverse=True
-            ),
-            lg=3, md=3, sm=8, xs=12, className="mb-2 mb-lg-0",
-            id='track-status-column' # Added ID for adjusting its visibility/width if needed
+        dbc.Col( # Prominent Track Status
+            dbc.Card( #
+                dbc.CardBody( #
+                    html.Div([ #
+                        html.Strong("Track Status: ", style={'marginRight':'5px'}), #
+                        html.Span(id='prominent-track-status-text', children=config.TEXT_TRACK_STATUS_DEFAULT_LABEL, #
+                                  style={'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px'}) #
+                    ]), #
+                    className="p-2 text-center", #
+                    style={'minHeight':'55px', 'display':'flex', 'alignItems':'center', 'justifyContent':'center'} #
+                ), #
+                id='prominent-track-status-card', #
+                color="secondary", #
+                inverse=True #
+            ), #
+            lg=3, md=3, sm=12, xs=12, className="mb-2 mb-lg-0", # Adjusted sm for new layout
+            id='track-status-column' #
         ),
-        dbc.Col(
-            dbc.Card(
-                dbc.CardBody(
-                    html.Div([
-                    html.Span(id='weather-main-icon', className="me-2", style={'fontSize': '1.5rem'}),
-                    html.Div(id='prominent-weather-display', children=config.TEXT_WEATHER_AWAITING,
-                             style={'fontSize':'0.8rem', 'lineHeight':'1.2'})
-                ], style={'display': 'flex', 'alignItems': 'center'}),
-                className="p-2"
-            ),
-            id='prominent-weather-card',
-            color="light",
-            style={'minHeight':'55px'}
-        ),
-        lg=7, md=6, sm=12, xs=12,
-        id='weather-column' # Added ID for adjusting its visibility/width if needed
-    )
-    ], className="mb-3", id='status-weather-bar', align="center")
+        dbc.Col( # Prominent Weather
+            dbc.Card( #
+                dbc.CardBody( #
+                    html.Div([ #
+                        html.Span(id='weather-main-icon', className="me-2", style={'fontSize': '1.5rem'}), #
+                        html.Div(id='prominent-weather-display', children=config.TEXT_WEATHER_AWAITING, #
+                                 style={'fontSize':'0.8rem', 'lineHeight':'1.2'}) #
+                    ], style={'display': 'flex', 'alignItems': 'center'}), #
+                    className="p-2" #
+                ), #
+                id='prominent-weather-card', #
+                color="light", #
+                style={'minHeight':'55px'} #
+            ), #
+            lg=5, md=4, sm=12, xs=12, # Adjusted lg/md to make space
+            id='weather-column' #
+        )
+    ], className="mb-3", id='status-weather-bar', align="center") #
 
     main_data_zone = dbc.Row([
         dbc.Col([
