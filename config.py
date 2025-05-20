@@ -11,6 +11,7 @@ DASH_DEBUG_MODE = False
 DASH_HOST = "0.0.0.0"
 DASH_PORT = 8050
 
+
 # --- File Paths ---
 _SCRIPT_DIR = Path(__file__).parent.resolve()
 REPLAY_DIR_NAME = "replays"
@@ -101,6 +102,7 @@ TEXT_WEATHER_AWAITING = "Weather: Loading..." # Used in layout.py
 TEXT_WEATHER_ERROR = "Error: Weather"
 TEXT_WEATHER_UNAVAILABLE = "Weather data unavailable"
 TEXT_WEATHER_CONDITION_GENERIC = "{condition} conditions" # For placeholder like "Cloudy conditions"
+FASTF1_ONGOING_SESSION_WINDOW_HOURS = 3
 
 # Track Status
 TEXT_TRACK_STATUS_DEFAULT_LABEL = "CLEAR" # Used in layout.py
@@ -239,4 +241,4 @@ LOG_REPLAY_FILE_STOP_MSG_PREFIX = "\n# Recording Stopped: "
 MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE = "https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
 MULTIVIEWER_API_USER_AGENT = 'F1-Dash/0.5' # Increment version or make more dynamic
 
-print("DEBUG: config module loaded (with extensive UI and text constants)")
+print("DEBUG: config module loaded")

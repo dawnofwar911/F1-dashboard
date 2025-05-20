@@ -149,4 +149,4 @@ def reset_to_default_state():
         
         logger.info("Application state has been reset to defaults.")
 
-print("DEBUG: app_state module loaded with shared variables, reset function, and session_bests")
+print("DEBUG: app_state module loaded")

@@ -80,7 +80,7 @@ def init_live_file():
          event_part = sanitize_filename(event_name)
          session_part = sanitize_filename(session_name_from_f1)
          filename_prefix = f"{event_part}_{session_part}"
-         logger.info(f"Using filename prefix from FastF1: {filename_prefix}")
+         logger.debug(f"Using filename prefix from FastF1: {filename_prefix}")
     else:
          logger.warning(f"Could not get session info from FastF1, using fallback filename prefix '{config.LIVE_DATA_FILENAME_FALLBACK_PREFIX}'.")
          filename_prefix = config.LIVE_DATA_FILENAME_FALLBACK_PREFIX # Use constant
@@ -319,7 +319,7 @@ def _replay_thread_target(filename, initial_speed=1.0):
                              break
 
             if playback_status == config.REPLAY_STATUS_RUNNING: # Use constant
-                logger.info(f"Replay file '{filename}' finished. Queued: {lines_processed}, SkipJSON: {lines_skipped_json_error}, SkipOther: {lines_skipped_other}")
+                logger.debug(f"Replay file '{filename}' finished. Queued: {lines_processed}, SkipJSON: {lines_skipped_json_error}, SkipOther: {lines_skipped_other}")
                 playback_status = config.REPLAY_STATUS_COMPLETE # Use constant
 
     except FileNotFoundError:
@@ -430,4 +430,4 @@ def stop_replay():
     logger.info("Stop replay sequence complete.")
 
 
-print("DEBUG: replay module loaded (with config constant usage)")
+print("DEBUG: replay module loaded")

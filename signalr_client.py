@@ -310,4 +310,4 @@ def stop_connection():
 
     main_logger.info("Stop connection sequence complete.")
 
-print("DEBUG: signalr_client module loaded (with config constant usage)")
+print("DEBUG: signalr_client module loaded")

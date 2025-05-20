@@ -41,7 +41,8 @@ def format_seconds_to_time_str(total_seconds):
     else:
         return f"{minutes:02d}:{seconds:02d}"
 
-def _parse_time_to_seconds(time_str):
+
+def parse_session_time_to_seconds(time_str):
     if not time_str or time_str == "-":
         return 0
     parts = list(map(int, time_str.split(':')))
@@ -66,7 +67,7 @@ def create_empty_figure_with_message(height, uirevision, message, margins):
                          'showarrow': False, 'font': {'size': 12}}]
     })
 
-def parse_feed_time_to_seconds(time_str: str) -> float | None:
+def parse_feed_time_to_seconds(time_str: str):
     """
     Parses a time string from the feed (e.g., "00:19:50.716" or "01:23.456") into total seconds.
     Handles formats MM:SS.ms and HH:MM:SS.ms.
@@ -167,7 +168,7 @@ def _fetch_track_data_for_cache(session_key, year, circuit_key):
 
     # Use constant from config.py
     api_url = config.MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE.format(circuit_key=circuit_key, year=year) #
-    main_logger.info(f"Fetch Helper: API fetch initiated for: {api_url}")
+    main_logger.debug(f"Fetch Helper: API fetch initiated for: {api_url}")
     track_x_coords, track_y_coords, track_linestring_obj, x_range, y_range = [
         None]*5
     try:
@@ -336,7 +337,7 @@ def parse_iso_timestamp_safe(timestamp_str, line_num_for_log="?"):
                 elif timestamp_str.endswith('Z'): final_ts_no_ms += "+00:00"
 
                 parsed_dt_no_ms = datetime.datetime.fromisoformat(final_ts_no_ms)
-                logger.info(f"Successfully parsed timestamp '{timestamp_str}' without microseconds after initial failure.")
+                logger.debug(f"Successfully parsed timestamp '{timestamp_str}' without microseconds after initial failure.")
                 if parsed_dt_no_ms.tzinfo is None or parsed_dt_no_ms.tzinfo == datetime.timezone.utc:
                     return parsed_dt_no_ms.replace(tzinfo=timezone.utc)
                 else:
@@ -417,10 +418,10 @@ def get_current_or_next_session_info():
         ongoing_window = pd.Timedelta(hours=config.FASTF1_ONGOING_SESSION_WINDOW_HOURS) # Use from config
 
         if last_past_session.get('event_name') and (now - last_past_session.get('date', now)) <= ongoing_window:
-            logger.info(f"FastF1: Using ongoing session: {last_past_session['event_name']} - {last_past_session['session_name']}")
+            logger.debug(f"FastF1: Using ongoing session: {last_past_session['event_name']} - {last_past_session['session_name']}")
             return last_past_session['event_name'], last_past_session['session_name']
         elif next_future_session.get('event_name'):
-            logger.info(f"FastF1: Using next future session: {next_future_session['event_name']} - {next_future_session['session_name']}")
+            logger.debug(f"FastF1: Using next future session: {next_future_session['event_name']} - {next_future_session['session_name']}")
             return next_future_session['event_name'], next_future_session['session_name']
         else:
             logger.warning("FastF1: Could not determine current or next session from available schedule data.")
@@ -512,4 +513,4 @@ class RecordDataFilter(logging.Filter):
             return False
 
 
-print("DEBUG: utils module loaded (with create_empty_figure helper, config usage, and corrected parse_lap_time_to_seconds)")
+print("DEBUG: utils module loaded")

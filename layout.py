@@ -10,7 +10,7 @@ import replay # For get_replay_files
 
 def create_layout():
     logger = logging.getLogger("F1App.Layout")
-    logger.info("Creating application layout (using constants from config.py)...")
+    logger.info("Creating application layout...")
 
     try:
         replay.ensure_replay_dir_exists() #
@@ -22,7 +22,7 @@ def create_layout():
     # Use TIMING_TABLE_COLUMNS_CONFIG from config.py
     # timing_table_columns = config.TIMING_TABLE_COLUMNS_CONFIG #
 
-    tyre_style_base = {'textAlign': 'center', 'fontWeight': 'bold', 'border': '1px solid #444'}
+    tyre_style_base = {'textAlign': 'center', 'fontWeight': 'bold'}
     
     # Define standard styles for personal and overall bests for readability
     # Colors can be moved to config.py if preferred
@@ -229,65 +229,106 @@ def create_layout():
                     'lineHeight': '1.2'
                 },
                 style_data_conditional=[
-                    {'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(60, 60, 60)'},
-                    # Tyre Styles
-                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "S " || {Tyre} = "S"'}, 'backgroundColor': '#D90000', 'color': 'white', **tyre_style_base},
-                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "M " || {Tyre} = "M"'}, 'backgroundColor': '#EBC000', 'color': '#383838', **tyre_style_base},
-                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "H " || {Tyre} = "H"'}, 'backgroundColor': '#E0E0E0', 'color': '#383838', **tyre_style_base},
-                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "I " || {Tyre} = "I"'}, 'backgroundColor': '#00A300', 'color': 'white', **tyre_style_base},
-                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "W " || {Tyre} = "W"'}, 'backgroundColor': '#0077FF', 'color': 'white', **tyre_style_base},
-                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} = "-"'}, 'backgroundColor': 'inherit', 'color': 'grey', 'textAlign': 'center'},
-                    
-                    # Column Specific Alignments/Widths
-                    {'if': {'column_id': 'Pos'}, 'textAlign': 'center', 'fontWeight': 'bold', 'width': '35px', 'minWidth':'35px'},
-                    {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '35px', 'minWidth':'35px', 'paddingRight':'2px'},
-                    {'if': {'column_id': 'Car'}, 'textAlign': 'left', 'width': '45px', 'minWidth':'45px'},
-                    {'if': {'column_id': 'Pits'}, 
-                     'minWidth': '45px',    # Ensure it has enough base space for "In Pit: XX.Xs" or "Stop: XX.Xs"
-                     'width': 'auto',       # Allow it to grow based on content
-                     'maxWidth': '150px',   # Prevent it from becoming excessively wide
+                    {'if': {'row_index': 'odd'},
+                        'backgroundColor': 'rgb(60, 60, 60)'},
+
+                    # General 'Tyre' column width.
+                    {'if': {'column_id': 'Tyre'},
+                        'width': '50px',
+                        'minWidth': '45px',
+                        'maxWidth': '60px'
+                     },
+
+                    # Tyre Compound Styles - will now use the modified tyre_style_base (no explicit border)
+                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "S " || {Tyre} = "S"'},
+                        'backgroundColor': '#D90000', 'color': 'white', **tyre_style_base},
+                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "M " || {Tyre} = "M"'},
+                        'backgroundColor': '#EBC000', 'color': '#383838', **tyre_style_base},
+                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "H " || {Tyre} = "H"'},
+                        'backgroundColor': '#E0E0E0', 'color': '#383838', **tyre_style_base},
+                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "I " || {Tyre} = "I"'},
+                        'backgroundColor': '#00A300', 'color': 'white', **tyre_style_base},
+                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "W " || {Tyre} = "W"'},
+                        'backgroundColor': '#0077FF', 'color': 'white', **tyre_style_base},
+
+                    # Special case for no tyre data ("-") - MODIFIED to not set its own border
+                    {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} = "-"'},
+                        'backgroundColor': 'inherit',  # Inherits from default cell background
+                        'color': 'grey',
+                        # Apply relevant parts from the new tyre_style_base or define explicitly
+                        'textAlign': 'center',
+                        'fontWeight': 'bold'  # If you want the hyphen to be bold
+                        # No 'border' here, will inherit from style_data and style_cell
+                     },
+
+                    # Column Specific Alignments/Widths (Pits, Pos, No., Car, IntervalGap as before)
+                    {'if': {'column_id': 'Pos'}, 'textAlign': 'center', 'fontWeight': 'bold',
+                        'width': '35px', 'minWidth': '35px', 'maxWidth': '40px'},
+                    {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '35px',
+                        'minWidth': '35px', 'maxWidth': '40px', 'paddingRight': '2px'},
+                    {'if': {'column_id': 'Car'}, 'textAlign': 'left',
+                        'width': '45px', 'minWidth': '45px', 'maxWidth': '55px'},
+
+                    {'if': {'column_id': 'Pits'},
+                     'width': '80px',
+                     'minWidth': '70px',
+                     'maxWidth': '100px',
                      'textAlign': 'center',
-                     'whiteSpace': 'nowrap' # Prefer to keep pit time on one line if possible
-                    }, 
-                    {'if': {'column_id': 'IntervalGap'}, 
-                        'width': '75px', 
-                        'minWidth': '70px', 
-                        'maxWidth': '90px', # Slightly more max width just in case
-                        'textAlign': 'right', 
-                        'paddingRight':'5px'
-                    },
-                    
+                     'whiteSpace': 'nowrap'
+                     },
+
+                    {'if': {'column_id': 'IntervalGap'},
+                        'width': '75px',
+                        'minWidth': '70px',
+                        'maxWidth': '90px',
+                        'textAlign': 'right',
+                        'paddingRight': '5px'
+                     },
+
+                    # ... (Rest of your conditional styles for lap times, sectors, Pits column colors, etc. remain the same) ...
                     # --- MODIFIED BEST LAP/SECTOR STYLES WITH CELL CONTENT CHECK ---
-                    # Yellow for "regular" valid times (neither PB nor OB, and not empty)
                     {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "FALSE" && {IsOverallBestLap_Str} = "FALSE" && {Last Lap} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
                     {'if': {'column_id': 'S1',       'filter_query': '{IsPersonalBestS1_Str} = "FALSE" && {IsOverallBestS1_Str} = "FALSE" && {S1} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
                     {'if': {'column_id': 'S2',       'filter_query': '{IsPersonalBestS2_Str} = "FALSE" && {IsOverallBestS2_Str} = "FALSE" && {S2} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
                     {'if': {'column_id': 'S3',       'filter_query': '{IsPersonalBestS3_Str} = "FALSE" && {IsOverallBestS3_Str} = "FALSE" && {S3} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
 
-                    # Personal Bests (Green) - if it's a PB but not an OB (and not empty, though PB implies not empty)
+                    # Personal Bests (Green)
                     {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "TRUE" && {IsOverallBestLap_Str} = "FALSE" && {Last Lap} != "-"'}, **PERSONAL_BEST_STYLE},
                     {'if': {'column_id': 'S1',       'filter_query': '{IsPersonalBestS1_Str} = "TRUE" && {IsOverallBestS1_Str} = "FALSE" && {S1} != "-"'}, **PERSONAL_BEST_STYLE},
                     {'if': {'column_id': 'S2',       'filter_query': '{IsPersonalBestS2_Str} = "TRUE" && {IsOverallBestS2_Str} = "FALSE" && {S2} != "-"'}, **PERSONAL_BEST_STYLE},
                     {'if': {'column_id': 'S3',       'filter_query': '{IsPersonalBestS3_Str} = "TRUE" && {IsOverallBestS3_Str} = "FALSE" && {S3} != "-"'}, **PERSONAL_BEST_STYLE},
 
-                    # Overall Bests (Purple) - these take precedence (and must not be empty)
-                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Last Lap} != "-"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'Best Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Best Lap} != "-"'}, **OVERALL_BEST_STYLE}, # Driver's PB is also session OB
-                    {'if': {'column_id': 'S1',       'filter_query': '{IsOverallBestS1_Str} = "TRUE" && {S1} != "-"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'S2',       'filter_query': '{IsOverallBestS2_Str} = "TRUE" && {S2} != "-"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'S3',       'filter_query': '{IsOverallBestS3_Str} = "TRUE" && {S3} != "-"'}, **OVERALL_BEST_STYLE},
-                    
-                    # Conditional styling for Pits column
-                    {'if': {'column_id': 'Pits', 'filter_query': '{PitDisplayState_Str} = "IN_PIT_LIVE"'}, **IN_PIT_STYLE},
-                    {'if': {'column_id': 'Pits', 'filter_query': '{PitDisplayState_Str} = "SHOW_COMPLETED_DURATION"'}, **PIT_DURATION_STYLE},
-                    
-                    # Default styling for lap and sector times (width, alignment) - These should come AFTER color styling
-                    {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
-                    {'if': {'column_id': 'Best Lap'}, 'width': '70px', 'minWidth': '70px', 'maxWidth': '85px', 'textAlign': 'right', 'paddingRight':'5px'},
-                    {'if': {'column_id': 'S1'},       'width': '55px', 'minWidth': '55px', 'maxWidth': '65px', 'textAlign': 'right', 'paddingRight':'5px'},
-                    {'if': {'column_id': 'S2'},       'width': '55px', 'minWidth': '55px', 'maxWidth': '65px', 'textAlign': 'right', 'paddingRight':'5px'},
-                    {'if': {'column_id': 'S3'},       'width': '55px', 'minWidth': '55px', 'maxWidth': '65px', 'textAlign': 'right', 'paddingRight':'5px'},
-                    {'if': {'column_id': 'Status'},   'width': '80px', 'minWidth': '80px', 'maxWidth': '100px'},
+                    # Overall Bests (Purple)
+                    {'if': {'column_id': 'Last Lap',
+                            'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Last Lap} != "-"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'Best Lap',
+                            'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Best Lap} != "-"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'S1',
+                            'filter_query': '{IsOverallBestS1_Str} = "TRUE" && {S1} != "-"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'S2',
+                            'filter_query': '{IsOverallBestS2_Str} = "TRUE" && {S2} != "-"'}, **OVERALL_BEST_STYLE},
+                    {'if': {'column_id': 'S3',
+                            'filter_query': '{IsOverallBestS3_Str} = "TRUE" && {S3} != "-"'}, **OVERALL_BEST_STYLE},
+
+                    # Conditional styling for Pits column colors
+                    {'if': {'column_id': 'Pits',
+                            'filter_query': '{PitDisplayState_Str} = "IN_PIT_LIVE"'}, **IN_PIT_STYLE},
+                    {'if': {'column_id': 'Pits',
+                            'filter_query': '{PitDisplayState_Str} = "SHOW_COMPLETED_DURATION"'}, **PIT_DURATION_STYLE},
+
+                    # Default styling for lap and sector times (width, alignment)
+                    {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px',
+                        'maxWidth': '85px', 'textAlign': 'right', 'paddingRight': '5px'},
+                    {'if': {'column_id': 'Best Lap'}, 'width': '70px', 'minWidth': '70px',
+                        'maxWidth': '85px', 'textAlign': 'right', 'paddingRight': '5px'},
+                    {'if': {'column_id': 'S1'},       'width': '55px', 'minWidth': '55px',
+                        'maxWidth': '65px', 'textAlign': 'right', 'paddingRight': '5px'},
+                    {'if': {'column_id': 'S2'},       'width': '55px', 'minWidth': '55px',
+                        'maxWidth': '65px', 'textAlign': 'right', 'paddingRight': '5px'},
+                    {'if': {'column_id': 'S3'},       'width': '55px', 'minWidth': '55px',
+                        'maxWidth': '65px', 'textAlign': 'right', 'paddingRight': '5px'},
+                    {'if': {'column_id': 'Status'},   'width': '80px',
+                        'minWidth': '80px', 'maxWidth': '100px'},
                 ],
                 tooltip_duration=None
             ),
@@ -455,5 +496,5 @@ def create_layout():
         app_footer
     ], fluid=True, className="dbc dbc-slate p-2") 
 
-    logger.info("Layout created using constants from config.py and added best lap/sector styling.") #
+    logger.info("Layout created.") #
     return app_layout
