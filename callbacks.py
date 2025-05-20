@@ -363,7 +363,7 @@ def update_main_data_displays(n):
             overall_session_bests_s3_val = app_state.session_bests["OverallBestSectors"][2]["Value"]
 
 
-        excluded_streams = ['DriverList', 'Position.z', 'CarData.z', 'Position',
+        excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
                             'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat']
         sorted_streams = sorted(
             [s for s in data_store_copy.keys() if s not in excluded_streams])
