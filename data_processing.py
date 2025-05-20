@@ -25,35 +25,56 @@ def _process_extrapolated_clock(data_payload, received_timestamp_str):
         logger.warning(f"Unexpected ExtrapolatedClock data format: {type(data_payload)}")
         return
 
-    app_state.extrapolated_clock_info["Utc"] = data_payload.get("Utc")
+    # Store raw ExtrapolatedClock info first
+    app_state.extrapolated_clock_info["Utc"] = data_payload.get("Utc") #
+    app_state.extrapolated_clock_info["Extrapolating"] = data_payload.get("Extrapolating", False) #
+    app_state.extrapolated_clock_info["Timestamp"] = received_timestamp_str #
+    
     remaining_str = data_payload.get("Remaining")
-    if remaining_str: # Only update if we have a new "Remaining" string
-        app_state.extrapolated_clock_info["Remaining"] = remaining_str
+    if remaining_str: 
+        app_state.extrapolated_clock_info["Remaining"] = remaining_str #
         
-        # Update the qualifying_segment_state with this new official time
-        # This acts as our re-sync point
         session_type = app_state.session_details.get("Type", "").lower()
+        current_session_status_from_feed = app_state.session_details.get('SessionStatus')
+
         if session_type in ["qualifying", "sprint shootout"]:
-            # Ensure current segment is known before updating, or this update helps define it
-            current_segment = app_state.qualifying_segment_state.get("current_segment")
-            if not current_segment or current_segment == "Unknown": # If segment is unknown, try to infer
-                # This basic inference might need to be smarter based on SessionStatus
-                # For now, assume ExtrapolatedClock helps define it if segment unknown
-                _update_current_qualifying_segment_based_on_status(app_state.session_details.get('SessionStatus'))
+            # Your existing logic for qualifying/sprint shootout:
+            current_segment = app_state.qualifying_segment_state.get("current_segment") #
+            if not current_segment or current_segment == "Unknown": 
+                # The helper below is intended to identify Q1/Q2/Q3 from full duration resets
+                _update_current_qualifying_segment_based_on_status(current_session_status_from_feed) 
+            
+            # This block updates qualifying_segment_state for Q/SQ if a segment is active
+            current_segment_in_state_after_helper = app_state.qualifying_segment_state.get("current_segment") #
+            if current_segment_in_state_after_helper and \
+               current_segment_in_state_after_helper not in ["Between Segments", "Ended", "Unknown", None]:
+                # Use your existing parse function, e.g., utils.parse_session_time_to_seconds
+                remaining_seconds = utils.parse_session_time_to_seconds(remaining_str) 
+                app_state.qualifying_segment_state["official_segment_remaining_seconds"] = remaining_seconds #
+                app_state.qualifying_segment_state["last_official_time_capture_utc"] = datetime.now(timezone.utc) #
+                app_state.qualifying_segment_state["last_capture_replay_speed"] = app_state.replay_speed #
+                app_state.qualifying_segment_state["session_status_at_capture"] = current_session_status_from_feed #
 
+                logger.debug(f"ExtrapolatedClock sync: Segment '{current_segment_in_state_after_helper}', "
+                             f"Official Remaining {remaining_seconds}s, Speed {app_state.replay_speed}x") #
 
-            remaining_seconds = utils._parse_time_to_seconds(remaining_str)
-            app_state.qualifying_segment_state["official_segment_remaining_seconds"] = remaining_seconds
-            app_state.qualifying_segment_state["last_official_time_capture_utc"] = datetime.now(timezone.utc)
-            app_state.qualifying_segment_state["last_capture_replay_speed"] = app_state.replay_speed
-            # We might also store the app_state.session_details.get('SessionStatus') here
-            app_state.qualifying_segment_state["session_status_at_capture"] = app_state.session_details.get('SessionStatus')
-
-            logger.debug(f"ExtrapolatedClock sync: Segment '{app_state.qualifying_segment_state['current_segment']}', "
-                         f"Official Remaining {remaining_seconds}s, Speed {app_state.replay_speed}x")
-
-    app_state.extrapolated_clock_info["Extrapolating"] = data_payload.get("Extrapolating", False)
-    app_state.extrapolated_clock_info["Timestamp"] = received_timestamp_str
+        # --- ADD THIS ELIF BLOCK FOR PRACTICE SESSIONS ---
+        elif session_type.startswith("practice"):
+            if current_session_status_from_feed not in ["Finished", "Ends", "Aborted", "NotStarted"]:
+                # Use your existing parse function, e.g., utils.parse_session_time_to_seconds
+                remaining_seconds = utils.parse_session_time_to_seconds(remaining_str)
+                
+                app_state.qualifying_segment_state["official_segment_remaining_seconds"] = remaining_seconds #
+                app_state.qualifying_segment_state["last_official_time_capture_utc"] = datetime.now(timezone.utc) #
+                app_state.qualifying_segment_state["last_capture_replay_speed"] = app_state.replay_speed #
+                app_state.qualifying_segment_state["current_segment"] = "Practice" # Set a generic label for practice
+                app_state.qualifying_segment_state["session_status_at_capture"] = current_session_status_from_feed #
+                
+                logger.debug(f"ExtrapolatedClock sync for 'Practice': "
+                             f"Official Remaining {remaining_seconds}s, Speed {app_state.replay_speed}x") #
+            else: # Practice session ended or not active
+                app_state.qualifying_segment_state["official_segment_remaining_seconds"] = 0 #
+                app_state.qualifying_segment_state["current_segment"] = "Practice Ended" # Or similar status
     
 def _update_current_qualifying_segment_based_on_status(session_status_from_feed): # Renamed param for clarity
     session_type = app_state.session_details.get("Type", "").lower()
