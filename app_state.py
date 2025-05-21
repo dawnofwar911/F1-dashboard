@@ -44,6 +44,9 @@ session_details = INITIAL_SESSION_DETAILS.copy()
 INITIAL_RACE_CONTROL_LOG_MAXLEN = 50 # Store maxlen for re-creation
 race_control_log = collections.deque(maxlen=INITIAL_RACE_CONTROL_LOG_MAXLEN)
 
+INITIAL_TEAM_RADIO_MESSAGES_MAXLEN = 20 # Store latest 50 messages
+team_radio_messages = collections.deque(maxlen=INITIAL_TEAM_RADIO_MESSAGES_MAXLEN)
+
 INITIAL_TRACK_COORDINATES_CACHE = {
     'x': None, 'y': None, 'range_x': None, 'range_y': None,
     'rotation': None, 'corner_x': None, 'corner_y': None, 'session_key': None
@@ -151,6 +154,7 @@ def reset_to_default_state():
         qualifying_segment_state = INITIAL_QUALIFYING_SEGMENT_STATE.copy() # Reset new state
         
         race_control_log.clear()
+        team_radio_messages.clear()
 
         track_coordinates_cache = INITIAL_TRACK_COORDINATES_CACHE.copy()
         telemetry_data = INITIAL_TELEMETRY_DATA.copy()

@@ -81,6 +81,99 @@ def update_timing_table_columns(n_intervals):
             col for col in all_columns if col.get('id') not in race_sprint_specific_column_ids
         ]
         return columns_to_display
+        
+@app.callback(
+    Output('team-radio-display', 'children'),
+    Input('interval-component-medium', 'n_intervals') # Update periodically
+)
+def update_team_radio_display(n_intervals):
+    try:
+        with app_state.app_state_lock:
+            # Make a copy of the deque for safe iteration
+            radio_messages_snapshot = list(app_state.team_radio_messages) 
+            session_path = app_state.session_details.get('Path') # Needed for the audio URL
+
+        if not radio_messages_snapshot:
+            return html.Em(config.TEXT_TEAM_RADIO_AWAITING, style={'color': 'grey'})
+
+        if not session_path:
+            logger.warning("Team Radio: Session Path not found in session_details. Cannot build audio URLs.")
+            return html.Em(config.TEXT_TEAM_RADIO_NO_SESSION_PATH, style={'color': 'orange'})
+
+        # The base URL for audio files, constructed from config and session_path
+        # Example: "https://livetiming.formula1.com/static/2023/2023-11-26_Abu_Dhabi_Grand_Prix/..."
+        base_audio_url = f"https://{config.F1_LIVETIMING_BASE_URL}/static/{session_path}"
+
+        display_elements = []
+        # radio_messages_snapshot is already newest first due to appendleft in data_processing
+        
+        for msg in radio_messages_snapshot: # Iterate over the copy
+            utc_time_str = msg.get('Utc', 'N/A')
+            # Convert UTC to a more readable format (HH:MM:SS)
+            try:
+                # Parse timestamp, handling potential milliseconds and 'Z'
+                if '.' in utc_time_str:
+                    utc_time_str = utc_time_str.split('.')[0] 
+                dt_obj = datetime.strptime(utc_time_str.replace('Z', ''), "%Y-%m-%dT%H:%M:%S")
+                time_display = dt_obj.strftime("%H:%M:%S")
+            except ValueError as e_time:
+                logger.warning(f"Could not parse radio timestamp '{msg.get('Utc', 'N/A')}': {e_time}")
+                time_display = msg.get('Utc', 'N/A') # Fallback to raw string
+
+            driver_tla = msg.get('DriverTla', msg.get('RacingNumber', 'Unknown'))
+            audio_file_path = msg.get('Path') # Relative path like "TeamRadio/MAXVER01_..."
+            
+            if not audio_file_path:
+                logger.debug(f"Skipping radio message due to missing audio path: {msg}")
+                continue
+
+            # Ensure no double slashes if audio_file_path might start with one (it shouldn't based on example)
+            full_audio_url = f"{base_audio_url.rstrip('/')}/{audio_file_path.lstrip('/')}"
+            
+            message_style = {
+                'padding': '6px 2px', # Adjusted padding
+                'borderBottom': '1px solid #383838', # Slightly lighter separator
+                'display': 'flex',
+                'alignItems': 'center',
+                'justifyContent': 'space-between', # Pushes items apart
+                'gap': '8px' 
+            }
+            
+            text_info_style = {
+                'fontSize': '0.7rem', # Smaller font for timestamp/TLA
+                'whiteSpace': 'nowrap',
+                'overflow': 'hidden',
+                'textOverflow': 'ellipsis',
+                'flexShrink': '1', # Allow text to shrink
+                 'minWidth': '80px' # Ensure some space for text
+            }
+
+            audio_player_style = {
+                'height': '28px', # Slightly smaller player
+                'flexGrow': '1', # Allow player to take available space
+                'maxWidth': 'calc(100% - 90px)' # Max width considering text part
+            }
+            
+            timestamp_tla_span = html.Span(f"[{time_display}] {driver_tla}:", style=text_info_style)
+            
+            audio_player = html.Audio(
+                src=full_audio_url, 
+                controls=True, 
+                style=audio_player_style
+            )
+            
+            # Append to the start to keep newest at the top if not using appendleft initially
+            # Since we are iterating a snapshot of a deque that had appendleft, this order is fine.
+            display_elements.append(html.Div([timestamp_tla_span, audio_player], style=message_style))
+
+        if not display_elements: # If after filtering, nothing is left
+             return html.Em(config.TEXT_TEAM_RADIO_AWAITING, style={'color': 'grey'})
+
+        return html.Div(display_elements) # Wrap all messages in a parent Div
+
+    except Exception as e:
+        logger.error(f"Error updating team radio display: {e}", exc_info=True)
+        return html.Em(config.TEXT_TEAM_RADIO_ERROR, style={'color': 'red'})
 
 
 @app.callback(

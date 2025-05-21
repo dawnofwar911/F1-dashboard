@@ -20,6 +20,10 @@ TARGET_SAVE_DIRECTORY = REPLAY_DIR # Directory for saving live data files
 DEFAULT_REPLAY_FILENAME = "2023-yas-marina-quali.data.txt" # Default replay file suggestion
 FASTF1_CACHE_DIR = _SCRIPT_DIR / "ff1_cache" # Cache directory for FastF1
 
+# Base URL for F1 live timing static assets (audio files)
+# Example: "livetiming.formula1.com" (schema will be added in callbacks)
+F1_LIVETIMING_BASE_URL = "livetiming.formula1.com"
+
 # --- Filename Templates ---
 DATA_FILENAME_TEMPLATE = "f1_signalr_data_{timestamp}.data.txt" # Not currently used directly for replay saving
 LIVE_DATA_FILENAME_FALLBACK_PREFIX = "F1LiveData"
@@ -90,6 +94,11 @@ TEXT_WAITING_FOR_DATA = "Waiting for data..."
 TEXT_LOADING_DATA = "Loading data..."
 TEXT_ERROR_UPDATING = "Error updating!" # Generic update error
 TEXT_ERROR_LOADING = "Error loading!"   # Generic loading error
+
+# Text constants for Team Radio
+TEXT_TEAM_RADIO_AWAITING = "Awaiting team radio messages..."
+TEXT_TEAM_RADIO_ERROR = "Error loading team radio messages."
+TEXT_TEAM_RADIO_NO_SESSION_PATH = "Session path not available for team radio."
 
 # Connection Status
 TEXT_CONN_STATUS_DEFAULT = "State: ? | Conn: ?"

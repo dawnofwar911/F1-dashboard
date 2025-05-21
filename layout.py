@@ -334,13 +334,31 @@ def create_layout():
             ),
             dbc.Accordion([
                 dbc.AccordionItem(
-                    children=[dcc.Textarea(id='race-control-log-display', value=config.TEXT_RC_WAITING, # Use constant
+                    children=[dcc.Textarea(id='race-control-log-display', value=config.TEXT_RC_WAITING, 
                                  style={'width': '100%', 'height': '140px',
                                         'backgroundColor': '#2B2B2B', 'color': '#E0E0E0',
                                         'border': '1px solid #444', 'fontFamily': 'monospace',
                                         'fontSize':'0.75rem'}, readOnly=True)],
                     title="Race Control Messages", item_id="rcm-accordion"
                 ),
+                dbc.AccordionItem( # <<< START OF NEW ACCORDION ITEM FOR TEAM RADIO
+                    children=[
+                        html.Div(
+                            id='team-radio-display',
+                            style={
+                                'maxHeight': '200px', # Adjust height as needed
+                                'overflowY': 'auto',
+                                'border': '1px solid #444', 
+                                'padding': '8px',
+                                'fontSize': '0.75rem', 
+                                'backgroundColor': '#2B2B2B',
+                                'color': '#E0E0E0' # Added text color for better visibility
+                            }
+                        )
+                    ],
+                    title="Team Radio", # Title for the new panel
+                    item_id="team-radio-accordion" 
+                ), # <<< END OF NEW ACCORDION ITEM FOR TEAM RADIO
                 dbc.AccordionItem(
                     children=[html.Div(id='other-data-display',
                                        style={'maxHeight': '140px', 'overflowY': 'auto',
@@ -348,7 +366,7 @@ def create_layout():
                                               'fontSize': '0.7rem', 'backgroundColor': '#2B2B2B'})],
                     title="Other Data Streams (Debug)",
                     item_id="other-data-accordion",
-                    id="debug-data-accordion-item"
+                    id="debug-data-accordion-item" # This ID was on the item itself in your code
                 )
             ], start_collapsed=True, flush=True, className="mt-3", active_item="rcm-accordion")
         ], lg=7, md=12, id='main-timing-col', className="mb-3 mb-lg-0"),
