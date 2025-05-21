@@ -20,6 +20,25 @@ TARGET_SAVE_DIRECTORY = REPLAY_DIR # Directory for saving live data files
 DEFAULT_REPLAY_FILENAME = "2023-yas-marina-quali.data.txt" # Default replay file suggestion
 FASTF1_CACHE_DIR = _SCRIPT_DIR / "ff1_cache" # Cache directory for FastF1
 
+QUALIFYING_ELIMINATION_COUNT = {
+    "Q1": 5, "SQ1": 5,
+    "Q2": 5, "SQ2": 5,
+    "Q3": 0, "SQ3": 0
+}
+
+QUALIFYING_DANGER_RED_STYLE = {
+    'backgroundColor': '#DC143C', 'color': 'white'}  # Crimson Red
+QUALIFYING_WATCH_GREY_STYLE = {
+    'backgroundColor': '#696969', 'color': 'white'}  # Dim Grey
+
+# Standard number of cars participating in each segment (can be adjusted if needed)
+QUALIFYING_CARS_Q1 = 20
+QUALIFYING_CARS_Q2 = 15
+QUALIFYING_CARS_Q3 = 10
+
+QUALIFYING_ELIMINATED_Q1 = 5
+QUALIFYING_ELIMINATED_Q2 = 5
+
 # Base URL for F1 live timing static assets (audio files)
 # Example: "livetiming.formula1.com" (schema will be added in callbacks)
 F1_LIVETIMING_BASE_URL = "livetiming.formula1.com"
