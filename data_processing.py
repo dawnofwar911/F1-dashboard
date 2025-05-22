@@ -809,6 +809,7 @@ def _process_session_data(data):
                            if is_transition and new_segment_candidate != old_segment :
                                logger.info(f"Qualifying Segment Transition: '{old_segment}' -> '{new_segment_candidate}' (SessionStatus: {session_status})")
                                app_state.qualifying_segment_state["current_segment"] = new_segment_candidate
+                               app_state.qualifying_segment_state["old_segment"] = old_segment
                                # When a segment truly ends and we go "Between Segments" or "Ended",
                                # the official_segment_remaining_seconds should reflect 0 or be ignored until next start.
                                if new_segment_candidate == "Between Segments" or new_segment_candidate == "Ended":

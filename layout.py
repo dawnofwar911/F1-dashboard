@@ -316,6 +316,15 @@ def create_layout():
                     {'if': {'column_id': 'Pits',
                             'filter_query': '{PitDisplayState_Str} = "SHOW_COMPLETED_DURATION"'}, **PIT_DURATION_STYLE},
 
+                    # You can choose to apply it to other cells or attempt a whole-row style if needed.
+                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'IntervalGap', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
+                            'filter_query': '{QualiHighlight_Str} = "RED_DANGER"'},
+                     **config.QUALIFYING_DANGER_RED_STYLE},
+
+                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'Tyre', 'Last Lap', 'IntervalGap', 'Best Lap', 'S1', 'S2', 'S3', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
+                            'filter_query': '{QualiHighlight_Str} = "GREY_ELIMINATED"'},
+                     **config.QUALIFYING_ELIMINATED_STYLE},
+
                     # Default styling for lap and sector times (width, alignment)
                     {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px',
                         'maxWidth': '85px', 'textAlign': 'right', 'paddingRight': '5px'},

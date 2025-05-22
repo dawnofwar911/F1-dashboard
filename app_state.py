@@ -77,6 +77,7 @@ INITIAL_EXTRAPOLATED_CLOCK_INFO = {
 extrapolated_clock_info = INITIAL_EXTRAPOLATED_CLOCK_INFO.copy()
 
 INITIAL_QUALIFYING_SEGMENT_STATE = {
+    "old_segment": None,
     "current_segment": None,  # e.g., "Q1", "Q2", "Q3", "SQ1", "SQ2", "SQ3", "Between Segments", "Ended"
     "official_segment_remaining_seconds": 0, # Time from ExtrapolatedClock when segment started/synced
     "last_official_time_capture_utc": None,  # datetime object (wall clock UTC)
