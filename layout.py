@@ -322,8 +322,8 @@ def create_layout():
                      **config.QUALIFYING_DANGER_RED_STYLE},
 
                     {'if': {'column_id': ['Pos', 'No.', 'Car', 'Tyre', 'Last Lap', 'IntervalGap', 'Best Lap', 'S1', 'S2', 'S3', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
-                            'filter_query': '{QualiHighlight_Str} = "GREY_WATCH"'},
-                     **config.QUALIFYING_WATCH_GREY_STYLE},
+                            'filter_query': '{QualiHighlight_Str} = "GREY_ELIMINATED"'},
+                     **config.QUALIFYING_ELIMINATED_STYLE},
 
                     # Default styling for lap and sector times (width, alignment)
                     {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px',

@@ -601,19 +601,25 @@ def update_main_data_displays(n):
     other_elements = []
     table_data = []
     timestamp_text = config.TEXT_WAITING_FOR_DATA
-    current_time_for_callbacks = time.time()  # Wall clock time for pit stop calcs
+    current_time_for_callbacks = time.time()
 
     try:
         session_type_from_state = ""
         current_q_segment_from_state = None
+        previous_q_segment_from_state = None
         q_state_snapshot = {}
         current_replay_speed_snapshot = 1.0
         session_feed_status_snapshot = "Unknown"
 
-        # Highlight logic defaults
-        highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0}
-        current_segment_time_remaining_seconds = float(
-            'inf')  # Default to a very high number
+        # Initialize rule dictionaries
+        active_segment_highlight_rule = {
+            "type": "NONE", "lower_pos": 0, "upper_pos": 0}
+        q1_eliminated_highlight_rule = {
+            "type": "NONE", "lower_pos": 0, "upper_pos": 0}
+        q2_eliminated_highlight_rule = {
+            "type": "NONE", "lower_pos": 0, "upper_pos": 0}
+
+        current_segment_time_remaining_seconds = float('inf')
 
         with app_state.app_state_lock:
             session_type_from_state = app_state.session_details.get(
@@ -622,22 +628,20 @@ def update_main_data_displays(n):
                 "current_segment")
             previous_q_segment_from_state = app_state.qualifying_segment_state.get(
                 "old_segment")
-            q_state_snapshot = app_state.qualifying_segment_state.copy()  # For time remaining calc
-            # extrapolated_clock_snapshot = app_state.extrapolated_clock_info.copy() # If using direct remaining string
-            current_replay_speed_snapshot = app_state.replay_speed  # For time remaining calc
-            session_feed_status_snapshot = app_state.session_details.get(
-                'SessionStatus', 'Unknown')  # For time remaining calc
 
+            q_state_snapshot = app_state.qualifying_segment_state.copy()
+            current_replay_speed_snapshot = app_state.replay_speed
+            session_feed_status_snapshot = app_state.session_details.get(
+                'SessionStatus', 'Unknown')
             timing_state_copy = app_state.timing_state.copy()
             data_store_copy = app_state.data_store
 
-        # --- Calculate current segment time remaining (logic adapted from update_lap_and_session_info) ---
+        # --- Calculate current segment time remaining ---
         if q_state_snapshot.get("last_official_time_capture_utc") and \
            q_state_snapshot.get("official_segment_remaining_seconds") is not None and \
            current_q_segment_from_state and \
            current_q_segment_from_state not in ["Unknown", "Between Segments", "Ended"] and \
            session_feed_status_snapshot not in ["Suspended", "Aborted", "Finished", "Ends", "NotStarted"]:
-
             now_utc_for_calc = datetime.now(timezone.utc)
             time_since_last_capture_for_calc = (
                 now_utc_for_calc - q_state_snapshot["last_official_time_capture_utc"]).total_seconds()
@@ -652,47 +656,74 @@ def update_main_data_displays(n):
             current_segment_time_remaining_seconds = 0
 
         logger.debug(
-            f"QualiHighlight: Segment='{current_q_segment_from_state}', TimeRemainingSec={current_segment_time_remaining_seconds:.1f}")
+            f"QualiHighlight: CurrentSeg='{current_q_segment_from_state}', PrevSeg='{previous_q_segment_from_state}', "
+            f"TimeRemainingSec={current_segment_time_remaining_seconds:.1f}"
+        )
 
-        # --- Determine Highlight Rule based on user's new logic ---
+        # --- Determine Highlight Rules based on your specific logic ---
         five_mins_in_seconds = 5 * 60
         is_qualifying_type_session = session_type_from_state in [
             "qualifying", "sprint shootout"]
 
         if is_qualifying_type_session and current_q_segment_from_state:
-            if current_q_segment_from_state in ["Between Segments","Q1", "SQ1"] and previous_q_segment_from_state in [None,"Q1", "SQ1"]:
-                # Bottom 5 for Q1/SQ1 (e.g., P16-P20 if 20 cars)
-                lower_bound = config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1
-                upper_bound = config.QUALIFYING_CARS_Q1
+            # Q1/SQ1 Logic
+            if current_q_segment_from_state in ["Q1", "SQ1"] or \
+               (current_q_segment_from_state == "Between Segments" and previous_q_segment_from_state in [None, "Q1", "SQ1"]):
+                lower_b_q1_active = config.QUALIFYING_CARS_Q1 - \
+                    config.QUALIFYING_ELIMINATED_Q1 + 1  # P16
+                upper_b_q1_active = config.QUALIFYING_CARS_Q1  # P20
                 if current_segment_time_remaining_seconds <= five_mins_in_seconds:
-                    highlight_rule = {
-                        "type": "RED_DANGER", "lower_pos": lower_bound, "upper_pos": upper_bound}
-                # else: No specific highlighting mentioned for >5 mins in Q1/SQ1 by user
+                    active_segment_highlight_rule = {
+                        "type": "RED_DANGER", "lower_pos": lower_b_q1_active, "upper_pos": upper_b_q1_active}
 
-            elif current_q_segment_from_state in ["Between Segments", "Q2", "SQ2"] and previous_q_segment_from_state in ["Between Segments", "Q2", "SQ2"]:
-                # P11-P15 for Q2/SQ2 (assuming 15 cars, 5 eliminated)
-                lower_bound_elmininated = config.QUALIFYING_CARS_Q1 - \
-                    config.QUALIFYING_ELIMINATED_Q1 + 1  # P11
-                upper_bound_elmiminated = config.QUALIFYING_CARS_Q1  # P15
-                lower_bound = config.QUALIFYING_CARS_Q2 - \
-                    config.QUALIFYING_ELIMINATED_Q2 + 1  # P11
-                upper_bound = config.QUALIFYING_CARS_Q2  # P15
-                highlight_rule = {
-                    "type": "GREY_WATCH", "lower_pos": lower_bound_elmininated, "upper_pos": upper_bound_elmiminated}
+            # Q2/SQ2 Logic
+            elif current_q_segment_from_state in ["Q2", "SQ2"] or \
+                    (current_q_segment_from_state == "Between Segments" and previous_q_segment_from_state in ["Q2", "SQ2"]):
+
+                # Rule for P16-P20 (Q1 eliminated cars) - ALWAYS GREY_ELIMINATED in Q2
+                lower_b_q1_elim = config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1
+                upper_b_q1_elim = config.QUALIFYING_CARS_Q1
+                q1_eliminated_highlight_rule = {  # This rule is for Q1 eliminated
+                    "type": "GREY_ELIMINATED",
+                    "lower_pos": lower_b_q1_elim,
+                    "upper_pos": upper_b_q1_elim
+                }
+
+                # Rule for P11-P15 (Q2 active cars) - RED_DANGER if time critical, otherwise NO active highlight
+                lower_b_q2_active = config.QUALIFYING_CARS_Q2 - \
+                    config.QUALIFYING_ELIMINATED_Q2 + 1
+                upper_b_q2_active = config.QUALIFYING_CARS_Q2
                 if current_segment_time_remaining_seconds <= five_mins_in_seconds:
-                    highlight_rule = {
-                        "type": "RED_DANGER", "lower_pos": lower_bound, "upper_pos": upper_bound}
+                    active_segment_highlight_rule = {
+                        "type": "RED_DANGER", "lower_pos": lower_b_q2_active, "upper_pos": upper_b_q2_active}
 
-            elif current_q_segment_from_state in ["Between Segments","Q3", "SQ3"]and previous_q_segment_from_state in ["Between Segments","Q3", "SQ3"]:
-                # All 10 cars in Q3/SQ3
-                lower_bound = config.QUALIFYING_CARS_Q3 - 1
-                upper_bound = config.QUALIFYING_CARS_Q1
-                highlight_rule = {
-                    "type": "GREY_WATCH", "lower_pos": lower_bound, "upper_pos": upper_bound}
+            # Q3/SQ3 Logic (and "Ended" state if previous was Q3/SQ3)
+            elif current_q_segment_from_state in ["Q3", "SQ3", "Ended"] or \
+                    (current_q_segment_from_state == "Between Segments" and previous_q_segment_from_state in ["Q3", "SQ3"]):
 
-        # ... (Debug display for other_elements remains the same) ...
+                # P1-P10 (active Q3 participants) get NO active highlight
+                active_segment_highlight_rule = {
+                    "type": "NONE", "lower_pos": 0, "upper_pos": 0}
+
+                # Rule for P16-P20 (Q1 eliminated) to be GREY_ELIMINATED
+                lower_b_q1_elim_for_q3 = config.QUALIFYING_CARS_Q1 - \
+                    config.QUALIFYING_ELIMINATED_Q1 + 1
+                upper_b_q1_elim_for_q3 = config.QUALIFYING_CARS_Q1
+                q1_eliminated_highlight_rule = {
+                    "type": "GREY_ELIMINATED", "lower_pos": lower_b_q1_elim_for_q3, "upper_pos": upper_b_q1_elim_for_q3}
+
+                # Rule for P11-P15 (Q2 eliminated) to be GREY_ELIMINATED
+                lower_b_q2_elim_for_q3 = config.QUALIFYING_CARS_Q2 - \
+                    config.QUALIFYING_ELIMINATED_Q2 + 1
+                upper_b_q2_elim_for_q3 = config.QUALIFYING_CARS_Q2
+                q2_eliminated_highlight_rule = {
+                    "type": "GREY_ELIMINATED", "lower_pos": lower_b_q2_elim_for_q3, "upper_pos": upper_b_q2_elim_for_q3}
+
+        # === Start of data processing for table (your existing code) ===
+        # ... (excluded_streams, sorted_streams, other_elements loop - this remains unchanged) ...
         excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
                             'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat']
+        # ... (rest of other_elements population) ...
         sorted_streams = sorted(
             [s for s in data_store_copy.keys() if s not in excluded_streams])
         for stream in sorted_streams:
@@ -718,7 +749,10 @@ def update_main_data_displays(n):
                 tla = driver_state.get("Tla", "N/A")
                 pos = driver_state.get('Position', '-')
                 pos_str = str(pos)
-                compound = driver_state.get('TyreCompound', '-')  # tyre logic
+                # status_driver = driver_state.get('Status', 'N/A').lower() # Not used if is_status_out check removed
+
+                # ... (all your other logic from your function for tyre, interval, laps, etc. - this part should be complete in your actual code) ...
+                compound = driver_state.get('TyreCompound', '-')
                 age = driver_state.get('TyreAge', '?')
                 is_new = driver_state.get('IsNewTyre', False)
                 compound_short = ""
@@ -741,7 +775,7 @@ def update_main_data_displays(n):
                     tyre = "-"
 
                 interval_val = utils.get_nested_state(
-                    driver_state, 'IntervalToPositionAhead', 'Value', default='-')  # Interval/Gap logic
+                    driver_state, 'IntervalToPositionAhead', 'Value', default='-')
                 gap_val = driver_state.get('GapToLeader', '-')
                 interval_display_text = str(interval_val).strip(
                 ) if interval_val not in [None, "", "-"] else "-"
@@ -752,7 +786,7 @@ def update_main_data_displays(n):
                 is_p1 = (pos_str == '1')
                 show_gap = not is_p1 and session_type_from_state in [config.SESSION_TYPE_RACE.lower(
                 ), config.SESSION_TYPE_SPRINT.lower()] and gap_display_text != "-"
-                if show_gap and interval_display_text != "":  # interval_display_text can be "" if it's P1 and no interval
+                if show_gap and interval_display_text != "":
                     normal_weight_gap_text = gap_display_text
                     interval_gap_markdown = f"{bold_interval_text}\\\n{normal_weight_gap_text}"
                 elif interval_display_text == "" and is_p1:
@@ -764,7 +798,7 @@ def update_main_data_displays(n):
                         interval_gap_markdown = bold_interval_text
 
                 last_lap_val = utils.get_nested_state(
-                    driver_state, 'LastLapTime', 'Value', default='-')  # Lap/Sector times
+                    driver_state, 'LastLapTime', 'Value', default='-')
                 if last_lap_val is None or last_lap_val == "":
                     last_lap_val = "-"
                 best_lap_val = utils.get_nested_state(
@@ -784,8 +818,7 @@ def update_main_data_displays(n):
                 if s3_val is None or s3_val == "":
                     s3_val = "-"
 
-                is_in_pit_flag = driver_state.get(
-                    'InPit', False)  # Pit display logic
+                is_in_pit_flag = driver_state.get('InPit', False)
                 entry_wall_time = driver_state.get(
                     'current_pit_entry_system_time')
                 speed_at_entry = driver_state.get(
@@ -816,9 +849,8 @@ def update_main_data_displays(n):
                     pits_text_to_display = final_live_pit_text
                     pit_display_state_for_style = "SHOW_COMPLETED_DURATION"
 
-                status = driver_state.get('Status', 'N/A')  # Status & Car Data
                 car_data = driver_state.get('CarData', {})
-                speed = car_data.get('Speed', '-')
+                speed_val = car_data.get('Speed', '-')
                 gear = car_data.get('Gear', '-')
                 rpm = car_data.get('RPM', '-')
                 drs_val = car_data.get('DRS')
@@ -827,7 +859,7 @@ def update_main_data_displays(n):
                     drs_val, 'Off') if drs_val is not None else 'Off'
 
                 is_overall_best_lap_flag = driver_state.get(
-                    'IsOverallBestLap', False)  # Best lap/sector flags
+                    'IsOverallBestLap', False)
                 is_last_lap_personal_best_flag = utils.get_nested_state(
                     driver_state, 'LastLapTime', 'PersonalFastest', default=False)
                 is_s1_personal_best_flag = utils.get_nested_state(
@@ -842,44 +874,51 @@ def update_main_data_displays(n):
                     'IsOverallBestSector', [False]*3)[1]
                 is_overall_best_s3_flag = driver_state.get(
                     'IsOverallBestSector', [False]*3)[2]
-                # End of existing data population
+                # === End of your existing row data population ===
 
-                # <<< NEW: Apply new Quali Highlight Logic >>>
-                current_driver_highlight_type = "NONE"  # Default for this driver
-                if highlight_rule["type"] != "NONE":
-                    if pos_str != '-':  # Driver has a numerical position
-                        try:
-                            driver_pos_int = int(pos_str)
-                            if highlight_rule["lower_pos"] <= driver_pos_int <= highlight_rule["upper_pos"]:
-                                current_driver_highlight_type = highlight_rule["type"]
-                        except ValueError:
-                            # If position is non-numeric, but we are in a danger (RED) highlighting mode,
-                            # and they have no position, mark them.
-                            # Typically Q1/Q2 last 5 mins
-                            if highlight_rule["type"] == "RED_DANGER":
-                                current_driver_highlight_type = "RED_DANGER"
-                    # Driver has no position (pos_str == '-') AND it's a RED_DANGER situation
-                    elif highlight_rule["type"] == "RED_DANGER":
-                        current_driver_highlight_type = "RED_DANGER"
-                    # Note: GREY_WATCH for drivers with no position is implicitly handled as "NONE" unless explicitly desired.
-                    # For Q3, all P1-P10 get GREY_WATCH, so drivers with no position won't match.
+                current_driver_highlight_type = "NONE"
+                driver_pos_int = -1
+                if pos_str != '-':
+                    try:
+                        driver_pos_int = int(pos_str)
+                    except ValueError:
+                        pass
+
+                # Apply highlighting with priority, status check removed for GREY_ELIMINATED
+                # Priority 1: Q1 eliminated drivers (P16-P20) if in Q2 or Q3
+                if current_q_segment_from_state in ["Q2", "SQ2", "Q3", "SQ3"] and \
+                   q1_eliminated_highlight_rule["type"] == "GREY_ELIMINATED" and \
+                   driver_pos_int != -1 and \
+                   q1_eliminated_highlight_rule["lower_pos"] <= driver_pos_int <= q1_eliminated_highlight_rule["upper_pos"]:
+                    current_driver_highlight_type = "GREY_ELIMINATED"
+
+                # Priority 2: Q2 eliminated drivers (P11-P15) if in Q3
+                if current_driver_highlight_type == "NONE" and \
+                   current_q_segment_from_state in ["Q3", "SQ3"] and \
+                   q2_eliminated_highlight_rule["type"] == "GREY_ELIMINATED" and \
+                   driver_pos_int != -1 and \
+                   q2_eliminated_highlight_rule["lower_pos"] <= driver_pos_int <= q2_eliminated_highlight_rule["upper_pos"]:
+                    current_driver_highlight_type = "GREY_ELIMINATED"
+
+                # Priority 3: Active segment's primary highlight (Q1 RED, Q2 RED)
+                if current_driver_highlight_type == "NONE":
+                    # Changed from current_segment_active_highlight
+                    if active_segment_highlight_rule["type"] != "NONE":
+                        if driver_pos_int != -1 and \
+                           active_segment_highlight_rule["lower_pos"] <= driver_pos_int <= active_segment_highlight_rule["upper_pos"]:  # Changed
+                            # Changed
+                            current_driver_highlight_type = active_segment_highlight_rule["type"]
+                        # Changed
+                        elif pos_str == '-' and active_segment_highlight_rule["type"] == "RED_DANGER":
+                            current_driver_highlight_type = "RED_DANGER"
 
                 row = {
-                    'id': car_num,
-                    'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre,
+                    'id': car_num, 'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre,
                     'IntervalGap': interval_gap_markdown,
                     'Last Lap': last_lap_val, 'Best Lap': best_lap_val,
                     'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_text_to_display,
-                    'Status': status, 'Speed': speed, 'Gear': gear, 'RPM': rpm, 'DRS': drs,
-
-                    # Boolean flags (keep if used by other logic, or for clarity)
-                    'IsOverallBestLap': is_overall_best_lap_flag,
-                    'IsLastLapPersonalBest': is_last_lap_personal_best_flag,
-                    'IsOverallBestS1': is_overall_best_s1_flag, 'IsPersonalBestS1': is_s1_personal_best_flag,
-                    'IsOverallBestS2': is_overall_best_s2_flag, 'IsPersonalBestS2': is_s2_personal_best_flag,
-                    'IsOverallBestS3': is_overall_best_s3_flag, 'IsPersonalBestS3': is_s3_personal_best_flag,
-
-                    # String versions for DataTable filtering
+                    'Status': driver_state.get('Status', 'N/A'),
+                    'Speed': speed_val, 'Gear': gear, 'RPM': rpm, 'DRS': drs,
                     'IsOverallBestLap_Str': "TRUE" if is_overall_best_lap_flag else "FALSE",
                     'IsLastLapPersonalBest_Str': "TRUE" if is_last_lap_personal_best_flag else "FALSE",
                     'IsOverallBestS1_Str': "TRUE" if is_overall_best_s1_flag else "FALSE",
@@ -888,16 +927,12 @@ def update_main_data_displays(n):
                     'IsPersonalBestS2_Str': "TRUE" if is_s2_personal_best_flag else "FALSE",
                     'IsOverallBestS3_Str': "TRUE" if is_overall_best_s3_flag else "FALSE",
                     'IsPersonalBestS3_Str': "TRUE" if is_s3_personal_best_flag else "FALSE",
-
                     'PitDisplayState_Str': pit_display_state_for_style,
-                    # <<< NEW: Use the new highlight string >>>
                     'QualiHighlight_Str': current_driver_highlight_type,
-                    # 'IsInDangerZone_Str': "FALSE", # Remove or ensure old logic is fully replaced
                 }
                 processed_table_data.append(row)
 
-            processed_table_data.sort(
-                key=utils.pos_sort_key)  # Sort by position
+            processed_table_data.sort(key=utils.pos_sort_key)
             table_data = processed_table_data
         else:
             timestamp_text = "Waiting for DriverList..."

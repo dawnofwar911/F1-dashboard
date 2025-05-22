@@ -28,16 +28,20 @@ QUALIFYING_ELIMINATION_COUNT = {
 
 QUALIFYING_DANGER_RED_STYLE = {
     'backgroundColor': '#DC143C', 'color': 'white'}  # Crimson Red
-QUALIFYING_WATCH_GREY_STYLE = {
-    'backgroundColor': '#696969', 'color': 'white'}  # Dim Grey
+# Darker grey for already out
+QUALIFYING_ELIMINATED_STYLE = {
+    'backgroundColor': '#484848', 'color': '#a0a0a0'}
+# Dim Grey (used for Q3 P1-P10 in previous versions, now unused based on your latest Q3 rule)
+QUALIFYING_WATCH_GREY_STYLE = {'backgroundColor': '#696969', 'color': 'white'}
 
-# Standard number of cars participating in each segment (can be adjusted if needed)
+# Participant counts (adjust if your series rules differ)
 QUALIFYING_CARS_Q1 = 20
-QUALIFYING_CARS_Q2 = 15
-QUALIFYING_CARS_Q3 = 10
+QUALIFYING_ELIMINATED_Q1 = 5  # Drivers P16-P20 are out
 
-QUALIFYING_ELIMINATED_Q1 = 5
-QUALIFYING_ELIMINATED_Q2 = 5
+QUALIFYING_CARS_Q2 = 15     # Drivers P1-P15 participate
+QUALIFYING_ELIMINATED_Q2 = 5  # Drivers P11-P15 are out from Q2
+
+QUALIFYING_CARS_Q3 = 10     # Drivers P1-P10 participate
 
 # Base URL for F1 live timing static assets (audio files)
 # Example: "livetiming.formula1.com" (schema will be added in callbacks)
