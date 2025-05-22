@@ -620,6 +620,8 @@ def update_main_data_displays(n):
                 'Type', "").lower()
             current_q_segment_from_state = app_state.qualifying_segment_state.get(
                 "current_segment")
+            previous_q_segment_from_state = app_state.qualifying_segment_state.get(
+                "old_segment")
             q_state_snapshot = app_state.qualifying_segment_state.copy()  # For time remaining calc
             # extrapolated_clock_snapshot = app_state.extrapolated_clock_info.copy() # If using direct remaining string
             current_replay_speed_snapshot = app_state.replay_speed  # For time remaining calc
@@ -658,7 +660,7 @@ def update_main_data_displays(n):
             "qualifying", "sprint shootout"]
 
         if is_qualifying_type_session and current_q_segment_from_state:
-            if current_q_segment_from_state in ["Q1", "SQ1"]:
+            if current_q_segment_from_state in ["Between Segments","Q1", "SQ1"] and previous_q_segment_from_state in [None,"Q1", "SQ1"]:
                 # Bottom 5 for Q1/SQ1 (e.g., P16-P20 if 20 cars)
                 lower_bound = config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1
                 upper_bound = config.QUALIFYING_CARS_Q1
@@ -667,22 +669,24 @@ def update_main_data_displays(n):
                         "type": "RED_DANGER", "lower_pos": lower_bound, "upper_pos": upper_bound}
                 # else: No specific highlighting mentioned for >5 mins in Q1/SQ1 by user
 
-            elif current_q_segment_from_state in ["Q2", "SQ2"]:
+            elif current_q_segment_from_state in ["Between Segments", "Q2", "SQ2"] or previous_q_segment_from_state in ["Between Segments", "Q2", "SQ2"]:
                 # P11-P15 for Q2/SQ2 (assuming 15 cars, 5 eliminated)
+                lower_bound_elmininated = config.QUALIFYING_CARS_Q1 - \
+                    config.QUALIFYING_ELIMINATED_Q1 + 1  # P11
+                upper_bound_elmiminated = config.QUALIFYING_CARS_Q1  # P15
                 lower_bound = config.QUALIFYING_CARS_Q2 - \
                     config.QUALIFYING_ELIMINATED_Q2 + 1  # P11
                 upper_bound = config.QUALIFYING_CARS_Q2  # P15
+                highlight_rule = {
+                    "type": "GREY_WATCH", "lower_pos": lower_bound_elmininated, "upper_pos": upper_bound_elmiminated}
                 if current_segment_time_remaining_seconds <= five_mins_in_seconds:
                     highlight_rule = {
                         "type": "RED_DANGER", "lower_pos": lower_bound, "upper_pos": upper_bound}
-                else:
-                    highlight_rule = {
-                        "type": "GREY_WATCH", "lower_pos": lower_bound, "upper_pos": upper_bound}
 
-            elif current_q_segment_from_state in ["Q3", "SQ3"]:
+            elif current_q_segment_from_state in ["Between Segments","Q3", "SQ3"]and previous_q_segment_from_state in ["Between Segments","Q3", "SQ3"]:
                 # All 10 cars in Q3/SQ3
-                lower_bound = 1
-                upper_bound = config.QUALIFYING_CARS_Q3
+                lower_bound = config.QUALIFYING_CARS_Q3 - 1
+                upper_bound = config.QUALIFYING_CARS_Q1
                 highlight_rule = {
                     "type": "GREY_WATCH", "lower_pos": lower_bound, "upper_pos": upper_bound}
 

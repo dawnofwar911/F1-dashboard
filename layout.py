@@ -321,7 +321,7 @@ def create_layout():
                             'filter_query': '{QualiHighlight_Str} = "RED_DANGER"'},
                      **config.QUALIFYING_DANGER_RED_STYLE},
 
-                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'IntervalGap', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
+                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'Tyre', 'Last Lap', 'IntervalGap', 'Best Lap', 'S1', 'S2', 'S3', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
                             'filter_query': '{QualiHighlight_Str} = "GREY_WATCH"'},
                      **config.QUALIFYING_WATCH_GREY_STYLE},
 
