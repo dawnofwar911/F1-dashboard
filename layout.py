@@ -317,11 +317,11 @@ def create_layout():
                             'filter_query': '{PitDisplayState_Str} = "SHOW_COMPLETED_DURATION"'}, **PIT_DURATION_STYLE},
 
                     # You can choose to apply it to other cells or attempt a whole-row style if needed.
-                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'Last Lap', 'IntervalGap', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
+                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'IntervalGap', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
                             'filter_query': '{QualiHighlight_Str} = "RED_DANGER"'},
                      **config.QUALIFYING_DANGER_RED_STYLE},
 
-                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'Last Lap', 'IntervalGap', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
+                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'IntervalGap', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
                             'filter_query': '{QualiHighlight_Str} = "GREY_WATCH"'},
                      **config.QUALIFYING_WATCH_GREY_STYLE},
 
