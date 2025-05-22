@@ -669,7 +669,7 @@ def update_main_data_displays(n):
                         "type": "RED_DANGER", "lower_pos": lower_bound, "upper_pos": upper_bound}
                 # else: No specific highlighting mentioned for >5 mins in Q1/SQ1 by user
 
-            elif current_q_segment_from_state in ["Between Segments", "Q2", "SQ2"] or previous_q_segment_from_state in ["Between Segments", "Q2", "SQ2"]:
+            elif current_q_segment_from_state in ["Between Segments", "Q2", "SQ2"] and previous_q_segment_from_state in ["Between Segments", "Q2", "SQ2"]:
                 # P11-P15 for Q2/SQ2 (assuming 15 cars, 5 eliminated)
                 lower_bound_elmininated = config.QUALIFYING_CARS_Q1 - \
                     config.QUALIFYING_ELIMINATED_Q1 + 1  # P11
