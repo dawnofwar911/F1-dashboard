@@ -249,7 +249,7 @@ TRACK_STATUS_STYLES = {
     '4': {"label": "SAFETY CAR", "card_color": "#FFEB3B", "text_color": "black"},
     '5': {"label": "RED FLAG", "card_color": "danger", "text_color": "white"},
     '6': {"label": "VSC DEPLOYED", "card_color": "info", "text_color": "white"},
-    '7': {"label": "VSC ENDING", "card_color": "info", "text_color": "white"},
+    '7': {"label": "VSC ENDING", "card_color": "#FFEB3B", "text_color": "white"},
     'DEFAULT': {"label": "UNKNOWN", "card_color": "secondary", "text_color": "white"}
 }
 
