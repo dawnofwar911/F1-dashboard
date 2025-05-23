@@ -95,6 +95,11 @@ qualifying_segment_state = INITIAL_QUALIFYING_SEGMENT_STATE.copy()
 practice_session_actual_start_utc = None
 practice_session_scheduled_duration_seconds = None # e.g., 3600 for a 60-minute session
 
+# --- Replay Feed Pacing ---
+current_processed_feed_timestamp_utc_dt = None # datetime object of the latest processed message
+session_start_feed_timestamp_utc_dt = None     # datetime of the first key message for current session/segment clock start in replay
+current_segment_scheduled_duration_seconds = None # Duration of the current timed segment for replay
+
 # --- Session Best Times ---
 INITIAL_SESSION_BESTS = {
     "OverallBestLapTime": {"Value": None, "DriverNumber": None},
@@ -153,6 +158,10 @@ def reset_to_default_state():
         global last_known_air_temp, last_known_track_temp, last_known_humidity
         global last_known_pressure, last_known_wind_speed, last_known_wind_direction
         global last_known_rainfall_val
+        global current_processed_feed_timestamp_utc_dt, session_start_feed_timestamp_utc_dt
+        global current_segment_scheduled_duration_seconds
+        global qualifying_segment_state
+        global practice_session_actual_start_utc
 
         app_status = INITIAL_APP_STATUS.copy()
         data_store = INITIAL_DATA_STORE.copy()
@@ -185,9 +194,11 @@ def reset_to_default_state():
         last_known_wind_direction = INITIAL_LAST_KNOWN_WIND_DIRECTION
         last_known_rainfall_val = INITIAL_LAST_KNOWN_RAINFALL_VAL
         
-        practice_session_actual_start_utc = None
-        practice_session_scheduled_duration_seconds = None
-
+        current_processed_feed_timestamp_utc_dt = None
+        session_start_feed_timestamp_utc_dt = None
+        current_segment_scheduled_duration_seconds = None
+    
+        practice_session_actual_start_utc = None #
         while not data_queue.empty():
             try:
                 data_queue.get_nowait()
