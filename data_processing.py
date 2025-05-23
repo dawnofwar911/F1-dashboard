@@ -21,34 +21,49 @@ logger = logging.getLogger("F1App.DataProcessing")
 # --- Individual Stream Processing Functions ---
 
 def _process_team_radio(data):
-    """ Processes TeamRadio stream data. """
+    """ Processes TeamRadio stream data.
+        Handles 'Captures' as both a dictionary (older format) or a list (newer format).
+    """
     if not isinstance(data, dict) or 'Captures' not in data:
-        logger.warning(f"Unexpected TeamRadio data format: {type(data)}")
+        logger.warning(f"Unexpected TeamRadio data root format: {type(data)}")
         return
 
-    captures = data.get('Captures')
-    if not isinstance(captures, dict):
-        logger.warning(f"TeamRadio 'Captures' field is not a dict: {type(captures)}")
+    captures_data = data.get('Captures')
+    processed_captures_list = []
+
+    if isinstance(captures_data, dict):
+        # Handle older format where Captures is a dictionary of dictionaries
+        logger.debug("Processing TeamRadio Captures as a dictionary.")
+        processed_captures_list = list(captures_data.values())
+    elif isinstance(captures_data, list):
+        # Handle newer format where Captures is a list of dictionaries
+        logger.debug("Processing TeamRadio Captures as a list.")
+        processed_captures_list = captures_data
+    else:
+        logger.warning(f"TeamRadio 'Captures' field is neither a dict nor a list: {type(captures_data)}")
+        return
+
+    if not processed_captures_list:
+        logger.debug("No captures found in TeamRadio data.")
         return
 
     new_messages_processed = 0
-    for capture_key, capture_data in captures.items():
-        if not isinstance(capture_data, dict):
-            logger.warning(f"TeamRadio capture item '{capture_key}' is not a dict: {type(capture_data)}")
+    for capture_item in processed_captures_list: # Iterate over the list of captures
+        if not isinstance(capture_item, dict):
+            logger.warning(f"TeamRadio capture item is not a dict: {type(capture_item)}")
             continue
 
-        utc_time = capture_data.get('Utc')
-        racing_num_str = capture_data.get('RacingNumber') # This is a string from the example
-        audio_path = capture_data.get('Path')
+        utc_time = capture_item.get('Utc')
+        racing_num_str = capture_item.get('RacingNumber') # This is a string from the example
+        audio_path = capture_item.get('Path')
 
         if not all([utc_time, racing_num_str, audio_path]):
-            logger.warning(f"TeamRadio capture item '{capture_key}' missing essential data: {capture_data}")
+            logger.warning(f"TeamRadio capture item missing essential data: {capture_item}")
             continue
 
         # Get TLA for the driver
         driver_tla = "N/A"
-        # Ensure app_state_lock is used if accessing shared timing_state from a different thread context
-        # However, data_processing_loop already holds the lock for this block.
+        # Assuming app_state.timing_state is already populated and protected by the lock in data_processing_loop
         if racing_num_str in app_state.timing_state:
             driver_tla = app_state.timing_state[racing_num_str].get('Tla', racing_num_str)
         
@@ -56,12 +71,12 @@ def _process_team_radio(data):
             'Utc': utc_time,
             'RacingNumber': racing_num_str,
             'Path': audio_path,
-            'DriverTla': driver_tla # Store TLA for easier access in callback
+            'DriverTla': driver_tla
         }
         
-        app_state.team_radio_messages.appendleft(radio_entry) # Add to the left (newest first)
+        # Add to app_state.team_radio_messages (which is a deque)
+        app_state.team_radio_messages.appendleft(radio_entry)
         new_messages_processed += 1
-        # Optional: More detailed logging if needed
         # logger.debug(f"Processed TeamRadio for {driver_tla} ({racing_num_str}): {audio_path} at {utc_time}")
 
     if new_messages_processed > 0:
@@ -404,6 +419,11 @@ def _process_driver_list(data):
 
 def _process_timing_data(data): # Using your provided function structure
     if not app_state.timing_state: return
+    
+    # Check if it's the specific CutOffTime message
+    if isinstance(data, dict) and 'CutOffTime' in data and len(data) == 1: # Checks if it's a dict with ONLY CutOffTime
+        logger.debug(f"Received TimingData CutOffTime message, ignoring: {data}")
+        return # Ignore this specific message type for now
 
     if isinstance(data, dict) and 'Lines' in data and isinstance(data['Lines'], dict):
         for car_num_str, line_data in data['Lines'].items():
@@ -637,9 +657,8 @@ def _process_timing_data(data): # Using your provided function structure
             for i in range(3):
                 driver_state_check["IsOverallBestSector"][i] = (overall_best_sector_holders[i] == car_num_str_check)
             
-    elif data:
-         logger.warning(f"Unexpected TimingData format received: {type(data)}")
-
+    elif data: 
+         logger.warning(f"Unexpected TimingData format received (not 'Lines' or 'CutOffTime'): {type(data)}. Content: {data}")
 
 def _process_track_status(data):
     """Handles TrackStatus data."""

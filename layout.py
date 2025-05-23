@@ -285,30 +285,31 @@ def create_layout():
                         'paddingRight': '5px'
                      },
 
-                    # ... (Rest of your conditional styles for lap times, sectors, Pits column colors, etc. remain the same) ...
-                    # --- MODIFIED BEST LAP/SECTOR STYLES WITH CELL CONTENT CHECK ---
-                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "FALSE" && {IsOverallBestLap_Str} = "FALSE" && {Last Lap} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
-                    {'if': {'column_id': 'S1',       'filter_query': '{IsPersonalBestS1_Str} = "FALSE" && {IsOverallBestS1_Str} = "FALSE" && {S1} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
-                    {'if': {'column_id': 'S2',       'filter_query': '{IsPersonalBestS2_Str} = "FALSE" && {IsOverallBestS2_Str} = "FALSE" && {S2} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
-                    {'if': {'column_id': 'S3',       'filter_query': '{IsPersonalBestS3_Str} = "FALSE" && {IsOverallBestS3_Str} = "FALSE" && {S3} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+                    # --- Purple Highlighting ---
+                    # For "Best Lap" column (Driver's PB is the Session Overall Best - This logic is correct and should remain)
+                    {'if': {'column_id': 'Best Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Best Lap} != "-"'}, **OVERALL_BEST_STYLE},
+                    
+                    # For "Last Lap" column (This specific last lap was the Session Overall Best Event)
+                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapEventOverallBest_Str} = "TRUE" && {Last Lap} != "-"'}, **OVERALL_BEST_STYLE},
+                    # For "S1" column (This specific S1 was the Session Overall Best Event)
+                    {'if': {'column_id': 'S1', 'filter_query': '{IsS1EventOverallBest_Str} = "TRUE" && {S1} != "-"'}, **OVERALL_BEST_STYLE},
+                    # For "S2" column (This specific S2 was the Session Overall Best Event)
+                    {'if': {'column_id': 'S2', 'filter_query': '{IsS2EventOverallBest_Str} = "TRUE" && {S2} != "-"'}, **OVERALL_BEST_STYLE},
+                    # For "S3" column (This specific S3 was the Session Overall Best Event)
+                    {'if': {'column_id': 'S3', 'filter_query': '{IsS3EventOverallBest_Str} = "TRUE" && {S3} != "-"'}, **OVERALL_BEST_STYLE},
+                    
+                    # --- Green Highlighting (Personal Best Event, but NOT an Overall Best Event) ---
+                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "TRUE" && {IsLastLapEventOverallBest_Str} = "FALSE" && {Last Lap} != "-"'}, **PERSONAL_BEST_STYLE},
+                    {'if': {'column_id': 'S1', 'filter_query': '{IsPersonalBestS1_Str} = "TRUE" && {IsS1EventOverallBest_Str} = "FALSE" && {S1} != "-"'}, **PERSONAL_BEST_STYLE},
+                    {'if': {'column_id': 'S2', 'filter_query': '{IsPersonalBestS2_Str} = "TRUE" && {IsS2EventOverallBest_Str} = "FALSE" && {S2} != "-"'}, **PERSONAL_BEST_STYLE},
+                    {'if': {'column_id': 'S3', 'filter_query': '{IsPersonalBestS3_Str} = "TRUE" && {IsS3EventOverallBest_Str} = "FALSE" && {S3} != "-"'}, **PERSONAL_BEST_STYLE},
+                    
+                    # --- Yellow Highlighting (Regular Lap/Sector - Not PB Event, Not OB Event) ---
+                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "FALSE" && {IsLastLapEventOverallBest_Str} = "FALSE" && {Last Lap} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+                    {'if': {'column_id': 'S1', 'filter_query': '{IsPersonalBestS1_Str} = "FALSE" && {IsS1EventOverallBest_Str} = "FALSE" && {S1} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+                    {'if': {'column_id': 'S2', 'filter_query': '{IsPersonalBestS2_Str} = "FALSE" && {IsS2EventOverallBest_Str} = "FALSE" && {S2} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
+                    {'if': {'column_id': 'S3', 'filter_query': '{IsPersonalBestS3_Str} = "FALSE" && {IsS3EventOverallBest_Str} = "FALSE" && {S3} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
 
-                    # Personal Bests (Green)
-                    {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "TRUE" && {IsOverallBestLap_Str} = "FALSE" && {Last Lap} != "-"'}, **PERSONAL_BEST_STYLE},
-                    {'if': {'column_id': 'S1',       'filter_query': '{IsPersonalBestS1_Str} = "TRUE" && {IsOverallBestS1_Str} = "FALSE" && {S1} != "-"'}, **PERSONAL_BEST_STYLE},
-                    {'if': {'column_id': 'S2',       'filter_query': '{IsPersonalBestS2_Str} = "TRUE" && {IsOverallBestS2_Str} = "FALSE" && {S2} != "-"'}, **PERSONAL_BEST_STYLE},
-                    {'if': {'column_id': 'S3',       'filter_query': '{IsPersonalBestS3_Str} = "TRUE" && {IsOverallBestS3_Str} = "FALSE" && {S3} != "-"'}, **PERSONAL_BEST_STYLE},
-
-                    # Overall Bests (Purple)
-                    {'if': {'column_id': 'Last Lap',
-                            'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Last Lap} != "-"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'Best Lap',
-                            'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Best Lap} != "-"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'S1',
-                            'filter_query': '{IsOverallBestS1_Str} = "TRUE" && {S1} != "-"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'S2',
-                            'filter_query': '{IsOverallBestS2_Str} = "TRUE" && {S2} != "-"'}, **OVERALL_BEST_STYLE},
-                    {'if': {'column_id': 'S3',
-                            'filter_query': '{IsOverallBestS3_Str} = "TRUE" && {S3} != "-"'}, **OVERALL_BEST_STYLE},
 
                     # Conditional styling for Pits column colors
                     {'if': {'column_id': 'Pits',

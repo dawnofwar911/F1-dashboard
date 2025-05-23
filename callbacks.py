@@ -858,22 +858,30 @@ def update_main_data_displays(n):
                 drs = drs_map.get(
                     drs_val, 'Off') if drs_val is not None else 'Off'
 
-                is_overall_best_lap_flag = driver_state.get(
-                    'IsOverallBestLap', False)
-                is_last_lap_personal_best_flag = utils.get_nested_state(
-                    driver_state, 'LastLapTime', 'PersonalFastest', default=False)
-                is_s1_personal_best_flag = utils.get_nested_state(
-                    driver_state, 'Sectors', '0', 'PersonalFastest', default=False)
-                is_s2_personal_best_flag = utils.get_nested_state(
-                    driver_state, 'Sectors', '1', 'PersonalFastest', default=False)
-                is_s3_personal_best_flag = utils.get_nested_state(
-                    driver_state, 'Sectors', '2', 'PersonalFastest', default=False)
-                is_overall_best_s1_flag = driver_state.get(
-                    'IsOverallBestSector', [False]*3)[0]
-                is_overall_best_s2_flag = driver_state.get(
-                    'IsOverallBestSector', [False]*3)[1]
-                is_overall_best_s3_flag = driver_state.get(
-                    'IsOverallBestSector', [False]*3)[2]
+                # IsOverallBestLap_flag: True if this driver's PersonalBestLapTime is the session's overall best.
+                is_overall_best_lap_flag = driver_state.get('IsOverallBestLap', False) 
+                
+                # IsLastLapPersonalBest_flag: True if driver_state['LastLapTime']['PersonalFastest'] is true.
+                is_last_lap_personal_best_flag = utils.get_nested_state(driver_state, 'LastLapTime', 'PersonalFastest', default=False)
+                
+                # IsPersonalBestS1_flag etc.: True if driver_state['Sectors']['0']['PersonalFastest'] is true.
+                is_s1_personal_best_flag = utils.get_nested_state(driver_state, 'Sectors', '0', 'PersonalFastest', default=False)
+                is_s2_personal_best_flag = utils.get_nested_state(driver_state, 'Sectors', '1', 'PersonalFastest', default=False)
+                is_s3_personal_best_flag = utils.get_nested_state(driver_state, 'Sectors', '2', 'PersonalFastest', default=False)
+
+                # IsOverallBestS1_flag etc.: True if this driver's PersonalBestSectorTime for S1 is the session's overall best for S1.
+                # These flags (IsOverallBestSector) should already be correctly set in driver_state by _process_timing_data
+                is_overall_best_s1_flag = driver_state.get('IsOverallBestSector', [False]*3)[0]
+                is_overall_best_s2_flag = driver_state.get('IsOverallBestSector', [False]*3)[1]
+                is_overall_best_s3_flag = driver_state.get('IsOverallBestSector', [False]*3)[2]
+
+                # --- NEW: Flags for THIS SPECIFIC EVENT being an overall session best ---
+                # These should come directly from the 'OverallFastest' boolean in the LastLapTime/Sectors objects
+                is_last_lap_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'LastLapTime', 'OverallFastest', default=False)
+                is_s1_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'Sectors', '0', 'OverallFastest', default=False)
+                is_s2_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'Sectors', '1', 'OverallFastest', default=False)
+                is_s3_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'Sectors', '2', 'OverallFastest', default=False)
+
                 # === End of your existing row data population ===
 
                 current_driver_highlight_type = "NONE"
@@ -919,14 +927,23 @@ def update_main_data_displays(n):
                     'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_text_to_display,
                     'Status': driver_state.get('Status', 'N/A'),
                     'Speed': speed_val, 'Gear': gear, 'RPM': rpm, 'DRS': drs,
+                    # Flags indicating if the DRIVER HOLDS the session record (for "Best Lap" column primarily)
                     'IsOverallBestLap_Str': "TRUE" if is_overall_best_lap_flag else "FALSE",
-                    'IsLastLapPersonalBest_Str': "TRUE" if is_last_lap_personal_best_flag else "FALSE",
                     'IsOverallBestS1_Str': "TRUE" if is_overall_best_s1_flag else "FALSE",
-                    'IsPersonalBestS1_Str': "TRUE" if is_s1_personal_best_flag else "FALSE",
                     'IsOverallBestS2_Str': "TRUE" if is_overall_best_s2_flag else "FALSE",
-                    'IsPersonalBestS2_Str': "TRUE" if is_s2_personal_best_flag else "FALSE",
                     'IsOverallBestS3_Str': "TRUE" if is_overall_best_s3_flag else "FALSE",
+
+                    # Flags indicating if THIS SPECIFIC EVENT was a Personal Best for the driver
+                    'IsLastLapPersonalBest_Str': "TRUE" if is_last_lap_personal_best_flag else "FALSE",
+                    'IsPersonalBestS1_Str': "TRUE" if is_s1_personal_best_flag else "FALSE",
+                    'IsPersonalBestS2_Str': "TRUE" if is_s2_personal_best_flag else "FALSE",
                     'IsPersonalBestS3_Str': "TRUE" if is_s3_personal_best_flag else "FALSE",
+                    
+                    # --- NEW: String versions of EVENT-SPECIFIC Overall Best flags ---
+                    'IsLastLapEventOverallBest_Str': "TRUE" if is_last_lap_EVENT_overall_best_flag else "FALSE",
+                    'IsS1EventOverallBest_Str': "TRUE" if is_s1_EVENT_overall_best_flag else "FALSE",
+                    'IsS2EventOverallBest_Str': "TRUE" if is_s2_EVENT_overall_best_flag else "FALSE",
+                    'IsS3EventOverallBest_Str': "TRUE" if is_s3_EVENT_overall_best_flag else "FALSE",
                     'PitDisplayState_Str': pit_display_state_for_style,
                     'QualiHighlight_Str': current_driver_highlight_type,
                 }
