@@ -244,12 +244,12 @@ LAP_PROG_MARGINS_DATA = {'l': 40, 'r': 10, 't': 30, 'b': 40}
 # Track Status Styling
 TRACK_STATUS_STYLES = {
     '1': {"label": "CLEAR", "card_color": "success", "text_color": "white"},
-    '2': {"label": "YELLOW", "card_color": "warning", "text_color": "black"},
-    '3': {"label": "SC DEPLOYED?", "card_color": "warning", "text_color": "black"}, # SC Expected / Deployed
-    '4': {"label": "SAFETY CAR", "card_color": "warning", "text_color": "black"},
+    '2': {"label": "YELLOW", "card_color": "#FFEB3B", "text_color": "black"},
+    '3': {"label": "SC DEPLOYED?", "card_color": "#FFEB3B", "text_color": "black"}, # SC Expected / Deployed
+    '4': {"label": "SAFETY CAR", "card_color": "#FFEB3B", "text_color": "black"},
     '5': {"label": "RED FLAG", "card_color": "danger", "text_color": "white"},
     '6': {"label": "VSC DEPLOYED", "card_color": "info", "text_color": "white"},
-    '7': {"label": "VSC ENDING", "card_color": "info", "text_color": "white"},
+    '7': {"label": "VSC ENDING", "card_color": "#FFEB3B", "text_color": "white"},
     'DEFAULT': {"label": "UNKNOWN", "card_color": "secondary", "text_color": "white"}
 }
 
