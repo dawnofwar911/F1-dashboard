@@ -991,19 +991,107 @@ def update_race_control_log(n):
     Input('replay-speed-slider', 'value'),
     prevent_initial_call=True
 )
-def update_replay_speed_state(new_speed):
-    if new_speed is None:
+def update_replay_speed_state(new_speed_value): # Removed session_info_children_trigger, get from app_state
+    if new_speed_value is None:
         return no_update
 
-    logger.info(f"Replay speed slider changed to: {new_speed}")
     try:
-        speed_float = float(new_speed)
-        with app_state.app_state_lock:
-            app_state.replay_speed = speed_float
-        return no_update
+        new_speed = float(new_speed_value)
+        if not (0.1 <= new_speed <= 100.0): # Example validation for speed range
+            logger.warning(f"Invalid replay speed requested: {new_speed}. Clamping or ignoring.")
+            # Clamp or return no_update, e.g., new_speed = max(0.1, min(new_speed, 100.0))
+            # For now, let's assume valid input based on slider range or simply ignore if too extreme.
+            if new_speed <= 0: return no_update # Definitely ignore non-positive
     except (ValueError, TypeError):
-        logger.warning(f"Could not convert slider value '{new_speed}' to float.")
+        logger.warning(f"Could not convert replay speed slider value '{new_speed_value}' to float.")
         return no_update
+
+
+    with app_state.app_state_lock:
+        old_speed = app_state.replay_speed # Speed active *before* this change
+        
+        # If speed hasn't actually changed, do nothing to avoid potential float precision issues
+        if abs(old_speed - new_speed) < 0.01: # Tolerance for float comparison
+            # Still update app_state.replay_speed to the precise new_speed_value if slider was just wiggled
+            app_state.replay_speed = new_speed 
+            return no_update
+
+        session_type = app_state.session_details.get('Type', "Unknown").lower() #
+        q_state = app_state.qualifying_segment_state # Primary timing state dictionary
+
+        current_official_remaining_s_at_anchor = q_state.get("official_segment_remaining_seconds") #
+        last_capture_utc_anchor = q_state.get("last_official_time_capture_utc") #
+        
+        now_utc = datetime.now(timezone.utc) #
+        calculated_current_true_remaining_s = None
+
+        # --- This block calculates the true current remaining time based on OLD speed ---
+        if session_type.startswith("practice"):
+            # For practice, use its continuous model to find current true remaining time
+            practice_start_utc = app_state.practice_session_actual_start_utc #
+            practice_duration_s = app_state.practice_session_scheduled_duration_seconds #
+            if practice_start_utc and practice_duration_s is not None:
+                wall_time_elapsed_practice = (now_utc - practice_start_utc).total_seconds() #
+                session_time_elapsed_practice = wall_time_elapsed_practice * old_speed
+                calculated_current_true_remaining_s = practice_duration_s - session_time_elapsed_practice
+        
+        # For Qualifying (or if Practice didn't have its continuous model vars set yet)
+        # Use the q_state anchor point.
+        if calculated_current_true_remaining_s is None and \
+           last_capture_utc_anchor and current_official_remaining_s_at_anchor is not None:
+            wall_time_since_last_anchor = (now_utc - last_capture_utc_anchor).total_seconds() #
+            session_time_elapsed_since_anchor = wall_time_since_last_anchor * old_speed
+            calculated_current_true_remaining_s = current_official_remaining_s_at_anchor - session_time_elapsed_since_anchor
+
+        # --- Now, re-anchor using this calculated_current_true_remaining_s ---
+        if calculated_current_true_remaining_s is not None:
+            new_anchor_remaining_s = max(0, calculated_current_true_remaining_s)
+
+            # Update the main anchor point (q_state)
+            q_state["official_segment_remaining_seconds"] = new_anchor_remaining_s #
+            q_state["last_official_time_capture_utc"] = now_utc #
+            # last_capture_replay_speed will be effectively the new_speed for next extrapolation
+            # session_status_at_capture might need an update if relevant, but for re-speed, it's less critical
+            q_state["last_capture_replay_speed"] = new_speed # Reflect that this anchor is for the new speed
+            
+            logger.info(
+                f"Replay speed changing from {old_speed:.2f}x to {new_speed:.2f}x. "
+                f"Original anchor: {current_official_remaining_s_at_anchor:.2f}s at {last_capture_utc_anchor}. "
+                f"Calculated true current remaining: {calculated_current_true_remaining_s:.2f}s. "
+                f"New anchor set: {new_anchor_remaining_s:.2f}s at {now_utc}."
+            )
+
+            # If it was a Practice session using its continuous model, adjust its effective start time
+            # so its formula yields the new_anchor_remaining_s with the new_speed.
+            if session_type.startswith("practice") and \
+               app_state.practice_session_actual_start_utc and \
+               app_state.practice_session_scheduled_duration_seconds is not None:
+                
+                duration_s = app_state.practice_session_scheduled_duration_seconds #
+                if new_speed > 0: # Avoid division by zero
+                    # We want: new_anchor_remaining_s = duration_s - (now_utc - new_practice_start_utc) * new_speed
+                    # (now_utc - new_practice_start_utc) * new_speed = duration_s - new_anchor_remaining_s
+                    # (now_utc - new_practice_start_utc) = (duration_s - new_anchor_remaining_s) / new_speed
+                    # new_practice_start_utc = now_utc - timedelta(seconds = (duration_s - new_anchor_remaining_s) / new_speed)
+                    
+                    wall_time_offset_for_new_start = (duration_s - new_anchor_remaining_s) / new_speed
+                    app_state.practice_session_actual_start_utc = now_utc - timedelta(seconds=wall_time_offset_for_new_start) #
+                    logger.info(
+                        f"Adjusted practice_session_actual_start_utc to {app_state.practice_session_actual_start_utc} " #
+                        f"to maintain {new_anchor_remaining_s:.2f}s remaining at {new_speed:.2f}x."
+                    )
+        else:
+            logger.warning(
+                f"Could not re-anchor timer on speed change: insufficient data. "
+                f"Old speed: {old_speed}, New speed: {new_speed}. "
+                f"Current official remaining: {current_official_remaining_s_at_anchor}, Last capture: {last_capture_utc_anchor}"
+            )
+
+        # Finally, update the global replay speed
+        app_state.replay_speed = new_speed #
+        logger.debug(f"Replay speed updated in app_state to: {app_state.replay_speed}") #
+
+    return no_update
 
 @app.callback(
     [Output('dummy-output-for-controls', 'children', allow_duplicate=True),
