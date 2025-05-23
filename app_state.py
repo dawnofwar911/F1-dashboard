@@ -38,7 +38,11 @@ lap_time_history = INITIAL_LAP_TIME_HISTORY.copy()
 INITIAL_TRACK_STATUS_DATA = {}
 track_status_data = INITIAL_TRACK_STATUS_DATA.copy()
 
-INITIAL_SESSION_DETAILS = {}
+INITIAL_SESSION_DETAILS = {
+    # ... other existing initial details ...
+    'ScheduledDurationSeconds': None, # Will be calculated from SessionInfo's Start/End Dates
+    'PreviousSessionStatus': None,    # For Q session resume logic
+}
 session_details = INITIAL_SESSION_DETAILS.copy()
 
 INITIAL_RACE_CONTROL_LOG_MAXLEN = 50 # Store maxlen for re-creation
@@ -82,9 +86,14 @@ INITIAL_QUALIFYING_SEGMENT_STATE = {
     "official_segment_remaining_seconds": 0, # Time from ExtrapolatedClock when segment started/synced
     "last_official_time_capture_utc": None,  # datetime object (wall clock UTC)
     "last_capture_replay_speed": 1.0,        # Replay speed at time of capture
+    "just_resumed_flag": False,
     "session_status_at_capture": None        # e.g. "Started", "Running"
 }
 qualifying_segment_state = INITIAL_QUALIFYING_SEGMENT_STATE.copy()
+
+# --- Practice Session Timing ---
+practice_session_actual_start_utc = None
+practice_session_scheduled_duration_seconds = None # e.g., 3600 for a 60-minute session
 
 # --- Session Best Times ---
 INITIAL_SESSION_BESTS = {
@@ -175,6 +184,9 @@ def reset_to_default_state():
         last_known_wind_speed = INITIAL_LAST_KNOWN_WIND_SPEED
         last_known_wind_direction = INITIAL_LAST_KNOWN_WIND_DIRECTION
         last_known_rainfall_val = INITIAL_LAST_KNOWN_RAINFALL_VAL
+        
+        practice_session_actual_start_utc = None
+        practice_session_scheduled_duration_seconds = None
 
         while not data_queue.empty():
             try:
