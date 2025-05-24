@@ -647,120 +647,161 @@ def update_main_data_displays(n):
     current_time_for_callbacks = time.time()
 
     try:
-        session_type_from_state = ""
+        # Initialize states to be fetched
+        session_type_from_state_str = ""
         current_q_segment_from_state = None
         previous_q_segment_from_state = None
-        q_state_snapshot = {}
+        q_state_snapshot_for_live = {} # Specifically for live model's state
         current_replay_speed_snapshot = 1.0
         session_feed_status_snapshot = "Unknown"
+        app_overall_status = "Idle"
 
-        # Initialize rule dictionaries
-        active_segment_highlight_rule = {
-            "type": "NONE", "lower_pos": 0, "upper_pos": 0}
-        q1_eliminated_highlight_rule = {
-            "type": "NONE", "lower_pos": 0, "upper_pos": 0}
-        q2_eliminated_highlight_rule = {
-            "type": "NONE", "lower_pos": 0, "upper_pos": 0}
+        # For Replay feed-paced timing
+        current_feed_ts_dt_replay_local = None
+        start_feed_ts_dt_replay_local = None
+        segment_duration_s_replay_local = None
+        
+        active_segment_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0} #
+        q1_eliminated_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0} #
+        q2_eliminated_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0} #
+        
+        with app_state.app_state_lock: #
+            app_overall_status = app_state.app_status.get("state", "Idle") #
+            session_type_from_state_str = app_state.session_details.get('Type', "").lower() #
+            
+            # q_state_snapshot_for_live is the anchor for live timing extrapolation AND Q replay pause storage
+            q_state_snapshot_for_live = app_state.qualifying_segment_state.copy() #
+            current_q_segment_from_state = q_state_snapshot_for_live.get("current_segment") #
+            previous_q_segment_from_state = q_state_snapshot_for_live.get("old_segment") #
+            
+            current_replay_speed_snapshot = app_state.replay_speed #
+            session_feed_status_snapshot = app_state.session_details.get('SessionStatus', 'Unknown') #
+            
+            if app_overall_status == "Replaying":
+                current_feed_ts_dt_replay_local = app_state.current_processed_feed_timestamp_utc_dt #
+                start_feed_ts_dt_replay_local = app_state.session_start_feed_timestamp_utc_dt #
+                segment_duration_s_replay_local = app_state.current_segment_scheduled_duration_seconds #
 
-        current_segment_time_remaining_seconds = float('inf')
+            timing_state_copy = app_state.timing_state.copy() #
+            data_store_copy = app_state.data_store #
 
-        with app_state.app_state_lock:
-            session_type_from_state = app_state.session_details.get(
-                'Type', "").lower()
-            current_q_segment_from_state = app_state.qualifying_segment_state.get(
-                "current_segment")
-            previous_q_segment_from_state = app_state.qualifying_segment_state.get(
-                "old_segment")
+        # --- Calculate current_segment_time_remaining_seconds for highlighting ---
+        current_segment_time_remaining_seconds = float('inf') 
 
-            q_state_snapshot = app_state.qualifying_segment_state.copy()
-            current_replay_speed_snapshot = app_state.replay_speed
-            session_feed_status_snapshot = app_state.session_details.get(
-                'SessionStatus', 'Unknown')
-            timing_state_copy = app_state.timing_state.copy()
-            data_store_copy = app_state.data_store
-
-        # --- Calculate current segment time remaining ---
-        if q_state_snapshot.get("last_official_time_capture_utc") and \
-           q_state_snapshot.get("official_segment_remaining_seconds") is not None and \
-           current_q_segment_from_state and \
-           current_q_segment_from_state not in ["Unknown", "Between Segments", "Ended"] and \
-           session_feed_status_snapshot not in ["Suspended", "Aborted", "Finished", "Ends", "NotStarted"]:
-            now_utc_for_calc = datetime.now(timezone.utc)
-            time_since_last_capture_for_calc = (
-                now_utc_for_calc - q_state_snapshot["last_official_time_capture_utc"]).total_seconds()
-            adjusted_elapsed_time_for_calc = time_since_last_capture_for_calc * \
-                current_replay_speed_snapshot
-            calculated_remaining_for_calc = q_state_snapshot[
-                "official_segment_remaining_seconds"] - adjusted_elapsed_time_for_calc
-            current_segment_time_remaining_seconds = max(
-                0, calculated_remaining_for_calc)
-        elif current_q_segment_from_state in ["Between Segments", "Ended"] or \
-                session_feed_status_snapshot in ["Finished", "Ends"]:
-            current_segment_time_remaining_seconds = 0
-
-        logger.debug(
-            f"QualiHighlight: CurrentSeg='{current_q_segment_from_state}', PrevSeg='{previous_q_segment_from_state}', "
-            f"TimeRemainingSec={current_segment_time_remaining_seconds:.1f}"
+        is_active_q_segment_for_highlight = (
+            session_type_from_state_str in ["qualifying", "sprint shootout"] and
+            current_q_segment_from_state and
+            current_q_segment_from_state not in ["Unknown", "Between Segments", "Ended", "Practice"]
         )
 
-        # --- Determine Highlight Rules based on your specific logic ---
-        five_mins_in_seconds = 5 * 60
-        is_qualifying_type_session = session_type_from_state in [
-            "qualifying", "sprint shootout"]
+        if is_active_q_segment_for_highlight:
+            if app_overall_status == "Replaying":
+                if start_feed_ts_dt_replay_local and current_feed_ts_dt_replay_local and segment_duration_s_replay_local is not None:
+                    if session_feed_status_snapshot not in ["Suspended", "Aborted", "Inactive", "Finished", "Ends", "NotStarted"]:
+                        elapsed_feed_time = (current_feed_ts_dt_replay_local - start_feed_ts_dt_replay_local).total_seconds()
+                        current_segment_time_remaining_seconds = max(0, segment_duration_s_replay_local - elapsed_feed_time)
+                    elif session_feed_status_snapshot in ["Suspended", "Aborted", "Inactive"]: # Paused Q Replay
+                        # Use the time stored in q_state when pause was detected by _process_session_data
+                        current_segment_time_remaining_seconds = q_state_snapshot_for_live.get("official_segment_remaining_seconds", 0.0) #
+                elif session_feed_status_snapshot in ["Suspended", "Aborted", "Inactive"]: # Paused but feed anchors not ready
+                     current_segment_time_remaining_seconds = q_state_snapshot_for_live.get("official_segment_remaining_seconds", 0.0) #
+                # else, if feed anchors not ready and not paused, remains float('inf') or gets set by Live logic below if applicable
+
+            if app_overall_status == "Live" or \
+               (app_overall_status == "Replaying" and current_segment_time_remaining_seconds == float('inf')): # Fallback for Replay if feed-pace vars not ready
+                # Use Live extrapolation logic (q_state_snapshot_for_live)
+                if session_feed_status_snapshot not in ["Suspended", "Aborted", "Finished", "Ends", "NotStarted", "Inactive"]:
+                    last_capture_dt = q_state_snapshot_for_live.get("last_official_time_capture_utc") #
+                    official_rem_s_at_capture = q_state_snapshot_for_live.get("official_segment_remaining_seconds") #
+
+                    if official_rem_s_at_capture is None or not isinstance(official_rem_s_at_capture, (int, float)):
+                        current_segment_time_remaining_seconds = float('inf') 
+                    elif last_capture_dt is None: 
+                        current_segment_time_remaining_seconds = official_rem_s_at_capture 
+                    elif last_capture_dt: 
+                        now_utc_for_calc = datetime.now(timezone.utc) #
+                        time_since_last_capture_for_calc = (now_utc_for_calc - last_capture_dt).total_seconds()
+                        # For LIVE, current_replay_speed_snapshot is 1.0. 
+                        # For REPLAY fallback, it uses the replay speed on q_state anchor.
+                        adjusted_elapsed_time_for_calc = time_since_last_capture_for_calc * current_replay_speed_snapshot #
+                        calculated_remaining_for_calc = official_rem_s_at_capture - adjusted_elapsed_time_for_calc
+                        current_segment_time_remaining_seconds = max(0, calculated_remaining_for_calc) #
+                elif session_feed_status_snapshot in ["Suspended", "Aborted", "Inactive"]: # Paused Live Q segment
+                    official_rem_s_at_pause = q_state_snapshot_for_live.get("official_segment_remaining_seconds", 0.0) #
+                    current_segment_time_remaining_seconds = official_rem_s_at_pause if isinstance(official_rem_s_at_pause, (int, float)) else 0.0
+        
+        elif current_q_segment_from_state in ["Between Segments", "Ended"] or \
+             session_feed_status_snapshot in ["Finished", "Ends"]:
+            current_segment_time_remaining_seconds = 0 #
+        
+        # For Practice, highlighting isn't typically based on time remaining for drop zones.
+        # If needed, a similar mode-aware calculation would be required.
+        # For now, current_segment_time_remaining_seconds remains float('inf') if not a Q segment.
+
+        logger.debug( #
+            f"HighlightCheck: Seg='{current_q_segment_from_state}', Prev='{previous_q_segment_from_state}', "
+            f"RemSecForHighlight={current_segment_time_remaining_seconds:.1f}, Mode='{app_overall_status}', FeedStatus='{session_feed_status_snapshot}'"
+        )
+
+        five_mins_in_seconds = 5 * 60 #
+        is_qualifying_type_session = session_type_from_state_str in ["qualifying", "sprint shootout"] #
 
         if is_qualifying_type_session and current_q_segment_from_state:
+            is_segment_actively_running_for_danger_zone = session_feed_status_snapshot not in ["Suspended", "Aborted", "Inactive", "Finished", "Ends", "NotStarted"]
+
             # Q1/SQ1 Logic
-            if current_q_segment_from_state in ["Q1", "SQ1"] or \
-               (current_q_segment_from_state == "Between Segments" and previous_q_segment_from_state in [None, "Q1", "SQ1"]):
-                lower_b_q1_active = config.QUALIFYING_CARS_Q1 - \
-                    config.QUALIFYING_ELIMINATED_Q1 + 1  # P16
-                upper_b_q1_active = config.QUALIFYING_CARS_Q1  # P20
-                if current_segment_time_remaining_seconds <= five_mins_in_seconds:
-                    active_segment_highlight_rule = {
-                        "type": "RED_DANGER", "lower_pos": lower_b_q1_active, "upper_pos": upper_b_q1_active}
-
+            if current_q_segment_from_state in ["Q1", "SQ1"]:
+                if is_segment_actively_running_for_danger_zone:
+                    lower_b_q1_active = config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1
+                    upper_b_q1_active = config.QUALIFYING_CARS_Q1
+                    if current_segment_time_remaining_seconds <= five_mins_in_seconds:
+                        active_segment_highlight_rule = {
+                            "type": "RED_DANGER", "lower_pos": lower_b_q1_active, "upper_pos": upper_b_q1_active} #
+            # ... (Rest of Q2/Q3 highlighting logic from Response #12, which uses these rules) ...
             # Q2/SQ2 Logic
-            elif current_q_segment_from_state in ["Q2", "SQ2"] or \
-                    (current_q_segment_from_state == "Between Segments" and previous_q_segment_from_state in ["Q2", "SQ2"]):
-
-                # Rule for P16-P20 (Q1 eliminated cars) - ALWAYS GREY_ELIMINATED in Q2
-                lower_b_q1_elim = config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1
-                upper_b_q1_elim = config.QUALIFYING_CARS_Q1
-                q1_eliminated_highlight_rule = {  # This rule is for Q1 eliminated
-                    "type": "GREY_ELIMINATED",
-                    "lower_pos": lower_b_q1_elim,
-                    "upper_pos": upper_b_q1_elim
-                }
-
-                # Rule for P11-P15 (Q2 active cars) - RED_DANGER if time critical, otherwise NO active highlight
-                lower_b_q2_active = config.QUALIFYING_CARS_Q2 - \
-                    config.QUALIFYING_ELIMINATED_Q2 + 1
-                upper_b_q2_active = config.QUALIFYING_CARS_Q2
-                if current_segment_time_remaining_seconds <= five_mins_in_seconds:
-                    active_segment_highlight_rule = {
-                        "type": "RED_DANGER", "lower_pos": lower_b_q2_active, "upper_pos": upper_b_q2_active}
-
-            # Q3/SQ3 Logic (and "Ended" state if previous was Q3/SQ3)
-            elif current_q_segment_from_state in ["Q3", "SQ3", "Ended"] or \
-                    (current_q_segment_from_state == "Between Segments" and previous_q_segment_from_state in ["Q3", "SQ3"]):
-
-                # P1-P10 (active Q3 participants) get NO active highlight
-                active_segment_highlight_rule = {
-                    "type": "NONE", "lower_pos": 0, "upper_pos": 0}
-
-                # Rule for P16-P20 (Q1 eliminated) to be GREY_ELIMINATED
-                lower_b_q1_elim_for_q3 = config.QUALIFYING_CARS_Q1 - \
-                    config.QUALIFYING_ELIMINATED_Q1 + 1
-                upper_b_q1_elim_for_q3 = config.QUALIFYING_CARS_Q1
+            elif current_q_segment_from_state in ["Q2", "SQ2"]:
+                lower_b_q1_elim = config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1 #
+                upper_b_q1_elim = config.QUALIFYING_CARS_Q1 #
                 q1_eliminated_highlight_rule = {
-                    "type": "GREY_ELIMINATED", "lower_pos": lower_b_q1_elim_for_q3, "upper_pos": upper_b_q1_elim_for_q3}
-
-                # Rule for P11-P15 (Q2 eliminated) to be GREY_ELIMINATED
-                lower_b_q2_elim_for_q3 = config.QUALIFYING_CARS_Q2 - \
-                    config.QUALIFYING_ELIMINATED_Q2 + 1
-                upper_b_q2_elim_for_q3 = config.QUALIFYING_CARS_Q2
+                    "type": "GREY_ELIMINATED", "lower_pos": lower_b_q1_elim, "upper_pos": upper_b_q1_elim } #
+                if is_segment_actively_running_for_danger_zone:
+                    lower_b_q2_active = config.QUALIFYING_CARS_Q2 - config.QUALIFYING_ELIMINATED_Q2 + 1 #
+                    upper_b_q2_active = config.QUALIFYING_CARS_Q2 #
+                    if current_segment_time_remaining_seconds <= five_mins_in_seconds:
+                        active_segment_highlight_rule = {
+                            "type": "RED_DANGER", "lower_pos": lower_b_q2_active, "upper_pos": upper_b_q2_active} #
+            
+            elif current_q_segment_from_state in ["Q3", "SQ3"] or \
+                 (current_q_segment_from_state == "Ended" and previous_q_segment_from_state in ["Q3", "SQ3"]):
+                q1_eliminated_highlight_rule = {
+                    "type": "GREY_ELIMINATED", 
+                    "lower_pos": config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1, #
+                    "upper_pos": config.QUALIFYING_CARS_Q1 #
+                } #
                 q2_eliminated_highlight_rule = {
-                    "type": "GREY_ELIMINATED", "lower_pos": lower_b_q2_elim_for_q3, "upper_pos": upper_b_q2_elim_for_q3}
+                    "type": "GREY_ELIMINATED", 
+                    "lower_pos": config.QUALIFYING_CARS_Q2 - config.QUALIFYING_ELIMINATED_Q2 + 1, #
+                    "upper_pos": config.QUALIFYING_CARS_Q2 #
+                } #
+            
+            elif current_q_segment_from_state == "Between Segments":
+                if previous_q_segment_from_state in ["Q1", "SQ1"]:
+                    q1_eliminated_highlight_rule = {
+                        "type": "GREY_ELIMINATED", 
+                        "lower_pos": config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1, #
+                        "upper_pos": config.QUALIFYING_CARS_Q1 #
+                    } #
+                elif previous_q_segment_from_state in ["Q2", "SQ2"]:
+                    q1_eliminated_highlight_rule = { 
+                        "type": "GREY_ELIMINATED", 
+                        "lower_pos": config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1, #
+                        "upper_pos": config.QUALIFYING_CARS_Q1 #
+                    } #
+                    q2_eliminated_highlight_rule = { 
+                        "type": "GREY_ELIMINATED", 
+                        "lower_pos": config.QUALIFYING_CARS_Q2 - config.QUALIFYING_ELIMINATED_Q2 + 1, #
+                        "upper_pos": config.QUALIFYING_CARS_Q2 #
+                    } #
 
         # === Start of data processing for table (your existing code) ===
         # ... (excluded_streams, sorted_streams, other_elements loop - this remains unchanged) ...
@@ -827,7 +868,7 @@ def update_main_data_displays(n):
                 bold_interval_text = f"**{interval_display_text}**"
                 interval_gap_markdown = ""
                 is_p1 = (pos_str == '1')
-                show_gap = not is_p1 and session_type_from_state in [config.SESSION_TYPE_RACE.lower(
+                show_gap = not is_p1 and session_type_from_state_str in [config.SESSION_TYPE_RACE.lower(
                 ), config.SESSION_TYPE_SPRINT.lower()] and gap_display_text != "-"
                 if show_gap and interval_display_text != "":
                     normal_weight_gap_text = gap_display_text
