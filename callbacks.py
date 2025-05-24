@@ -1574,93 +1574,183 @@ def update_clientside_interval_speed(replay_speed, interval_disabled):
 def initialize_track_map(n_intervals, expected_session_id, current_track_map_figure):
     ctx = dash.callback_context
     triggered_input_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered and ctx.triggered[0] else "Unknown"
-    new_figure_version = time.time() 
+    new_figure_version = time.time()
 
-    logger.debug(f"INIT_TRACK_MAP --- Triggered by: {triggered_input_id}. Expected Session ID: '{expected_session_id}'")
+    # Use your existing logger instance, e.g., logger from F1App.Callbacks
+    # logger.debug(f"INIT_TRACK_MAP --- Triggered by: {triggered_input_id}. Expected SID: '{expected_session_id}'")
     current_fig_uirevision = current_track_map_figure.get('layout', {}).get('uirevision') if current_track_map_figure and current_track_map_figure.get('layout') else 'None'
-    logger.debug(f"INIT_TRACK_MAP --- Current Figure Uirevision in State: '{current_fig_uirevision}'")
 
     with app_state.app_state_lock:
         cached_data = app_state.track_coordinates_cache.copy()
-        driver_list_snapshot = app_state.timing_state.copy() # For adding car markers initially
-        logger.debug(f"INIT_TRACK_MAP --- AppState session_details.SessionKey: '{app_state.session_details.get('SessionKey')}'")
-        logger.debug(f"INIT_TRACK_MAP --- AppState track_coordinates_cache.session_key: '{cached_data.get('session_key')}'")
+        driver_list_snapshot = app_state.timing_state.copy()
+        active_yellow_sectors_snapshot = set(app_state.active_yellow_sectors) # Ensure this is a copy if further modified
+        # For detailed logging during development:
+        # corners_log_count = len(cached_data.get('corners_data') or [])
+        # lights_log_count = len(cached_data.get('marshal_lights_data') or [])
+        # segments_log_count = len(cached_data.get('marshal_sector_segments') or [])
+        # logger.debug(f"Track Cache in callback: Corners: {corners_log_count}, Lights: {lights_log_count}, Segments: {segments_log_count}")
+        # logger.debug(f"Active Yellow Sectors in callback: {active_yellow_sectors_snapshot}")
+
 
     if not expected_session_id or not isinstance(expected_session_id, str) or '_' not in expected_session_id:
-        empty_map_uirevision = f"empty_map_undefined_session_{new_figure_version}" 
-        
+        empty_map_uirevision = f"empty_map_undefined_session_{new_figure_version}"
         if current_fig_uirevision == empty_map_uirevision:
-             logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (already showing specific empty map: {empty_map_uirevision})")
-             return no_update, no_update
-
-        fig_empty = utils.create_empty_figure_with_message( #
-            config.TRACK_MAP_WRAPPER_HEIGHT, empty_map_uirevision, #
-            config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS #
-        )
-        fig_empty.layout.plot_bgcolor = 'rgb(30,30,30)'; fig_empty.layout.paper_bgcolor = 'rgba(0,0,0,0)'
-        logger.debug(f"INIT_TRACK_MAP --- Returning EMPTY map (no valid expected_session_id: '{expected_session_id}'). New uirev: {empty_map_uirevision}")
+            # logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (already showing specific empty map: {empty_map_uirevision})")
+            return no_update, no_update
+        fig_empty = utils.create_empty_figure_with_message(
+            config.TRACK_MAP_WRAPPER_HEIGHT, empty_map_uirevision,
+            config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS
+        ) #
+        fig_empty.layout.plot_bgcolor = 'rgb(30,30,30)'
+        fig_empty.layout.paper_bgcolor = 'rgba(0,0,0,0)'
+        # logger.debug(f"INIT_TRACK_MAP --- Returning EMPTY map (no valid expected_session_id: '{expected_session_id}'). New uirev: {empty_map_uirevision}")
         return fig_empty, new_figure_version
-
-    data_loaded_uirevision = f"tracklayout_{expected_session_id}"
-    loading_uirevision = f"loading_{expected_session_id}_{new_figure_version}" 
-
-    logger.debug(f"INIT_TRACK_MAP --- For SID '{expected_session_id}': TargetLoadedUirev='{data_loaded_uirevision}', TargetLoadingUirev='{loading_uirevision}'")
 
     is_cache_ready_for_session = (
         cached_data.get('session_key') == expected_session_id and
         cached_data.get('x') and cached_data.get('y')
     )
 
-    if is_cache_ready_for_session:
-        if current_fig_uirevision == data_loaded_uirevision:
-            logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (map already displays correct loaded uirev: {data_loaded_uirevision})")
+    if not is_cache_ready_for_session:
+        loading_uirevision = f"loading_{expected_session_id}_{new_figure_version}"
+        # Avoid comparing with rsplit if current_fig_uirevision might be complex
+        if current_fig_uirevision and current_fig_uirevision.startswith(f"loading_{expected_session_id}_"):
+            # logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (map already shows correct loading uirev prefix for {expected_session_id})")
             return no_update, no_update
-        
-        logger.debug(f"INIT_TRACK_MAP --- Cache HIT for '{expected_session_id}'. Drawing track. New uirev: {data_loaded_uirevision}")
-        fig_data = [
-            go.Scatter(x=list(cached_data['x']), y=list(cached_data['y']), mode='lines',
-                       line=dict(color='grey', width=2), name='Track', hoverinfo='none')
-        ]
-        # Add placeholders for car markers - clientside will update positions
-        for car_num, driver_state in driver_list_snapshot.items():
-            tla = driver_state.get('Tla', car_num)
-            team_color = driver_state.get('TeamColour', '808080')
-            if not isinstance(team_color, str) or not team_color.startswith('#'):
-                team_color = '#' + str(team_color).replace("#","") if isinstance(team_color, str) else '#808080'
-                if len(team_color) not in [4, 7]: team_color = '#808080' # Basic validation for hex
+        fig_loading_specific = utils.create_empty_figure_with_message(
+            config.TRACK_MAP_WRAPPER_HEIGHT, loading_uirevision,
+            f"{config.TEXT_TRACK_MAP_LOADING_FOR_SESSION_PREFIX}{expected_session_id}...",
+            config.TRACK_MAP_MARGINS
+        ) #
+        fig_loading_specific.layout.plot_bgcolor = 'rgb(30,30,30)'
+        fig_loading_specific.layout.paper_bgcolor = 'rgba(0,0,0,0)'
+        # logger.debug(f"INIT_TRACK_MAP --- Cache MISS for '{expected_session_id}'. Returning LOADING map. New uirev: {loading_uirevision}")
+        return fig_loading_specific, new_figure_version
+
+    yellow_sectors_key = "_".join(sorted(map(str, list(active_yellow_sectors_snapshot))))
+    # Include counts of static elements in uirevision to ensure redraw if they appear/disappear
+    corners_count = len(cached_data.get('corners_data') or [])
+    lights_count = len(cached_data.get('marshal_lights_data') or [])
+    data_loaded_uirevision = f"tracklayout_{expected_session_id}_yc{corners_count}_yl{lights_count}_ys_{yellow_sectors_key}"
+
+
+    if triggered_input_id == 'interval-component-medium' and current_fig_uirevision == data_loaded_uirevision:
+        # logger.debug(f"INIT_TRACK_MAP --- Interval trigger, but uirevision '{data_loaded_uirevision}' matches. No update.")
+        return no_update, no_update
+    
+    # logger.debug(f"INIT_TRACK_MAP --- Cache HIT for '{expected_session_id}'. Drawing track. New uirev: {data_loaded_uirevision}")
+    
+    fig_data = []
+
+    # 1. Base Track Line
+    fig_data.append(go.Scatter(
+        x=list(cached_data['x']), y=list(cached_data['y']), mode='lines',
+        line=dict(color='grey', width=getattr(config, 'TRACK_LINE_WIDTH', 2)),
+        name='Track', hoverinfo='none'
+    ))
+
+    # 2. Static Corner Markers
+    if cached_data.get('corners_data'):
+        # Filter out entries where x or y is None to prevent errors
+        valid_corners = [c for c in cached_data['corners_data'] if c.get('x') is not None and c.get('y') is not None]
+        if valid_corners:
+            corner_x_coords = [c['x'] for c in valid_corners]
+            corner_y_coords = [c['y'] for c in valid_corners]
+            corner_numbers = [str(c['number']) for c in valid_corners]
             
             fig_data.append(go.Scatter(
-                x=[], y=[], # Positions will be updated by clientside
-                mode='markers+text', name=tla, uid=str(car_num), # UID for clientside to find trace
-                marker=dict(size=8, color=team_color, line=dict(width=1, color='Black')),
-                textfont=dict(size=8, color='white'), textposition='middle right',
-                hoverinfo='text', # Show TLA on hover
-                text=tla 
+                x=corner_x_coords, y=corner_y_coords, mode='markers+text',
+                marker=dict(size=getattr(config, 'CORNER_MARKER_SIZE', 6), 
+                            color=getattr(config, 'CORNER_MARKER_COLOR', 'cyan'), 
+                            symbol='circle-open'),
+                text=corner_numbers, textposition='top center',
+                textfont=dict(size=getattr(config, 'CORNER_TEXT_SIZE', 9), 
+                              color=getattr(config, 'CORNER_TEXT_COLOR', 'cyan')),
+                name='Corners', hoverinfo='text'
             ))
-        fig_layout = go.Layout(
-            template='plotly_dark', uirevision=data_loaded_uirevision, # CRITICAL for clientside updates
-            xaxis=dict(visible=False, fixedrange=True, range=cached_data.get('range_x'), autorange=False if cached_data.get('range_x') else True),
-            yaxis=dict(visible=False, fixedrange=True, scaleanchor="x", scaleratio=1, range=cached_data.get('range_y'), autorange=False if cached_data.get('range_y') else True),
-            showlegend=False, plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='white'), margin=config.TRACK_MAP_MARGINS, height=config.TRACK_MAP_WRAPPER_HEIGHT, #
-            annotations=[] # Clear any previous "Loading..." messages
-        )
-        new_figure = go.Figure(data=fig_data, layout=fig_layout)
-        logger.debug(f"INIT_TRACK_MAP --- Returning NEW TRACK figure for '{expected_session_id}'. Final uirev: {new_figure.layout.uirevision}")
-        return new_figure, new_figure_version 
-    else: 
-        if current_fig_uirevision == loading_uirevision.rsplit('_',1)[0]: # Compare against base loading uirevision
-            logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (map already shows correct loading uirev prefix: {loading_uirevision.rsplit('_',1)[0]} for {expected_session_id})")
-            return no_update, no_update
 
-        fig_loading_specific = utils.create_empty_figure_with_message( #
-            config.TRACK_MAP_WRAPPER_HEIGHT, loading_uirevision, #
-            f"{config.TEXT_TRACK_MAP_LOADING_FOR_SESSION_PREFIX}{expected_session_id}...", #
-            config.TRACK_MAP_MARGINS #
-        )
-        fig_loading_specific.layout.plot_bgcolor = 'rgb(30,30,30)'; fig_loading_specific.layout.paper_bgcolor = 'rgba(0,0,0,0)'
-        logger.debug(f"INIT_TRACK_MAP --- Cache MISS for '{expected_session_id}'. Returning LOADING map. New uirev: {loading_uirevision}")
-        return fig_loading_specific, new_figure_version
+    # 3. Static Marshal Light/Post Markers
+    if cached_data.get('marshal_lights_data'):
+        valid_lights = [m for m in cached_data['marshal_lights_data'] if m.get('x') is not None and m.get('y') is not None]
+        if valid_lights:
+            light_x = [m['x'] for m in valid_lights]
+            light_y = [m['y'] for m in valid_lights]
+            light_text = [f"M{m['number']}" for m in valid_lights]
+
+            fig_data.append(go.Scatter(
+                x=light_x, y=light_y, mode='markers',
+                marker=dict(size=getattr(config, 'MARSHAL_MARKER_SIZE', 5), 
+                            color=getattr(config, 'MARSHAL_MARKER_COLOR', 'orange'), 
+                            symbol='diamond'),
+                name='Marshal Posts', hoverinfo='text', text=light_text
+            ))
+
+    # 4. Dynamic Yellow Sector Highlights
+    if active_yellow_sectors_snapshot and cached_data.get('marshal_sector_segments') and cached_data.get('x'):
+        track_x_full = cached_data['x']
+        track_y_full = cached_data['y']
+        for sector_num in active_yellow_sectors_snapshot:
+            segment_indices = cached_data['marshal_sector_segments'].get(sector_num)
+            if segment_indices:
+                start_idx, end_idx = segment_indices
+                if 0 <= start_idx < len(track_x_full) and 0 <= end_idx < len(track_x_full) and start_idx <= end_idx:
+                    # Python slice `end_idx + 1` to include the end_idx point
+                    x_yellow_segment = track_x_full[start_idx : end_idx + 1]
+                    y_yellow_segment = track_y_full[start_idx : end_idx + 1]
+                    
+                    if len(x_yellow_segment) > 1: # Need at least 2 points to draw a line
+                        fig_data.append(go.Scatter(
+                            x=list(x_yellow_segment), y=list(y_yellow_segment), mode='lines',
+                            line=dict(color=getattr(config, 'YELLOW_FLAG_COLOR', 'yellow'), 
+                                      width=getattr(config, 'YELLOW_FLAG_WIDTH', 4)), # Make it slightly wider
+                            name=f'Yellow Sector {sector_num}', hoverinfo='name',
+                            opacity=getattr(config, 'YELLOW_FLAG_OPACITY', 0.7)
+                        ))
+                    elif len(x_yellow_segment) == 1: # Single point segment, plot as a marker
+                         fig_data.append(go.Scatter(
+                            x=list(x_yellow_segment), y=list(y_yellow_segment), mode='markers',
+                            marker=dict(color=getattr(config, 'YELLOW_FLAG_COLOR', 'yellow'), 
+                                        size=getattr(config, 'YELLOW_FLAG_MARKER_SIZE', 8)), # New config for marker size
+                            name=f'Yellow Post {sector_num}', hoverinfo='name'
+                        ))
+                else:
+                    logger.warning(f"Invalid segment indices for yellow sector {sector_num}: ({start_idx}, {end_idx}). Track len: {len(track_x_full)}")
+            else:
+                logger.warning(f"No segment definition found for active yellow sector {sector_num}.")
+
+    # 5. Car Markers (Plot last to be on top)
+    for car_num_str, driver_state in driver_list_snapshot.items():
+        tla = driver_state.get('Tla', car_num_str)
+        team_color_hex = driver_state.get('TeamColour', '808080')
+        if not team_color_hex.startswith('#'): # Ensure '#' prefix
+            team_color_hex = '#' + team_color_hex.replace("#", "")
+        # Basic validation for hex color code length (e.g. #RGB or #RRGGBB)
+        if len(team_color_hex) not in [4, 7]:
+            team_color_hex = '#808080' # Default to grey if invalid
+
+        fig_data.append(go.Scatter(
+            x=[], y=[], # Positions updated by clientside
+            mode='markers+text', name=tla, uid=str(car_num_str),
+            marker=dict(size=getattr(config, 'CAR_MARKER_SIZE', 8), # Use config
+                        color=team_color_hex, 
+                        line=dict(width=1, color='Black')),
+            textfont=dict(size=getattr(config, 'CAR_MARKER_TEXT_SIZE', 8), color='white'), # Use config
+            textposition='middle right',
+            hoverinfo='text', 
+            text=tla 
+        ))
+
+    fig_layout = go.Layout(
+        template='plotly_dark', uirevision=data_loaded_uirevision,
+        xaxis=dict(visible=False, fixedrange=True, range=cached_data.get('range_x'), autorange=False if cached_data.get('range_x') else True),
+        yaxis=dict(visible=False, fixedrange=True, scaleanchor="x", scaleratio=1, range=cached_data.get('range_y'), autorange=False if cached_data.get('range_y') else True),
+        showlegend=False, plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='white'), margin=config.TRACK_MAP_MARGINS, height=config.TRACK_MAP_WRAPPER_HEIGHT, #
+        annotations=[]
+    )
+    new_figure = go.Figure(data=fig_data, layout=fig_layout)
+    # logger.debug(f"INIT_TRACK_MAP --- Returning NEW TRACK figure for '{expected_session_id}'. Final uirev: {new_figure.layout.uirevision}")
+    return new_figure, new_figure_version
 
 @app.callback(
     Output('driver-select-dropdown', 'options'),

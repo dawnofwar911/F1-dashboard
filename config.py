@@ -172,6 +172,19 @@ SESSION_TYPE_SPRINT = "Sprint" # Assuming "Sprint" is the exact string used for 
 SESSION_TYPE_QUALI = "Qualifying"
 SESSION_TYPE_PRACTICE = "Practice"
  
+ # Track Map Element Styling
+TRACK_LINE_WIDTH = 2
+CORNER_MARKER_SIZE = 6
+CORNER_MARKER_COLOR = 'cyan'
+CORNER_TEXT_SIZE = 9
+CORNER_TEXT_COLOR = 'cyan'
+MARSHAL_MARKER_SIZE = 5
+MARSHAL_MARKER_COLOR = '#FFA500' # Orange
+YELLOW_FLAG_COLOR = 'yellow'
+YELLOW_FLAG_WIDTH = 4 # Slightly wider than track line
+YELLOW_FLAG_OPACITY = 0.7 # Make it slightly transparent if desired
+CAR_MARKER_SIZE = 8
+CAR_MARKER_TEXT_SIZE = 8
 
 # Race Control
 TEXT_RC_WAITING = "Waiting for Race Control messages..."
