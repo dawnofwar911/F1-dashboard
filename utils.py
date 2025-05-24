@@ -158,26 +158,48 @@ def convert_utc_str_to_epoch_ms(timestamp_str):
             dt_object = dt_object.astimezone(timezone.utc)
         return int(dt_object.timestamp() * 1000)
     return None
+    
+def find_closest_point_index(track_x_coords, track_y_coords, point_x, point_y):
+    """
+    Finds the index of the closest point in track_x_coords/track_y_coords to point_x/point_y.
+    """
+    if not track_x_coords or not track_y_coords:
+        return None
+    
+    track_points = np.array(list(zip(track_x_coords, track_y_coords)))
+    target_point = np.array([point_x, point_y])
+    
+    distances_squared = np.sum((track_points - target_point)**2, axis=1)
+    closest_index = np.argmin(distances_squared)
+    return closest_index
 
-def _fetch_track_data_for_cache(session_key, year, circuit_key):
-    """Fetches track data from API. Returns a dict for the cache or None on failure."""
+def _fetch_track_data_for_cache(session_key, year, circuit_key): # Existing parameters
+    """
+    Fetches track data (outline, corners, marshal posts, marshal sectors) from the MultiViewer API.
+    Returns a dict for the cache or None on failure.
+    """
     if not year or not circuit_key:
         main_logger.error(
             f"Fetch Helper: Invalid year or circuit key ({year}, {circuit_key})")
         return None
 
-    # Use constant from config.py
-    api_url = config.MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE.format(circuit_key=circuit_key, year=year) #
-    main_logger.debug(f"Fetch Helper: API fetch initiated for: {api_url}")
-    track_x_coords, track_y_coords, track_linestring_obj, x_range, y_range = [
-        None]*5
+    # --- Fetch data from MultiViewer API (existing logic for track line) ---
+    api_url = config.MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE.format(circuit_key=circuit_key, year=year)
+    main_logger.info(f"Fetch Helper: API fetch initiated for: {api_url}") # Changed from debug to info
+    
+    map_api_data = None # Initialize to ensure it's defined
+    track_x_coords, track_y_coords, track_linestring_obj, x_range, y_range = [None]*5
+    
     try:
         response = requests.get(
-            api_url, headers={'User-Agent': config.MULTIVIEWER_API_USER_AGENT}, timeout=config.REQUESTS_TIMEOUT_SECONDS, verify=False) #
+            api_url, headers={'User-Agent': config.MULTIVIEWER_API_USER_AGENT}, timeout=config.REQUESTS_TIMEOUT_SECONDS, verify=False)
         response.raise_for_status()
-        map_api_data = response.json()
+        map_api_data = response.json() # Store the full JSON response
+        
+        # Process main track line (x, y coordinates)
         temp_x_api = [float(p) for p in map_api_data.get('x', [])]
         temp_y_api = [float(p) for p in map_api_data.get('y', [])]
+
         if temp_x_api and temp_y_api and len(temp_x_api) == len(temp_y_api) and len(temp_x_api) > 1:
             _api_ls = LineString(zip(temp_x_api, temp_y_api))
             if _api_ls.length > 0:
@@ -189,24 +211,142 @@ def _fetch_track_data_for_cache(session_key, year, circuit_key):
                 x_range = [x_min - pad_x, x_max + pad_x]
                 y_range = [y_min - pad_y, y_max + pad_y]
                 main_logger.info(
-                    f"Fetch Helper: API SUCCESS for {session_key}.")
+                    f"Fetch Helper: API SUCCESS for {session_key}. Main track line loaded.")
             else:
                 main_logger.warning(
-                    f"Fetch Helper: API {session_key} provided zero-length track.")
+                    f"Fetch Helper: API {session_key} provided zero-length main track line.")
         else:
             main_logger.warning(
-                f"Fetch Helper: API {session_key} no valid x/y.")
+                f"Fetch Helper: API {session_key} no valid x/y for main track line.")
     except Exception as e_api:
         main_logger.error(
-            f"Fetch Helper: API FAILED for {session_key}: {e_api}", exc_info=False)
+            f"Fetch Helper: API FAILED for {session_key} (main track data): {e_api}", exc_info=True) # Changed to True for more detail
+        return None # If main track line fails, critical failure
 
+    # --- Initialize variables for additional static data from the SAME API response ---
+    corners_data_processed = None
+    marshal_lights_data_processed = None
+    marshal_sector_points_raw = None # Will hold the direct 'marshalSectors' list from API
+    marshal_sector_segments_calculated = None
+
+    # --- Process additional data if map_api_data was successfully fetched ---
+    if map_api_data:
+        # Process Corners
+        if 'corners' in map_api_data and isinstance(map_api_data['corners'], list):
+            corners_data_processed = []
+            for corner in map_api_data['corners']:
+                if isinstance(corner, dict) and 'number' in corner and 'trackPosition' in corner:
+                    track_pos = corner['trackPosition']
+                    if isinstance(track_pos, dict): # Ensure trackPosition is a dict
+                        corners_data_processed.append({
+                            'number': corner['number'],
+                            'x': track_pos.get('x'),
+                            'y': track_pos.get('y')
+                        })
+            logger.debug(f"Processed {len(corners_data_processed)} corners from API response.")
+        else:
+            logger.warning(f"No 'corners' data or invalid format in API response for {session_key}.")
+            
+        # Process Marshal Lights (for static markers)
+        if 'marshalLights' in map_api_data and isinstance(map_api_data['marshalLights'], list):
+            marshal_lights_data_processed = []
+            for light in map_api_data['marshalLights']:
+                if isinstance(light, dict) and 'number' in light and 'trackPosition' in light:
+                    track_pos = light['trackPosition']
+                    if isinstance(track_pos, dict): # Ensure trackPosition is a dict
+                        marshal_lights_data_processed.append({
+                            'number': light['number'],
+                            'x': track_pos.get('x'),
+                            'y': track_pos.get('y')
+                        })
+            logger.debug(f"Processed {len(marshal_lights_data_processed)} marshal lights from API response.")
+        else:
+            logger.warning(f"No 'marshalLights' data or invalid format in API response for {session_key}.")
+
+        # Store raw Marshal Sector points and calculate segments
+        if 'marshalSectors' in map_api_data and isinstance(map_api_data['marshalSectors'], list):
+            marshal_sector_points_raw = map_api_data['marshalSectors'] # Store the raw list
+            logger.debug(f"Found {len(marshal_sector_points_raw)} raw marshal sector points in API response.")
+
+            if track_x_coords and track_y_coords and marshal_sector_points_raw:
+                marshal_sector_segments_calculated = {}
+                sorted_marshal_sectors_from_api = sorted(marshal_sector_points_raw, key=lambda s: s.get('number', float('inf')))
+                
+                sector_start_indices = {}
+                for sector_info in sorted_marshal_sectors_from_api:
+                    s_num = sector_info.get('number')
+                    s_pos_dict = sector_info.get('trackPosition')
+                    if s_num is not None and isinstance(s_pos_dict, dict):
+                        s_x = s_pos_dict.get('x')
+                        s_y = s_pos_dict.get('y')
+                        if s_x is not None and s_y is not None:
+                            closest_idx = find_closest_point_index(track_x_coords, track_y_coords, s_x, s_y)
+                            if closest_idx is not None:
+                                sector_start_indices[s_num] = closest_idx
+                            else:
+                                logger.warning(f"Could not find closest track point for marshal sector {s_num} point ({s_x}, {s_y}).")
+                        else:
+                            logger.warning(f"Marshal sector {s_num} missing x or y in trackPosition.")
+                    else:
+                        logger.warning(f"Invalid marshal sector entry or missing number/trackPosition: {sector_info}")
+                
+                sorted_sector_indices_list = sorted(sector_start_indices.items())
+
+                if len(sorted_sector_indices_list) > 0 and track_x_coords: # Ensure track_x_coords is not None
+                    if len(sorted_sector_indices_list) == 1:
+                        s_num, s_idx = sorted_sector_indices_list[0]
+                        # Single sector covers the whole track for highlighting purposes
+                        marshal_sector_segments_calculated[s_num] = (0, len(track_x_coords) - 1)
+                    else: # Multiple sectors
+                        for i in range(len(sorted_sector_indices_list)):
+                            current_sector_num, current_start_idx = sorted_sector_indices_list[i]
+                            
+                            if i + 1 < len(sorted_sector_indices_list):
+                                _, next_start_idx = sorted_sector_indices_list[i+1]
+                                # Ensure segment has at least one point; end index is exclusive for slicing if start=end
+                                end_idx = max(current_start_idx, next_start_idx -1) 
+                            else:
+                                # Last sector: runs from its start to the end of the track line
+                                end_idx = len(track_x_coords) - 1
+                            
+                            if current_start_idx <= end_idx: # Ensure valid range
+                                marshal_sector_segments_calculated[current_sector_num] = (current_start_idx, end_idx)
+                            else: # Should ideally not happen if sorted correctly and indices are distinct
+                                marshal_sector_segments_calculated[current_sector_num] = (current_start_idx, current_start_idx) # Fallback to single point
+                                logger.warning(f"Marshal sector {current_sector_num} resulted in start_idx ({current_start_idx}) > end_idx ({end_idx}). Defined as single point.")
+                
+                logger.info(f"Calculated {len(marshal_sector_segments_calculated)} marshal sector segments.")
+                if not marshal_sector_segments_calculated and marshal_sector_points_raw:
+                    logger.warning("Could not calculate marshal sector segments despite having raw points from API. Check indices and track data.")
+        else:
+            logger.warning(f"No 'marshalSectors' data or invalid format in API response for {session_key}.")
+    else:
+        main_logger.warning(f"Fetch Helper: map_api_data is None for {session_key}, cannot process corners/marshal info.")
+
+
+    # --- Prepare data for app_state.track_coordinates_cache ---
     cache_update_data = {
-        'session_key': session_key, 'x': track_x_coords, 'y': track_y_coords,
-        'linestring': track_linestring_obj, 'range_x': x_range, 'range_y': y_range
+        'session_key': session_key, 
+        'x': track_x_coords, 
+        'y': track_y_coords,
+        'linestring': track_linestring_obj,
+        'range_x': x_range, 
+        'range_y': y_range,
+        'corners_data': corners_data_processed,
+        'marshal_lights_data': marshal_lights_data_processed,
+        'marshal_sector_points': marshal_sector_points_raw,
+        'marshal_sector_segments': marshal_sector_segments_calculated,
+        'rotation': map_api_data.get('rotation') if map_api_data and isinstance(map_api_data, dict) else None
     }
+    
     ls_type = type(cache_update_data.get('linestring')).__name__
-    main_logger.debug(
-        f"Fetch Helper: Returning data. Linestring Type={ls_type}, X is None: {track_x_coords is None}")
+    num_corners = len(corners_data_processed or [])
+    num_lights = len(marshal_lights_data_processed or [])
+    num_segments = len(marshal_sector_segments_calculated or [])
+
+    main_logger.info( # Changed to info for better visibility of successful load
+        f"Fetch Helper: Returning data for {session_key}. LineString: {ls_type}, X points: {len(track_x_coords or [])}, "
+        f"Corners: {num_corners}, Lights: {num_lights}, Segments: {num_segments}")
     return cache_update_data
 
 def _background_track_fetch_and_update(session_key, year, circuit_key, app_state_module): # Renamed app_state to app_state_module
