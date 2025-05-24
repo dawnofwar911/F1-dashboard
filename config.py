@@ -34,6 +34,26 @@ QUALIFYING_ELIMINATED_STYLE = {
 # Dim Grey (used for Q3 P1-P10 in previous versions, now unused based on your latest Q3 rule)
 QUALIFYING_WATCH_GREY_STYLE = {'backgroundColor': '#696969', 'color': 'white'}
 
+QUALIFYING_ORDER = {
+    "qualifying": ["Q1", "Q2", "Q3"],
+    "sprint shootout": ["SQ1", "SQ2", "SQ3"]
+    # Add other qualifying-like session types if they exist and have a defined order
+}
+
+QUALIFYING_SEGMENT_DEFAULT_DURATIONS = {
+    "Q1": 18 * 60,      # 18 minutes
+    "Q2": 15 * 60,      # 15 minutes
+    "Q3": 12 * 60,      # 12 minutes
+    "SQ1": 12 * 60,     # 12 minutes for Sprint Quali 1
+    "SQ2": 10 * 60,     # 10 minutes for Sprint Quali 2
+    "SQ3": 8 * 60       # 8 minutes for Sprint Quali 3
+}
+
+# Heuristic for replay anchoring: minimum expected full duration of any timed segment
+# to consider an ExtrapolatedClock 'Remaining' time as the start of a segment.
+# (e.g., SQ3 is 8 mins = 480s. Smallest practice might be 60 mins. Smallest Q is Q3 at 8 mins)
+MIN_EXPECTED_SEGMENT_DURATION_FOR_REPLAY_ANCHOR = 240 # seconds (e.g., 4 minutes)
+
 # Participant counts (adjust if your series rules differ)
 QUALIFYING_CARS_Q1 = 20
 QUALIFYING_ELIMINATED_Q1 = 5  # Drivers P16-P20 are out

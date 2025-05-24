@@ -697,7 +697,7 @@ def update_main_data_displays(n):
         if is_active_q_segment_for_highlight:
             if app_overall_status == "Replaying":
                 if start_feed_ts_dt_replay_local and current_feed_ts_dt_replay_local and segment_duration_s_replay_local is not None:
-                    if session_feed_status_snapshot not in ["Suspended", "Aborted", "Inactive", "Finished", "Ends", "NotStarted"]:
+                    if session_feed_status_snapshot not in ["Suspended", "Aborted", "Inactive", "Finished" _"Ends", "NotStarted"]:
                         elapsed_feed_time = (current_feed_ts_dt_replay_local - start_feed_ts_dt_replay_local).total_seconds()
                         current_segment_time_remaining_seconds = max(0, segment_duration_s_replay_local - elapsed_feed_time)
                     elif session_feed_status_snapshot in ["Suspended", "Aborted", "Inactive"]: # Paused Q Replay
