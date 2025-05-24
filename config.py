@@ -170,7 +170,7 @@ TEXT_PIT_OUT_DISPLAY = "Pit Out"
 SESSION_TYPE_RACE = "Race"
 SESSION_TYPE_SPRINT = "Sprint" # Assuming "Sprint" is the exact string used for Sprint sessions. Adjust if necessary.
 SESSION_TYPE_QUALI = "Qualifying"
-SESSION_TYPE_PRAFTICE = "Practice"
+SESSION_TYPE_PRACTICE = "Practice"
  
 
 # Race Control
