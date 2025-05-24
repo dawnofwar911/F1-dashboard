@@ -189,11 +189,10 @@ def update_lap_and_session_info(n_intervals):
     lap_value_str = "--/--" #
     lap_counter_div_style = {'display': 'none'} #
     session_timer_label_text = "" #
-    session_time_str = "" # Initialize to empty, important for "Next Up"
+    session_time_str = "" # Initialize to empty for "Next Up" cases #
     session_timer_div_style = {'display': 'none'} #
 
     try:
-        # Acquire all necessary states under a single lock
         with app_state.app_state_lock: #
             current_app_overall_status = app_state.app_status.get("state", "Idle") #
             
@@ -202,7 +201,7 @@ def update_lap_and_session_info(n_intervals):
 
             session_type_from_state = app_state.session_details.get('Type', "Unknown") #
             current_session_feed_status = app_state.session_details.get('SessionStatus', 'Unknown') #
-            current_replay_speed = app_state.replay_speed #
+            current_replay_speed = app_state.replay_speed # Used for LIVE extrapolation, replay speed is inherent in feed pace #
             
             lap_count_data_payload = app_state.data_store.get('LapCount', {}) #
             lap_count_data = lap_count_data_payload.get('data', {}) if isinstance(lap_count_data_payload, dict) else {} #
@@ -216,30 +215,80 @@ def update_lap_and_session_info(n_intervals):
             current_lap_to_display = str(current_lap_from_feed) if current_lap_from_feed is not None else '-' #
             
             session_type_lower = session_type_from_state.lower() #
-            q_state = app_state.qualifying_segment_state.copy() # Use a copy #
             
-            practice_start_utc_local = app_state.practice_session_actual_start_utc #
-            practice_duration_s_local = app_state.practice_session_scheduled_duration_seconds #
-            session_name_from_details = app_state.session_details.get('Name', '') # Default to empty if not found #
+            # q_state is for LIVE timer extrapolation and Q REPLAY pause states
+            q_state_live_anchor = app_state.qualifying_segment_state.copy() #
             
+            # For Practice LIVE timing
+            practice_start_utc_live = app_state.practice_session_actual_start_utc #
+            practice_overall_duration_s = app_state.practice_session_scheduled_duration_seconds #
+            
+            # For REPLAY feed-paced timing (Practice and Q)
+            current_feed_ts_dt_replay = app_state.current_processed_feed_timestamp_utc_dt if current_app_overall_status == "Replaying" else None #
+            start_feed_ts_dt_replay = app_state.session_start_feed_timestamp_utc_dt if current_app_overall_status == "Replaying" else None #
+            segment_duration_s_replay = app_state.current_segment_scheduled_duration_seconds if current_app_overall_status == "Replaying" else None #
+
+            session_name_from_details = app_state.session_details.get('Name', '') #
             extrapolated_clock_remaining = app_state.extrapolated_clock_info.get("Remaining") if hasattr(app_state, 'extrapolated_clock_info') else None #
 
         # --- Logic for displaying session type specific info ---
 
         if session_type_lower in [config.SESSION_TYPE_RACE.lower(), config.SESSION_TYPE_SPRINT.lower()]: #
             lap_counter_div_style = {'display': 'inline-block', 'margin-right': '20px'} #
-            # session_timer_div_style is {'display': 'none'} by default for Race/Sprint
+            session_timer_div_style = {'display': 'none'} # session_timer is hidden for Race/Sprint
             lap_value_str = f"{current_lap_to_display}/{actual_total_laps_to_display}" if current_lap_to_display != '-' else "Awaiting Data..." #
+
+        elif session_type_lower.startswith("practice"): #
+            lap_counter_div_style = {'display': 'none'} #
+            session_timer_div_style = {'display': 'inline-block'} #
+            session_timer_label_text = "Time Left:" # Default
+            session_time_str = "" # Default to empty
+
+            is_next_up_practice = False
+            if current_app_overall_status == "Live":
+                is_next_up_practice = (not practice_start_utc_live and \
+                                       current_session_feed_status not in ["Finished", "Ends", "Started"]) or \
+                                      current_session_feed_status == "NotStarted" #
+            elif current_app_overall_status == "Replaying":
+                is_next_up_practice = (not start_feed_ts_dt_replay and \
+                                       current_session_feed_status not in ["Finished", "Ends", "Started"]) or \
+                                      current_session_feed_status == "NotStarted" #
+
+            if is_next_up_practice:
+                actual_session_name = session_name_from_details if session_name_from_details else "Practice" #
+                session_timer_label_text = f"Next Up: {actual_session_name}"
+            elif current_session_feed_status in ["Finished", "Ends"]: #
+                session_time_str = "00:00:00" #
+            elif current_app_overall_status == "Replaying":
+                # Use practice_overall_duration_s for Practice replay duration
+                duration_to_use_for_practice_replay = practice_overall_duration_s if practice_overall_duration_s is not None else segment_duration_s_replay
+
+                if start_feed_ts_dt_replay and current_feed_ts_dt_replay and duration_to_use_for_practice_replay is not None:
+                    elapsed_feed_time = (current_feed_ts_dt_replay - start_feed_ts_dt_replay).total_seconds()
+                    displayed_remaining_seconds = max(0, duration_to_use_for_practice_replay - elapsed_feed_time)
+                    session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds) #
+                else:
+                    session_time_str = "Awaiting Feed Sync"
+            elif current_app_overall_status == "Live":
+                if practice_start_utc_live and practice_overall_duration_s is not None: #
+                    now_utc = datetime.now(timezone.utc) #
+                    elapsed_wall_time_seconds = (now_utc - practice_start_utc_live).total_seconds() #
+                    effective_elapsed_session_time = elapsed_wall_time_seconds * current_replay_speed # For live, current_replay_speed is 1.0
+                    displayed_remaining_seconds = max(0, practice_overall_duration_s - effective_elapsed_session_time) #
+                    session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds) #
+                else:
+                    session_time_str = "Awaiting Start/Duration"
+            else:
+                session_time_str = "Awaiting Status"
 
         elif session_type_lower in ["qualifying", "sprint shootout"]: #
             lap_counter_div_style = {'display': 'none'} #
             session_timer_div_style = {'display': 'inline-block'} #
-            segment_label = q_state.get("current_segment", "") # "" if not found #
-            displayed_remaining_seconds = 0 
-            session_time_str = "" # Default to empty for "Next Up" or "Ended"
+            segment_label = q_state_live_anchor.get("current_segment", "") # Current segment from q_state #
+            session_time_str = "" # Default to empty
 
             if segment_label == "Between Segments": #
-                old_q_segment = q_state.get("old_segment") #
+                old_q_segment = q_state_live_anchor.get("old_segment") #
                 next_q_segment_name = ""
                 if session_type_lower == "qualifying": #
                     if old_q_segment == "Q1": next_q_segment_name = "Q2" #
@@ -251,63 +300,46 @@ def update_lap_and_session_info(n_intervals):
             
             elif segment_label == "Ended": #
                 session_timer_label_text = "Session Ended:" #
-            
+
             elif segment_label and segment_label not in ["Unknown", "Between Segments", "Ended"] and \
                  current_session_feed_status not in ["Suspended", "Aborted", "Finished", "Ends", "NotStarted", "Inactive"]: #
+                # Actively running Q segment
                 session_timer_label_text = f"{segment_label}:" #
-                if q_state.get("last_official_time_capture_utc") and q_state.get("official_segment_remaining_seconds") is not None: #
-                    now_utc = datetime.now(timezone.utc) #
-                    time_since_last_capture = (now_utc - q_state["last_official_time_capture_utc"]).total_seconds() #
-                    adjusted_elapsed_time = time_since_last_capture * current_replay_speed #
-                    calculated_remaining = q_state["official_segment_remaining_seconds"] - adjusted_elapsed_time #
-                    displayed_remaining_seconds = max(0, calculated_remaining) #
-                    session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds) #
-                else: 
-                    session_time_str = "Awaiting..."
+                if current_app_overall_status == "Replaying":
+                    if start_feed_ts_dt_replay and current_feed_ts_dt_replay and segment_duration_s_replay is not None:
+                        elapsed_feed_time_q = (current_feed_ts_dt_replay - start_feed_ts_dt_replay).total_seconds()
+                        displayed_remaining_seconds = max(0, segment_duration_s_replay - elapsed_feed_time_q)
+                        session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds) #
+                    else:
+                        session_time_str = "Awaiting Feed Sync"
+                elif current_app_overall_status == "Live":
+                    if q_state_live_anchor.get("last_official_time_capture_utc") and q_state_live_anchor.get("official_segment_remaining_seconds") is not None: #
+                        now_utc = datetime.now(timezone.utc) #
+                        time_since_last_capture = (now_utc - q_state_live_anchor["last_official_time_capture_utc"]).total_seconds() #
+                        adjusted_elapsed_time = time_since_last_capture * current_replay_speed # For live, current_replay_speed is 1.0
+                        calculated_remaining = q_state_live_anchor["official_segment_remaining_seconds"] - adjusted_elapsed_time #
+                        displayed_remaining_seconds = max(0, calculated_remaining) #
+                        session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds) #
+                    else:
+                        session_time_str = "Awaiting..."
             
             elif segment_label and segment_label not in ["Unknown", "Between Segments", "Ended"] and \
-                 current_session_feed_status in ["Suspended", "Aborted", "Inactive"]: #
+                 current_session_feed_status in ["Suspended", "Aborted", "Inactive"]: # Paused Q segment #
                 session_timer_label_text = f"{segment_label} Paused:" #
-                if q_state.get("official_segment_remaining_seconds") is not None: #
-                    displayed_remaining_seconds = max(0, q_state["official_segment_remaining_seconds"]) #
+                # Display the time captured at the point of pause (stored in q_state_live_anchor.official_segment_remaining_seconds)
+                if q_state_live_anchor.get("official_segment_remaining_seconds") is not None: #
+                    displayed_remaining_seconds = max(0, q_state_live_anchor["official_segment_remaining_seconds"]) #
                     session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds) #
                 else:
                     session_time_str = "Awaiting..."
             
-            else: 
+            else: # Fallback for Q: NotStarted, Unknown segment etc.
                 if session_name_from_details and current_session_feed_status == "NotStarted": #
                     session_timer_label_text = f"Next Up: {session_name_from_details}"
-                    # session_time_str is already ""
-                else: # Fallback for other Q states (e.g. Unknown segment)
+                    # session_time_str remains empty
+                else:
                     session_timer_label_text = "Time Left:" #
                     session_time_str = extrapolated_clock_remaining if extrapolated_clock_remaining and extrapolated_clock_remaining != "0" else "Awaiting..."
-
-
-        elif session_type_lower.startswith("practice"): #
-            lap_counter_div_style = {'display': 'none'} #
-            session_timer_div_style = {'display': 'inline-block'} #
-            session_timer_label_text = "Time Left:" # Default
-            session_time_str = "" # Default to empty for "Next Up"
-
-            if (not practice_start_utc_local and \
-                current_session_feed_status not in ["Finished", "Ends", "Started"]) or \
-               current_session_feed_status == "NotStarted": #
-                actual_session_name = session_name_from_details if session_name_from_details else "Practice" #
-                session_timer_label_text = f"Next Up: {actual_session_name}"
-                # session_time_str remains empty
-            elif current_session_feed_status in ["Finished", "Ends"]: #
-                displayed_remaining_seconds = 0 #
-                session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds) #
-            elif practice_start_utc_local and practice_duration_s_local is not None: #
-                now_utc = datetime.now(timezone.utc) #
-                elapsed_wall_time_seconds = (now_utc - practice_start_utc_local).total_seconds() #
-                effective_elapsed_session_time = elapsed_wall_time_seconds * current_replay_speed #
-                calculated_true_remaining_seconds = practice_duration_s_local - effective_elapsed_session_time #
-                displayed_remaining_seconds = max(0, calculated_true_remaining_seconds) #
-                session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds) #
-            else:
-                session_timer_label_text = "Time Left:" #
-                session_time_str = extrapolated_clock_remaining if extrapolated_clock_remaining and extrapolated_clock_remaining != "0" else "Awaiting..."
         
         else: # Default for unknown/other session types
             lap_counter_div_style = {'display': 'inline-block', 'margin-right': '20px'} #
@@ -324,6 +356,7 @@ def update_lap_and_session_info(n_intervals):
         return "--/--", {'display': 'none'}, "", "", {'display': 'none'} # Fallback #
 
     return lap_value_str, lap_counter_div_style, session_timer_label_text, session_time_str, session_timer_div_style #
+
 
 @app.callback(
     Output('connection-status', 'children'),
@@ -610,380 +643,337 @@ def update_prominent_track_status(n):
 def update_main_data_displays(n):
     other_elements = []
     table_data = []
-    timestamp_text = config.TEXT_WAITING_FOR_DATA
+    timestamp_text = config.TEXT_WAITING_FOR_DATA #
     current_time_for_callbacks = time.time()
 
     try:
-        session_type_from_state = ""
+        session_type_from_state_str = ""
         current_q_segment_from_state = None
         previous_q_segment_from_state = None
-        q_state_snapshot = {}
+        q_state_snapshot_for_live = {}
         current_replay_speed_snapshot = 1.0
         session_feed_status_snapshot = "Unknown"
+        app_overall_status = "Idle"
+        current_feed_ts_dt_replay_local = None
+        start_feed_ts_dt_replay_local = None
+        segment_duration_s_replay_local = None
+        
+        active_segment_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0} 
+        q1_eliminated_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0} 
+        q2_eliminated_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0} 
+        
+        with app_state.app_state_lock: 
+            app_overall_status = app_state.app_status.get("state", "Idle") #
+            session_type_from_state_str = app_state.session_details.get('Type', "").lower() #
+            q_state_snapshot_for_live = app_state.qualifying_segment_state.copy() #
+            current_q_segment_from_state = q_state_snapshot_for_live.get("current_segment") #
+            previous_q_segment_from_state = q_state_snapshot_for_live.get("old_segment") #
+            current_replay_speed_snapshot = app_state.replay_speed #
+            session_feed_status_snapshot = app_state.session_details.get('SessionStatus', 'Unknown') #
+            
+            if app_overall_status == "Replaying": #
+                current_feed_ts_dt_replay_local = app_state.current_processed_feed_timestamp_utc_dt #
+                start_feed_ts_dt_replay_local = app_state.session_start_feed_timestamp_utc_dt #
+                segment_duration_s_replay_local = app_state.current_segment_scheduled_duration_seconds #
 
-        # Initialize rule dictionaries
-        active_segment_highlight_rule = {
-            "type": "NONE", "lower_pos": 0, "upper_pos": 0}
-        q1_eliminated_highlight_rule = {
-            "type": "NONE", "lower_pos": 0, "upper_pos": 0}
-        q2_eliminated_highlight_rule = {
-            "type": "NONE", "lower_pos": 0, "upper_pos": 0}
+            timing_state_copy = app_state.timing_state.copy() #
+            data_store_copy = app_state.data_store #
 
-        current_segment_time_remaining_seconds = float('inf')
-
-        with app_state.app_state_lock:
-            session_type_from_state = app_state.session_details.get(
-                'Type', "").lower()
-            current_q_segment_from_state = app_state.qualifying_segment_state.get(
-                "current_segment")
-            previous_q_segment_from_state = app_state.qualifying_segment_state.get(
-                "old_segment")
-
-            q_state_snapshot = app_state.qualifying_segment_state.copy()
-            current_replay_speed_snapshot = app_state.replay_speed
-            session_feed_status_snapshot = app_state.session_details.get(
-                'SessionStatus', 'Unknown')
-            timing_state_copy = app_state.timing_state.copy()
-            data_store_copy = app_state.data_store
-
-        # --- Calculate current segment time remaining ---
-        if q_state_snapshot.get("last_official_time_capture_utc") and \
-           q_state_snapshot.get("official_segment_remaining_seconds") is not None and \
-           current_q_segment_from_state and \
-           current_q_segment_from_state not in ["Unknown", "Between Segments", "Ended"] and \
-           session_feed_status_snapshot not in ["Suspended", "Aborted", "Finished", "Ends", "NotStarted"]:
-            now_utc_for_calc = datetime.now(timezone.utc)
-            time_since_last_capture_for_calc = (
-                now_utc_for_calc - q_state_snapshot["last_official_time_capture_utc"]).total_seconds()
-            adjusted_elapsed_time_for_calc = time_since_last_capture_for_calc * \
-                current_replay_speed_snapshot
-            calculated_remaining_for_calc = q_state_snapshot[
-                "official_segment_remaining_seconds"] - adjusted_elapsed_time_for_calc
-            current_segment_time_remaining_seconds = max(
-                0, calculated_remaining_for_calc)
-        elif current_q_segment_from_state in ["Between Segments", "Ended"] or \
-                session_feed_status_snapshot in ["Finished", "Ends"]:
-            current_segment_time_remaining_seconds = 0
-
-        logger.debug(
-            f"QualiHighlight: CurrentSeg='{current_q_segment_from_state}', PrevSeg='{previous_q_segment_from_state}', "
-            f"TimeRemainingSec={current_segment_time_remaining_seconds:.1f}"
+        current_segment_time_remaining_seconds = float('inf') 
+        is_active_q_segment_for_highlight = (
+            session_type_from_state_str in ["qualifying", "sprint shootout"] and #
+            current_q_segment_from_state and
+            current_q_segment_from_state not in ["Unknown", "Between Segments", "Ended", "Practice"] #
         )
 
-        # --- Determine Highlight Rules based on your specific logic ---
-        five_mins_in_seconds = 5 * 60
-        is_qualifying_type_session = session_type_from_state in [
-            "qualifying", "sprint shootout"]
+        if is_active_q_segment_for_highlight: #
+            if app_overall_status == "Replaying": #
+                if start_feed_ts_dt_replay_local and current_feed_ts_dt_replay_local and segment_duration_s_replay_local is not None: #
+                    if session_feed_status_snapshot not in ["Suspended", "Aborted", "Inactive", "Finished", "Ends", "NotStarted"]: #
+                        elapsed_feed_time = (current_feed_ts_dt_replay_local - start_feed_ts_dt_replay_local).total_seconds() #
+                        current_segment_time_remaining_seconds = max(0, segment_duration_s_replay_local - elapsed_feed_time) #
+                    elif session_feed_status_snapshot in ["Suspended", "Aborted", "Inactive"]: #
+                        current_segment_time_remaining_seconds = q_state_snapshot_for_live.get("official_segment_remaining_seconds", 0.0) #
+                elif session_feed_status_snapshot in ["Suspended", "Aborted", "Inactive"]: #
+                     current_segment_time_remaining_seconds = q_state_snapshot_for_live.get("official_segment_remaining_seconds", 0.0) #
+            if app_overall_status == "Live" or \
+               (app_overall_status == "Replaying" and current_segment_time_remaining_seconds == float('inf')): #
+                if session_feed_status_snapshot not in ["Suspended", "Aborted", "Finished", "Ends", "NotStarted", "Inactive"]: #
+                    last_capture_dt = q_state_snapshot_for_live.get("last_official_time_capture_utc") #
+                    official_rem_s_at_capture = q_state_snapshot_for_live.get("official_segment_remaining_seconds") #
+                    if official_rem_s_at_capture is None or not isinstance(official_rem_s_at_capture, (int, float)): #
+                        current_segment_time_remaining_seconds = float('inf') #
+                    elif last_capture_dt is None: #
+                        current_segment_time_remaining_seconds = official_rem_s_at_capture #
+                    elif last_capture_dt: #
+                        now_utc_for_calc = datetime.now(timezone.utc) #
+                        time_since_last_capture_for_calc = (now_utc_for_calc - last_capture_dt).total_seconds() #
+                        adjusted_elapsed_time_for_calc = time_since_last_capture_for_calc * current_replay_speed_snapshot #
+                        calculated_remaining_for_calc = official_rem_s_at_capture - adjusted_elapsed_time_for_calc #
+                        current_segment_time_remaining_seconds = max(0, calculated_remaining_for_calc) #
+                elif session_feed_status_snapshot in ["Suspended", "Aborted", "Inactive"]: #
+                    official_rem_s_at_pause = q_state_snapshot_for_live.get("official_segment_remaining_seconds", 0.0) #
+                    current_segment_time_remaining_seconds = official_rem_s_at_pause if isinstance(official_rem_s_at_pause, (int, float)) else 0.0 #
+        elif current_q_segment_from_state in ["Between Segments", "Ended"] or \
+             session_feed_status_snapshot in ["Finished", "Ends"]: #
+            current_segment_time_remaining_seconds = 0 #
+        
+        five_mins_in_seconds = 5 * 60 #
+        is_qualifying_type_session = session_type_from_state_str in ["qualifying", "sprint shootout"] #
 
-        if is_qualifying_type_session and current_q_segment_from_state:
-            # Q1/SQ1 Logic
-            if current_q_segment_from_state in ["Q1", "SQ1"] or \
-               (current_q_segment_from_state == "Between Segments" and previous_q_segment_from_state in [None, "Q1", "SQ1"]):
-                lower_b_q1_active = config.QUALIFYING_CARS_Q1 - \
-                    config.QUALIFYING_ELIMINATED_Q1 + 1  # P16
-                upper_b_q1_active = config.QUALIFYING_CARS_Q1  # P20
-                if current_segment_time_remaining_seconds <= five_mins_in_seconds:
+        # --- MODIFIED HIGHLIGHTING LOGIC ---
+        apply_danger_zone_highlight = False
+        danger_zone_applies_to_segment = None 
+        apply_q1_elimination_highlight = False
+        apply_q2_elimination_highlight = False
+
+        if is_qualifying_type_session:
+            # Determine DANGER ZONE application
+            if current_q_segment_from_state in ["Q1", "SQ1", "Q2", "SQ2"]: #
+                is_session_status_for_running_danger_zone = session_feed_status_snapshot in ["Started", "Running", "Suspended"] #
+                if is_session_status_for_running_danger_zone and current_segment_time_remaining_seconds <= five_mins_in_seconds: #
+                    apply_danger_zone_highlight = True
+                    danger_zone_applies_to_segment = current_q_segment_from_state #
+            
+            if not apply_danger_zone_highlight and session_feed_status_snapshot == "Finished": #
+                if current_q_segment_from_state in ["Q1", "SQ1", "Q2", "SQ2"]: #
+                    apply_danger_zone_highlight = True
+                    danger_zone_applies_to_segment = current_q_segment_from_state #
+                elif current_q_segment_from_state == "Between Segments" and previous_q_segment_from_state in ["Q1", "SQ1", "Q2", "SQ2"]: #
+                    apply_danger_zone_highlight = True
+                    danger_zone_applies_to_segment = previous_q_segment_from_state #
+
+            # Set active_segment_highlight_rule if danger zone is active
+            if apply_danger_zone_highlight and danger_zone_applies_to_segment: #
+                if danger_zone_applies_to_segment in ["Q1", "SQ1"]: #
+                    lower_b_q1_active = config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1 #
+                    upper_b_q1_active = config.QUALIFYING_CARS_Q1 #
                     active_segment_highlight_rule = {
-                        "type": "RED_DANGER", "lower_pos": lower_b_q1_active, "upper_pos": upper_b_q1_active}
-
-            # Q2/SQ2 Logic
-            elif current_q_segment_from_state in ["Q2", "SQ2"] or \
-                    (current_q_segment_from_state == "Between Segments" and previous_q_segment_from_state in ["Q2", "SQ2"]):
-
-                # Rule for P16-P20 (Q1 eliminated cars) - ALWAYS GREY_ELIMINATED in Q2
-                lower_b_q1_elim = config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1
-                upper_b_q1_elim = config.QUALIFYING_CARS_Q1
-                q1_eliminated_highlight_rule = {  # This rule is for Q1 eliminated
-                    "type": "GREY_ELIMINATED",
-                    "lower_pos": lower_b_q1_elim,
-                    "upper_pos": upper_b_q1_elim
-                }
-
-                # Rule for P11-P15 (Q2 active cars) - RED_DANGER if time critical, otherwise NO active highlight
-                lower_b_q2_active = config.QUALIFYING_CARS_Q2 - \
-                    config.QUALIFYING_ELIMINATED_Q2 + 1
-                upper_b_q2_active = config.QUALIFYING_CARS_Q2
-                if current_segment_time_remaining_seconds <= five_mins_in_seconds:
+                        "type": "RED_DANGER", "lower_pos": lower_b_q1_active, "upper_pos": upper_b_q1_active} #
+                elif danger_zone_applies_to_segment in ["Q2", "SQ2"]: #
+                    lower_b_q2_active = config.QUALIFYING_CARS_Q2 - config.QUALIFYING_ELIMINATED_Q2 + 1 #
+                    upper_b_q2_active = config.QUALIFYING_CARS_Q2 #
                     active_segment_highlight_rule = {
-                        "type": "RED_DANGER", "lower_pos": lower_b_q2_active, "upper_pos": upper_b_q2_active}
+                        "type": "RED_DANGER", "lower_pos": lower_b_q2_active, "upper_pos": upper_b_q2_active} #
+            
+            # Conditions for ELIMINATION HIGHLIGHT (GREY)
+            # Q1 Eliminations:
+            # Trigger: Q1 -> Between Segments + Inactive
+            # Maintain: If in Q2, Q3, or Between Segments (after Q1), or Ended (after Q1)
+            if (previous_q_segment_from_state in ["Q1", "SQ1"] and 
+                current_q_segment_from_state == "Between Segments" and 
+                session_feed_status_snapshot == "Inactive"): #
+                apply_q1_elimination_highlight = True  # Trigger point
+            elif current_q_segment_from_state in ["Q2", "SQ2", "Q3", "SQ3"]: #
+                apply_q1_elimination_highlight = True  # Maintain during Q2/Q3
+            elif current_q_segment_from_state == "Between Segments" and \
+                 previous_q_segment_from_state in ["Q2", "SQ2", "Q3", "SQ3"]: # # Between Q2/Q3 or Q3/End
+                apply_q1_elimination_highlight = True  # Maintain
+            elif current_q_segment_from_state == "Ended" and \
+                 previous_q_segment_from_state not in ["Practice", None]: # # Session ended after a Q segment
+                apply_q1_elimination_highlight = True # Maintain
 
-            # Q3/SQ3 Logic (and "Ended" state if previous was Q3/SQ3)
-            elif current_q_segment_from_state in ["Q3", "SQ3", "Ended"] or \
-                    (current_q_segment_from_state == "Between Segments" and previous_q_segment_from_state in ["Q3", "SQ3"]):
-
-                # P1-P10 (active Q3 participants) get NO active highlight
-                active_segment_highlight_rule = {
-                    "type": "NONE", "lower_pos": 0, "upper_pos": 0}
-
-                # Rule for P16-P20 (Q1 eliminated) to be GREY_ELIMINATED
-                lower_b_q1_elim_for_q3 = config.QUALIFYING_CARS_Q1 - \
-                    config.QUALIFYING_ELIMINATED_Q1 + 1
-                upper_b_q1_elim_for_q3 = config.QUALIFYING_CARS_Q1
+            # Q2 Eliminations:
+            # Trigger: Q2 -> Between Segments + Inactive
+            # Maintain: If in Q3, or Between Segments (after Q2), or Ended (after Q2)
+            if (previous_q_segment_from_state in ["Q2", "SQ2"] and 
+                current_q_segment_from_state == "Between Segments" and 
+                session_feed_status_snapshot == "Inactive"): #
+                apply_q2_elimination_highlight = True  # Trigger point
+            elif current_q_segment_from_state in ["Q3", "SQ3"]: #
+                apply_q2_elimination_highlight = True  # Maintain during Q3
+            elif current_q_segment_from_state == "Between Segments" and \
+                 previous_q_segment_from_state in ["Q3", "SQ3"]: # # Between Q3/End
+                apply_q2_elimination_highlight = True  # Maintain
+            elif current_q_segment_from_state == "Ended" and \
+                 previous_q_segment_from_state in ["Q2", "SQ2", "Q3", "SQ3"]: # # Session ended after Q2 or Q3
+                apply_q2_elimination_highlight = True # Maintain
+            
+            # Set elimination highlight rule dicts
+            if apply_q1_elimination_highlight:
                 q1_eliminated_highlight_rule = {
-                    "type": "GREY_ELIMINATED", "lower_pos": lower_b_q1_elim_for_q3, "upper_pos": upper_b_q1_elim_for_q3}
-
-                # Rule for P11-P15 (Q2 eliminated) to be GREY_ELIMINATED
-                lower_b_q2_elim_for_q3 = config.QUALIFYING_CARS_Q2 - \
-                    config.QUALIFYING_ELIMINATED_Q2 + 1
-                upper_b_q2_elim_for_q3 = config.QUALIFYING_CARS_Q2
+                    "type": "GREY_ELIMINATED", 
+                    "lower_pos": config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1, #
+                    "upper_pos": config.QUALIFYING_CARS_Q1 } #
+            if apply_q2_elimination_highlight:
                 q2_eliminated_highlight_rule = {
-                    "type": "GREY_ELIMINATED", "lower_pos": lower_b_q2_elim_for_q3, "upper_pos": upper_b_q2_elim_for_q3}
+                    "type": "GREY_ELIMINATED", 
+                    "lower_pos": config.QUALIFYING_CARS_Q2 - config.QUALIFYING_ELIMINATED_Q2 + 1, #
+                    "upper_pos": config.QUALIFYING_CARS_Q2 } #
+        # --- END OF MODIFIED HIGHLIGHTING LOGIC ---
 
-        # === Start of data processing for table (your existing code) ===
-        # ... (excluded_streams, sorted_streams, other_elements loop - this remains unchanged) ...
+        logger.debug(
+            f"HighlightCheck: Seg='{current_q_segment_from_state}', Prev='{previous_q_segment_from_state}', "
+            f"DangerAppliesTo='{danger_zone_applies_to_segment}', RemSecForHighlight={current_segment_time_remaining_seconds:.1f}, "
+            f"Mode='{app_overall_status}', FeedStatus='{session_feed_status_snapshot}', "
+            f"ApplyDanger='{apply_danger_zone_highlight}', ApplyQ1Elim='{apply_q1_elimination_highlight}', ApplyQ2Elim='{apply_q2_elimination_highlight}'"
+        )
+
         excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
-                            'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat']
-        # ... (rest of other_elements population) ...
+                            'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat'] #
         sorted_streams = sorted(
-            [s for s in data_store_copy.keys() if s not in excluded_streams])
-        for stream in sorted_streams:
-            value = data_store_copy.get(stream, {})
-            data_payload = value.get('data', 'N/A')
-            timestamp_str_val = value.get('timestamp', 'N/A')
+            [s for s in data_store_copy.keys() if s not in excluded_streams]) #
+        for stream in sorted_streams: #
+            value = data_store_copy.get(stream, {}) #
+            data_payload = value.get('data', 'N/A') #
+            timestamp_str_val = value.get('timestamp', 'N/A') #
             try:
-                data_str = json.dumps(data_payload, indent=2)
+                data_str = json.dumps(data_payload, indent=2) #
             except TypeError:
-                data_str = str(data_payload)
-            if len(data_str) > 500:
-                data_str = data_str[:500] + "\n...(truncated)"
-            other_elements.append(html.Details([html.Summary(f"{stream} ({timestamp_str_val})"),
-                                                html.Pre(data_str, style={'marginLeft': '15px', 'maxHeight': '200px', 'overflowY': 'auto'})],
-                                               open=(stream == "LapCount")))
-        timing_data_entry = data_store_copy.get('TimingData', {})
-        timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else config.TEXT_WAITING_FOR_DATA
+                data_str = str(data_payload) #
+            if len(data_str) > 500: #
+                data_str = data_str[:500] + "\n...(truncated)" #
+            other_elements.append(html.Details([html.Summary(f"{stream} ({timestamp_str_val})"), #
+                                                html.Pre(data_str, style={'marginLeft': '15px', 'maxHeight': '200px', 'overflowY': 'auto'})], #
+                                               open=(stream == "LapCount"))) #
+        timing_data_entry = data_store_copy.get('TimingData', {}) #
+        timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else config.TEXT_WAITING_FOR_DATA #
 
-        if timing_state_copy:
+        if timing_state_copy: #
             processed_table_data = []
-            for car_num, driver_state in timing_state_copy.items():
-                racing_no = driver_state.get("RacingNumber", car_num)
-                tla = driver_state.get("Tla", "N/A")
-                pos = driver_state.get('Position', '-')
-                pos_str = str(pos)
-                # status_driver = driver_state.get('Status', 'N/A').lower() # Not used if is_status_out check removed
-
-                # ... (all your other logic from your function for tyre, interval, laps, etc. - this part should be complete in your actual code) ...
-                compound = driver_state.get('TyreCompound', '-')
-                age = driver_state.get('TyreAge', '?')
-                is_new = driver_state.get('IsNewTyre', False)
+            for car_num, driver_state in timing_state_copy.items(): #
+                racing_no = driver_state.get("RacingNumber", car_num) #
+                tla = driver_state.get("Tla", "N/A") #
+                pos = driver_state.get('Position', '-') #
+                pos_str = str(pos) #
+                compound = driver_state.get('TyreCompound', '-') #
+                age = driver_state.get('TyreAge', '?') #
+                is_new = driver_state.get('IsNewTyre', False) #
                 compound_short = ""
-                known_compounds = ["SOFT", "MEDIUM",
-                                   "HARD", "INTERMEDIATE", "WET"]
-                if compound and compound.upper() in known_compounds:
-                    compound_short = compound[0].upper()
-                elif compound and compound != '-':
-                    compound_short = "?"
+                known_compounds = ["SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"] #
+                if compound and compound.upper() in known_compounds: #
+                    compound_short = compound[0].upper() #
+                elif compound and compound != '-': #
+                    compound_short = "?" #
                 tyre_display_parts = []
-                if compound_short:
-                    tyre_display_parts.append(compound_short)
-                if age != '?':
-                    tyre_display_parts.append(f"{str(age)}L")
-                tyre_base = " ".join(
-                    tyre_display_parts) if tyre_display_parts else "-"
-                new_tyre_indicator = "*" if compound_short and compound_short != '?' and not is_new else ""
-                tyre = f"{tyre_base}{new_tyre_indicator}"
-                if tyre_base == "-":
-                    tyre = "-"
-
-                interval_val = utils.get_nested_state(
-                    driver_state, 'IntervalToPositionAhead', 'Value', default='-')
-                gap_val = driver_state.get('GapToLeader', '-')
-                interval_display_text = str(interval_val).strip(
-                ) if interval_val not in [None, "", "-"] else "-"
-                gap_display_text = str(gap_val).strip() if gap_val not in [
-                    None, "", "-"] else "-"
-                bold_interval_text = f"**{interval_display_text}**"
+                if compound_short: tyre_display_parts.append(compound_short) #
+                if age != '?': tyre_display_parts.append(f"{str(age)}L") #
+                tyre_base = " ".join(tyre_display_parts) if tyre_display_parts else "-" #
+                new_tyre_indicator = "*" if compound_short and compound_short != '?' and not is_new else "" #
+                tyre = f"{tyre_base}{new_tyre_indicator}" #
+                if tyre_base == "-": tyre = "-" #
+                interval_val = utils.get_nested_state(driver_state, 'IntervalToPositionAhead', 'Value', default='-') #
+                gap_val = driver_state.get('GapToLeader', '-') #
+                interval_display_text = str(interval_val).strip() if interval_val not in [None, "", "-"] else "-" #
+                gap_display_text = str(gap_val).strip() if gap_val not in [None, "", "-"] else "-" #
+                bold_interval_text = f"**{interval_display_text}**" #
                 interval_gap_markdown = ""
-                is_p1 = (pos_str == '1')
-                show_gap = not is_p1 and session_type_from_state in [config.SESSION_TYPE_RACE.lower(
-                ), config.SESSION_TYPE_SPRINT.lower()] and gap_display_text != "-"
-                if show_gap and interval_display_text != "":
-                    normal_weight_gap_text = gap_display_text
-                    interval_gap_markdown = f"{bold_interval_text}\\\n{normal_weight_gap_text}"
-                elif interval_display_text == "" and is_p1:
-                    interval_gap_markdown = ""
+                is_p1 = (pos_str == '1') #
+                show_gap = not is_p1 and session_type_from_state_str in [config.SESSION_TYPE_RACE.lower(), config.SESSION_TYPE_SPRINT.lower()] and gap_display_text != "-" #
+                if show_gap and interval_display_text != "": #
+                    normal_weight_gap_text = gap_display_text #
+                    interval_gap_markdown = f"{bold_interval_text}\\\n{normal_weight_gap_text}" #
+                elif interval_display_text == "" and is_p1: interval_gap_markdown = "" #
                 else:
-                    if interval_display_text == "-":
-                        interval_gap_markdown = "-"
-                    else:
-                        interval_gap_markdown = bold_interval_text
-
-                last_lap_val = utils.get_nested_state(
-                    driver_state, 'LastLapTime', 'Value', default='-')
-                if last_lap_val is None or last_lap_val == "":
-                    last_lap_val = "-"
-                best_lap_val = utils.get_nested_state(
-                    driver_state, 'PersonalBestLapTime', 'Value', default='-')
-                if best_lap_val is None or best_lap_val == "":
-                    best_lap_val = "-"
-                s1_val = utils.get_nested_state(
-                    driver_state, 'Sectors', '0', 'Value', default='-')
-                if s1_val is None or s1_val == "":
-                    s1_val = "-"
-                s2_val = utils.get_nested_state(
-                    driver_state, 'Sectors', '1', 'Value', default='-')
-                if s2_val is None or s2_val == "":
-                    s2_val = "-"
-                s3_val = utils.get_nested_state(
-                    driver_state, 'Sectors', '2', 'Value', default='-')
-                if s3_val is None or s3_val == "":
-                    s3_val = "-"
-
-                is_in_pit_flag = driver_state.get('InPit', False)
-                entry_wall_time = driver_state.get(
-                    'current_pit_entry_system_time')
-                speed_at_entry = driver_state.get(
-                    'pit_entry_replay_speed', 1.0)
-                if not isinstance(speed_at_entry, (float, int)) or speed_at_entry <= 0:
-                    speed_at_entry = 1.0
-                final_live_pit_text = driver_state.get(
-                    'final_live_pit_time_text')
-                final_live_pit_text_ts = driver_state.get(
-                    'final_live_pit_time_display_timestamp')
-                reliable_stops = driver_state.get('ReliablePitStops', 0)
-                timing_data_stops = driver_state.get('NumberOfPitStops', 0)
-                pits_text_to_display = '0'
-                if reliable_stops > 0:
-                    pits_text_to_display = str(reliable_stops)
-                elif timing_data_stops > 0:
-                    pits_text_to_display = str(timing_data_stops)
-                pit_display_state_for_style = "SHOW_COUNT"
-                if is_in_pit_flag:
-                    pit_display_state_for_style = "IN_PIT_LIVE"
-                    if entry_wall_time:
-                        current_wall_time_elapsed = current_time_for_callbacks - entry_wall_time
-                        live_game_time_elapsed = current_wall_time_elapsed * speed_at_entry
-                        pits_text_to_display = f"In Pit: {live_game_time_elapsed:.1f}s"
-                    else:
-                        pits_text_to_display = "In Pit"
-                elif final_live_pit_text and final_live_pit_text_ts and (current_time_for_callbacks - final_live_pit_text_ts < 15):
-                    pits_text_to_display = final_live_pit_text
-                    pit_display_state_for_style = "SHOW_COMPLETED_DURATION"
-
-                car_data = driver_state.get('CarData', {})
-                speed_val = car_data.get('Speed', '-')
-                gear = car_data.get('Gear', '-')
-                rpm = car_data.get('RPM', '-')
-                drs_val = car_data.get('DRS')
-                drs_map = {8: "E", 10: "On", 12: "On", 14: "ON"}
-                drs = drs_map.get(
-                    drs_val, 'Off') if drs_val is not None else 'Off'
-
-                # IsOverallBestLap_flag: True if this driver's PersonalBestLapTime is the session's overall best.
-                is_overall_best_lap_flag = driver_state.get('IsOverallBestLap', False) 
-                
-                # IsLastLapPersonalBest_flag: True if driver_state['LastLapTime']['PersonalFastest'] is true.
-                is_last_lap_personal_best_flag = utils.get_nested_state(driver_state, 'LastLapTime', 'PersonalFastest', default=False)
-                
-                # IsPersonalBestS1_flag etc.: True if driver_state['Sectors']['0']['PersonalFastest'] is true.
-                is_s1_personal_best_flag = utils.get_nested_state(driver_state, 'Sectors', '0', 'PersonalFastest', default=False)
-                is_s2_personal_best_flag = utils.get_nested_state(driver_state, 'Sectors', '1', 'PersonalFastest', default=False)
-                is_s3_personal_best_flag = utils.get_nested_state(driver_state, 'Sectors', '2', 'PersonalFastest', default=False)
-
-                # IsOverallBestS1_flag etc.: True if this driver's PersonalBestSectorTime for S1 is the session's overall best for S1.
-                # These flags (IsOverallBestSector) should already be correctly set in driver_state by _process_timing_data
-                is_overall_best_s1_flag = driver_state.get('IsOverallBestSector', [False]*3)[0]
-                is_overall_best_s2_flag = driver_state.get('IsOverallBestSector', [False]*3)[1]
-                is_overall_best_s3_flag = driver_state.get('IsOverallBestSector', [False]*3)[2]
-
-                # --- NEW: Flags for THIS SPECIFIC EVENT being an overall session best ---
-                # These should come directly from the 'OverallFastest' boolean in the LastLapTime/Sectors objects
-                is_last_lap_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'LastLapTime', 'OverallFastest', default=False)
-                is_s1_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'Sectors', '0', 'OverallFastest', default=False)
-                is_s2_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'Sectors', '1', 'OverallFastest', default=False)
-                is_s3_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'Sectors', '2', 'OverallFastest', default=False)
-
-                # === End of your existing row data population ===
-
-                current_driver_highlight_type = "NONE"
+                    if interval_display_text == "-": interval_gap_markdown = "-" #
+                    else: interval_gap_markdown = bold_interval_text #
+                last_lap_val = utils.get_nested_state(driver_state, 'LastLapTime', 'Value', default='-') #
+                if last_lap_val is None or last_lap_val == "": last_lap_val = "-" #
+                best_lap_val = utils.get_nested_state(driver_state, 'PersonalBestLapTime', 'Value', default='-') #
+                if best_lap_val is None or best_lap_val == "": best_lap_val = "-" #
+                s1_val = utils.get_nested_state(driver_state, 'Sectors', '0', 'Value', default='-') #
+                if s1_val is None or s1_val == "": s1_val = "-" #
+                s2_val = utils.get_nested_state(driver_state, 'Sectors', '1', 'Value', default='-') #
+                if s2_val is None or s2_val == "": s2_val = "-" #
+                s3_val = utils.get_nested_state(driver_state, 'Sectors', '2', 'Value', default='-') #
+                if s3_val is None or s3_val == "": s3_val = "-" #
+                is_in_pit_flag = driver_state.get('InPit', False) #
+                entry_wall_time = driver_state.get('current_pit_entry_system_time') #
+                speed_at_entry = driver_state.get('pit_entry_replay_speed', 1.0) #
+                if not isinstance(speed_at_entry, (float, int)) or speed_at_entry <= 0: speed_at_entry = 1.0 #
+                final_live_pit_text = driver_state.get('final_live_pit_time_text') #
+                final_live_pit_text_ts = driver_state.get('final_live_pit_time_display_timestamp') #
+                reliable_stops = driver_state.get('ReliablePitStops', 0) #
+                timing_data_stops = driver_state.get('NumberOfPitStops', 0) #
+                pits_text_to_display = '0' #
+                if reliable_stops > 0: pits_text_to_display = str(reliable_stops) #
+                elif timing_data_stops > 0: pits_text_to_display = str(timing_data_stops) #
+                pit_display_state_for_style = "SHOW_COUNT" #
+                if is_in_pit_flag: #
+                    pit_display_state_for_style = "IN_PIT_LIVE" #
+                    if entry_wall_time: #
+                        current_wall_time_elapsed = current_time_for_callbacks - entry_wall_time #
+                        live_game_time_elapsed = current_wall_time_elapsed * speed_at_entry #
+                        pits_text_to_display = f"In Pit: {live_game_time_elapsed:.1f}s" #
+                    else: pits_text_to_display = "In Pit" #
+                elif final_live_pit_text and final_live_pit_text_ts and (current_time_for_callbacks - final_live_pit_text_ts < 15): #
+                    pits_text_to_display = final_live_pit_text #
+                    pit_display_state_for_style = "SHOW_COMPLETED_DURATION" #
+                car_data = driver_state.get('CarData', {}) #
+                speed_val = car_data.get('Speed', '-') #
+                gear = car_data.get('Gear', '-') #
+                rpm = car_data.get('RPM', '-') #
+                drs_val = car_data.get('DRS') #
+                drs_map = {8: "E", 10: "On", 12: "On", 14: "ON"} #
+                drs = drs_map.get(drs_val, 'Off') if drs_val is not None else 'Off' #
+                is_overall_best_lap_flag = driver_state.get('IsOverallBestLap', False)  #
+                is_last_lap_personal_best_flag = utils.get_nested_state(driver_state, 'LastLapTime', 'PersonalFastest', default=False) #
+                is_s1_personal_best_flag = utils.get_nested_state(driver_state, 'Sectors', '0', 'PersonalFastest', default=False) #
+                is_s2_personal_best_flag = utils.get_nested_state(driver_state, 'Sectors', '1', 'PersonalFastest', default=False) #
+                is_s3_personal_best_flag = utils.get_nested_state(driver_state, 'Sectors', '2', 'PersonalFastest', default=False) #
+                is_overall_best_s1_flag = driver_state.get('IsOverallBestSector', [False]*3)[0] #
+                is_overall_best_s2_flag = driver_state.get('IsOverallBestSector', [False]*3)[1] #
+                is_overall_best_s3_flag = driver_state.get('IsOverallBestSector', [False]*3)[2] #
+                is_last_lap_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'LastLapTime', 'OverallFastest', default=False) #
+                is_s1_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'Sectors', '0', 'OverallFastest', default=False) #
+                is_s2_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'Sectors', '1', 'OverallFastest', default=False) #
+                is_s3_EVENT_overall_best_flag = utils.get_nested_state(driver_state, 'Sectors', '2', 'OverallFastest', default=False) #
+                current_driver_highlight_type = "NONE" #
                 driver_pos_int = -1
-                if pos_str != '-':
-                    try:
-                        driver_pos_int = int(pos_str)
-                    except ValueError:
-                        pass
-
-                # Apply highlighting with priority, status check removed for GREY_ELIMINATED
-                # Priority 1: Q1 eliminated drivers (P16-P20) if in Q2 or Q3
-                if current_q_segment_from_state in ["Q2", "SQ2", "Q3", "SQ3"] and \
-                   q1_eliminated_highlight_rule["type"] == "GREY_ELIMINATED" and \
+                if pos_str != '-': #
+                    try: driver_pos_int = int(pos_str) #
+                    except ValueError: pass
+                if q1_eliminated_highlight_rule["type"] == "GREY_ELIMINATED" and \
                    driver_pos_int != -1 and \
-                   q1_eliminated_highlight_rule["lower_pos"] <= driver_pos_int <= q1_eliminated_highlight_rule["upper_pos"]:
-                    current_driver_highlight_type = "GREY_ELIMINATED"
-
-                # Priority 2: Q2 eliminated drivers (P11-P15) if in Q3
+                   q1_eliminated_highlight_rule["lower_pos"] <= driver_pos_int <= q1_eliminated_highlight_rule["upper_pos"]: #
+                    current_driver_highlight_type = "GREY_ELIMINATED" #
                 if current_driver_highlight_type == "NONE" and \
-                   current_q_segment_from_state in ["Q3", "SQ3"] and \
                    q2_eliminated_highlight_rule["type"] == "GREY_ELIMINATED" and \
                    driver_pos_int != -1 and \
-                   q2_eliminated_highlight_rule["lower_pos"] <= driver_pos_int <= q2_eliminated_highlight_rule["upper_pos"]:
-                    current_driver_highlight_type = "GREY_ELIMINATED"
-
-                # Priority 3: Active segment's primary highlight (Q1 RED, Q2 RED)
-                if current_driver_highlight_type == "NONE":
-                    # Changed from current_segment_active_highlight
-                    if active_segment_highlight_rule["type"] != "NONE":
+                   q2_eliminated_highlight_rule["lower_pos"] <= driver_pos_int <= q2_eliminated_highlight_rule["upper_pos"]: #
+                    current_driver_highlight_type = "GREY_ELIMINATED" #
+                if current_driver_highlight_type == "NONE": #
+                    if active_segment_highlight_rule["type"] == "RED_DANGER": #
                         if driver_pos_int != -1 and \
-                           active_segment_highlight_rule["lower_pos"] <= driver_pos_int <= active_segment_highlight_rule["upper_pos"]:  # Changed
-                            # Changed
-                            current_driver_highlight_type = active_segment_highlight_rule["type"]
-                        # Changed
-                        elif pos_str == '-' and active_segment_highlight_rule["type"] == "RED_DANGER":
-                            current_driver_highlight_type = "RED_DANGER"
-
+                           active_segment_highlight_rule["lower_pos"] <= driver_pos_int <= active_segment_highlight_rule["upper_pos"]: #
+                            current_driver_highlight_type = "RED_DANGER" #
+                        elif pos_str == '-': #
+                            current_driver_highlight_type = "RED_DANGER" #
                 row = {
-                    'id': car_num, 'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre,
-                    'IntervalGap': interval_gap_markdown,
-                    'Last Lap': last_lap_val, 'Best Lap': best_lap_val,
-                    'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_text_to_display,
-                    'Status': driver_state.get('Status', 'N/A'),
-                    'Speed': speed_val, 'Gear': gear, 'RPM': rpm, 'DRS': drs,
-                    # Flags indicating if the DRIVER HOLDS the session record (for "Best Lap" column primarily)
-                    'IsOverallBestLap_Str': "TRUE" if is_overall_best_lap_flag else "FALSE",
-                    'IsOverallBestS1_Str': "TRUE" if is_overall_best_s1_flag else "FALSE",
-                    'IsOverallBestS2_Str': "TRUE" if is_overall_best_s2_flag else "FALSE",
-                    'IsOverallBestS3_Str': "TRUE" if is_overall_best_s3_flag else "FALSE",
-
-                    # Flags indicating if THIS SPECIFIC EVENT was a Personal Best for the driver
-                    'IsLastLapPersonalBest_Str': "TRUE" if is_last_lap_personal_best_flag else "FALSE",
-                    'IsPersonalBestS1_Str': "TRUE" if is_s1_personal_best_flag else "FALSE",
-                    'IsPersonalBestS2_Str': "TRUE" if is_s2_personal_best_flag else "FALSE",
-                    'IsPersonalBestS3_Str': "TRUE" if is_s3_personal_best_flag else "FALSE",
-                    
-                    # --- NEW: String versions of EVENT-SPECIFIC Overall Best flags ---
-                    'IsLastLapEventOverallBest_Str': "TRUE" if is_last_lap_EVENT_overall_best_flag else "FALSE",
-                    'IsS1EventOverallBest_Str': "TRUE" if is_s1_EVENT_overall_best_flag else "FALSE",
-                    'IsS2EventOverallBest_Str': "TRUE" if is_s2_EVENT_overall_best_flag else "FALSE",
-                    'IsS3EventOverallBest_Str': "TRUE" if is_s3_EVENT_overall_best_flag else "FALSE",
-                    'PitDisplayState_Str': pit_display_state_for_style,
-                    'QualiHighlight_Str': current_driver_highlight_type,
+                    'id': car_num, 'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre, #
+                    'IntervalGap': interval_gap_markdown, 'Last Lap': last_lap_val, 'Best Lap': best_lap_val, #
+                    'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_text_to_display, #
+                    'Status': driver_state.get('Status', 'N/A'), 'Speed': speed_val, 'Gear': gear, 'RPM': rpm, 'DRS': drs, #
+                    'IsOverallBestLap_Str': "TRUE" if is_overall_best_lap_flag else "FALSE", #
+                    'IsOverallBestS1_Str': "TRUE" if is_overall_best_s1_flag else "FALSE", #
+                    'IsOverallBestS2_Str': "TRUE" if is_overall_best_s2_flag else "FALSE", #
+                    'IsOverallBestS3_Str': "TRUE" if is_overall_best_s3_flag else "FALSE", #
+                    'IsLastLapPersonalBest_Str': "TRUE" if is_last_lap_personal_best_flag else "FALSE", #
+                    'IsPersonalBestS1_Str': "TRUE" if is_s1_personal_best_flag else "FALSE", #
+                    'IsPersonalBestS2_Str': "TRUE" if is_s2_personal_best_flag else "FALSE", #
+                    'IsPersonalBestS3_Str': "TRUE" if is_s3_personal_best_flag else "FALSE", #
+                    'IsLastLapEventOverallBest_Str': "TRUE" if is_last_lap_EVENT_overall_best_flag else "FALSE", #
+                    'IsS1EventOverallBest_Str': "TRUE" if is_s1_EVENT_overall_best_flag else "FALSE", #
+                    'IsS2EventOverallBest_Str': "TRUE" if is_s2_EVENT_overall_best_flag else "FALSE", #
+                    'IsS3EventOverallBest_Str': "TRUE" if is_s3_EVENT_overall_best_flag else "FALSE", #
+                    'PitDisplayState_Str': pit_display_state_for_style, #
+                    'QualiHighlight_Str': current_driver_highlight_type, #
                 }
-                processed_table_data.append(row)
+                processed_table_data.append(row) #
 
-            processed_table_data.sort(key=utils.pos_sort_key)
-            table_data = processed_table_data
+            processed_table_data.sort(key=utils.pos_sort_key) #
+            table_data = processed_table_data #
         else:
-            timestamp_text = "Waiting for DriverList..."
+            timestamp_text = config.TEXT_WAITING_FOR_DATA # Using a config constant as in other places
 
         return other_elements, table_data, timestamp_text
 
     except Exception as e_update:
         logger.error(
-            f"Error in update_main_data_displays callback: {e_update}", exc_info=True)
-        return no_update, no_update, no_update
+            f"Error in update_main_data_displays callback: {e_update}", exc_info=True) #
+        return no_update, no_update, no_update #
 
-@app.callback(
-    Output('race-control-log-display', 'value'),
-    Input('interval-component-slow', 'n_intervals')
-)
-def update_race_control_log(n):
-    try:
-        with app_state.app_state_lock: log_snapshot = list(app_state.race_control_log)
-        display_text = "\n".join(log_snapshot)
-        # Use constant
-        return display_text if display_text else config.TEXT_RC_WAITING
-    except Exception as e:
-        logger.error(f"Error updating RC log: {e}", exc_info=True)
-        return config.TEXT_RC_ERROR # Use constant
+
 
 
 @app.callback(
@@ -991,19 +981,107 @@ def update_race_control_log(n):
     Input('replay-speed-slider', 'value'),
     prevent_initial_call=True
 )
-def update_replay_speed_state(new_speed):
-    if new_speed is None:
+def update_replay_speed_state(new_speed_value): # Removed session_info_children_trigger, get from app_state
+    if new_speed_value is None:
         return no_update
 
-    logger.info(f"Replay speed slider changed to: {new_speed}")
     try:
-        speed_float = float(new_speed)
-        with app_state.app_state_lock:
-            app_state.replay_speed = speed_float
-        return no_update
+        new_speed = float(new_speed_value)
+        if not (0.1 <= new_speed <= 100.0): # Example validation for speed range
+            logger.warning(f"Invalid replay speed requested: {new_speed}. Clamping or ignoring.")
+            # Clamp or return no_update, e.g., new_speed = max(0.1, min(new_speed, 100.0))
+            # For now, let's assume valid input based on slider range or simply ignore if too extreme.
+            if new_speed <= 0: return no_update # Definitely ignore non-positive
     except (ValueError, TypeError):
-        logger.warning(f"Could not convert slider value '{new_speed}' to float.")
+        logger.warning(f"Could not convert replay speed slider value '{new_speed_value}' to float.")
         return no_update
+
+
+    with app_state.app_state_lock:
+        old_speed = app_state.replay_speed # Speed active *before* this change
+        
+        # If speed hasn't actually changed, do nothing to avoid potential float precision issues
+        if abs(old_speed - new_speed) < 0.01: # Tolerance for float comparison
+            # Still update app_state.replay_speed to the precise new_speed_value if slider was just wiggled
+            app_state.replay_speed = new_speed 
+            return no_update
+
+        session_type = app_state.session_details.get('Type', "Unknown").lower() #
+        q_state = app_state.qualifying_segment_state # Primary timing state dictionary
+
+        current_official_remaining_s_at_anchor = q_state.get("official_segment_remaining_seconds") #
+        last_capture_utc_anchor = q_state.get("last_official_time_capture_utc") #
+        
+        now_utc = datetime.now(timezone.utc) #
+        calculated_current_true_remaining_s = None
+
+        # --- This block calculates the true current remaining time based on OLD speed ---
+        if session_type.startswith("practice"):
+            # For practice, use its continuous model to find current true remaining time
+            practice_start_utc = app_state.practice_session_actual_start_utc #
+            practice_duration_s = app_state.practice_session_scheduled_duration_seconds #
+            if practice_start_utc and practice_duration_s is not None:
+                wall_time_elapsed_practice = (now_utc - practice_start_utc).total_seconds() #
+                session_time_elapsed_practice = wall_time_elapsed_practice * old_speed
+                calculated_current_true_remaining_s = practice_duration_s - session_time_elapsed_practice
+        
+        # For Qualifying (or if Practice didn't have its continuous model vars set yet)
+        # Use the q_state anchor point.
+        if calculated_current_true_remaining_s is None and \
+           last_capture_utc_anchor and current_official_remaining_s_at_anchor is not None:
+            wall_time_since_last_anchor = (now_utc - last_capture_utc_anchor).total_seconds() #
+            session_time_elapsed_since_anchor = wall_time_since_last_anchor * old_speed
+            calculated_current_true_remaining_s = current_official_remaining_s_at_anchor - session_time_elapsed_since_anchor
+
+        # --- Now, re-anchor using this calculated_current_true_remaining_s ---
+        if calculated_current_true_remaining_s is not None:
+            new_anchor_remaining_s = max(0, calculated_current_true_remaining_s)
+
+            # Update the main anchor point (q_state)
+            q_state["official_segment_remaining_seconds"] = new_anchor_remaining_s #
+            q_state["last_official_time_capture_utc"] = now_utc #
+            # last_capture_replay_speed will be effectively the new_speed for next extrapolation
+            # session_status_at_capture might need an update if relevant, but for re-speed, it's less critical
+            q_state["last_capture_replay_speed"] = new_speed # Reflect that this anchor is for the new speed
+            
+            logger.info(
+                f"Replay speed changing from {old_speed:.2f}x to {new_speed:.2f}x. "
+                f"Original anchor: {current_official_remaining_s_at_anchor:.2f}s at {last_capture_utc_anchor}. "
+                f"Calculated true current remaining: {calculated_current_true_remaining_s:.2f}s. "
+                f"New anchor set: {new_anchor_remaining_s:.2f}s at {now_utc}."
+            )
+
+            # If it was a Practice session using its continuous model, adjust its effective start time
+            # so its formula yields the new_anchor_remaining_s with the new_speed.
+            if session_type.startswith("practice") and \
+               app_state.practice_session_actual_start_utc and \
+               app_state.practice_session_scheduled_duration_seconds is not None:
+                
+                duration_s = app_state.practice_session_scheduled_duration_seconds #
+                if new_speed > 0: # Avoid division by zero
+                    # We want: new_anchor_remaining_s = duration_s - (now_utc - new_practice_start_utc) * new_speed
+                    # (now_utc - new_practice_start_utc) * new_speed = duration_s - new_anchor_remaining_s
+                    # (now_utc - new_practice_start_utc) = (duration_s - new_anchor_remaining_s) / new_speed
+                    # new_practice_start_utc = now_utc - timedelta(seconds = (duration_s - new_anchor_remaining_s) / new_speed)
+                    
+                    wall_time_offset_for_new_start = (duration_s - new_anchor_remaining_s) / new_speed
+                    app_state.practice_session_actual_start_utc = now_utc - timedelta(seconds=wall_time_offset_for_new_start) #
+                    logger.info(
+                        f"Adjusted practice_session_actual_start_utc to {app_state.practice_session_actual_start_utc} " #
+                        f"to maintain {new_anchor_remaining_s:.2f}s remaining at {new_speed:.2f}x."
+                    )
+        else:
+            logger.warning(
+                f"Could not re-anchor timer on speed change: insufficient data. "
+                f"Old speed: {old_speed}, New speed: {new_speed}. "
+                f"Current official remaining: {current_official_remaining_s_at_anchor}, Last capture: {last_capture_utc_anchor}"
+            )
+
+        # Finally, update the global replay speed
+        app_state.replay_speed = new_speed #
+        logger.debug(f"Replay speed updated in app_state to: {app_state.replay_speed}") #
+
+    return no_update
 
 @app.callback(
     [Output('dummy-output-for-controls', 'children', allow_duplicate=True),

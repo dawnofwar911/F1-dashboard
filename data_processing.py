@@ -83,141 +83,124 @@ def _process_team_radio(data):
         logger.info(f"Added {new_messages_processed} new team radio messages.")
 
 
-def _process_extrapolated_clock(data_payload, received_timestamp_str):
-    if not isinstance(data_payload, dict):
-        logger.warning(f"Unexpected ExtrapolatedClock data format: {type(data_payload)}")
+def _process_extrapolated_clock(data_payload, received_timestamp_str): #
+    if not isinstance(data_payload, dict): #
+        logger.warning(f"Unexpected ExtrapolatedClock data format: {type(data_payload)}") #
         return
 
-    app_state.extrapolated_clock_info["Utc"] = data_payload.get("Utc")
-    app_state.extrapolated_clock_info["Extrapolating"] = data_payload.get("Extrapolating", False)
-    app_state.extrapolated_clock_info["Timestamp"] = received_timestamp_str
+    app_state.extrapolated_clock_info["Utc"] = data_payload.get("Utc") #
+    app_state.extrapolated_clock_info["Extrapolating"] = data_payload.get("Extrapolating", False) #
+    app_state.extrapolated_clock_info["Timestamp"] = received_timestamp_str #
     
-    remaining_str = data_payload.get("Remaining")
+    remaining_str = data_payload.get("Remaining") #
     if remaining_str: 
-        app_state.extrapolated_clock_info["Remaining"] = remaining_str
+        app_state.extrapolated_clock_info["Remaining"] = remaining_str #
         
-        session_type = app_state.session_details.get("Type", "").lower()
-        current_session_feed_status = app_state.session_details.get('SessionStatus', 'Unknown') # Get current status
+        session_type = app_state.session_details.get("Type", "").lower() #
+        current_app_mode = app_state.app_status.get("state") #
+        current_session_feed_status = app_state.session_details.get('SessionStatus', 'Unknown') #
+        msg_dt = utils.parse_iso_timestamp_safe(received_timestamp_str)
 
-        # For Qualifying/Sprint Shootout - relies on feed's clock being correct for pauses
-        if session_type in ["qualifying", "sprint shootout"]:
-            current_segment_in_state_after_helper = app_state.qualifying_segment_state.get("current_segment") #
+        # --- For Replay Mode: Capture initial feed timestamp and duration for the current segment ---
+        if current_app_mode == "Replaying" and app_state.session_start_feed_timestamp_utc_dt is None and msg_dt: #
+            # This should be the first EC for a new segment/session in replay
+            parsed_remaining_seconds = utils.parse_session_time_to_seconds(remaining_str) #
+            current_q_segment = app_state.qualifying_segment_state.get("current_segment") #
 
-            if app_state.qualifying_segment_state.get("just_resumed_flag", False): #
-                # We just resumed this segment. last_official_time_capture_utc was set by _process_session_data.
-                # official_segment_remaining_seconds already holds the pre-pause value.
-                # Do NOT update official_segment_remaining_seconds from this ExtrapolatedClock message,
-                # as it might be stale or the old pre-pause time.
-                # Subsequent ExtrapolatedClock messages (when flag is false) will be processed normally.
-                logger.debug(f"Q Segment '{current_segment_in_state_after_helper}' just resumed. NOT updating 'Remaining' from this ExtrapolatedClock. last_official_time_capture_utc is current.")
-                app_state.qualifying_segment_state["just_resumed_flag"] = False # Clear the flag after checking it once.
-                # It's important that last_official_time_capture_utc IS updated to now, so extrapolation works.
-                # This should already be done by _process_session_data when setting the just_resumed_flag.
-                # However, to be safe, if an EC message comes *right at resume*, update its timestamp component too.
-                app_state.qualifying_segment_state["last_official_time_capture_utc"] = datetime.now(timezone.utc) #
+            # Check if it's a valid start of a timed segment (Practice or an active Q segment)
+            is_valid_timed_segment_for_replay_start = session_type.startswith("practice") or \
+                (current_q_segment and current_q_segment not in ["Unknown", "Between Segments", "Ended"]) #
+
+            if parsed_remaining_seconds is not None and parsed_remaining_seconds > 120 and is_valid_timed_segment_for_replay_start: # Heuristic: > 2 mins
+                app_state.session_start_feed_timestamp_utc_dt = msg_dt #
+                app_state.current_segment_scheduled_duration_seconds = parsed_remaining_seconds #
+                logger.info(
+                    f"Replay: Set session_start_feed_ts='{msg_dt}', "
+                    f"current_segment_duration='{parsed_remaining_seconds}'s "
+                    f"for segment/session: '{current_q_segment or session_type}'"
+                )
+                # If it's practice, also update the overall practice duration if this is the first reliable full duration
+                if session_type.startswith("practice"): #
+                    if not app_state.practice_session_scheduled_duration_seconds or \
+                       abs(app_state.practice_session_scheduled_duration_seconds - parsed_remaining_seconds) > 10: #
+                        app_state.practice_session_scheduled_duration_seconds = parsed_remaining_seconds #
+                        logger.info(f"Replay: Updated practice_session_scheduled_duration_seconds to {parsed_remaining_seconds}s") #
+
+        # --- Update q_state (for LIVE timer and Q REPLAY pause/resume anchoring) ---
+        # This logic primarily serves the LIVE timer's extrapolation and stores Q REPLAY pause times.
+        # Replay Practice timer uses the feed-paced values directly in the callback.
+        q_current_segment = app_state.qualifying_segment_state.get("current_segment") #
+
+        if app_state.qualifying_segment_state.get("just_resumed_flag", False) and \
+           session_type in ["qualifying", "sprint shootout"]: # Check if Q segment just resumed from pause #
+            # official_segment_remaining_seconds holds the time when it was paused.
+            # last_official_time_capture_utc was set to wall-time 'now' by _process_session_data for Live.
+            # For Replay, _process_session_data set session_start_feed_timestamp_utc_dt and current_segment_scheduled_duration_seconds.
+            # We should update last_official_time_capture_utc to this message's timestamp (msg_dt) to sync q_state.
+            if msg_dt: app_state.qualifying_segment_state["last_official_time_capture_utc"] = msg_dt #
+            app_state.qualifying_segment_state["last_capture_replay_speed"] = app_state.replay_speed #
+            app_state.qualifying_segment_state["session_status_at_capture"] = current_session_feed_status #
+            app_state.qualifying_segment_state["just_resumed_flag"] = False # Clear flag #
+            logger.debug(f"Q Segment '{q_current_segment}' just_resumed_flag cleared by EC. Capture time updated to {msg_dt}.") #
+
+        elif q_current_segment and \
+             q_current_segment not in ["Between Segments", "Ended", "Unknown", None] and \
+             current_session_feed_status not in ["Suspended", "Aborted", "Finished", "Ends", "NotStarted", "Inactive"]: #
+            # Actively running segment (Practice or Q)
+            parsed_remaining_seconds = utils.parse_session_time_to_seconds(remaining_str) #
+            if parsed_remaining_seconds is not None:
+                app_state.qualifying_segment_state["official_segment_remaining_seconds"] = parsed_remaining_seconds #
+                if msg_dt: app_state.qualifying_segment_state["last_official_time_capture_utc"] = msg_dt # Use this EC message's timestamp #
                 app_state.qualifying_segment_state["last_capture_replay_speed"] = app_state.replay_speed #
                 app_state.qualifying_segment_state["session_status_at_capture"] = current_session_feed_status #
+        
+        elif q_current_segment and \
+             (q_current_segment in ["Between Segments", "Ended"] or \
+              current_session_feed_status in ["Finished", "Ends"]): #
+            app_state.qualifying_segment_state["official_segment_remaining_seconds"] = 0 #
+        # If paused (Suspended, Aborted, Inactive), q_state.official_segment_remaining_seconds should hold the value from *before* the pause.
+        # So, no update to it here from ExtrapolatedClock in those paused states.
 
-            elif current_segment_in_state_after_helper and \
-               current_segment_in_state_after_helper not in ["Between Segments", "Ended", "Unknown", None] and \
-               current_session_feed_status not in ["Suspended", "Aborted", "Finished", "Ends", "NotStarted", "Inactive"]: # Added "Inactive" here too
-                # This is for a normally running segment, or the *first* clock of a brand new segment.
-                remaining_seconds = utils.parse_session_time_to_seconds(remaining_str) #
-                app_state.qualifying_segment_state["official_segment_remaining_seconds"] = remaining_seconds #
-                app_state.qualifying_segment_state["last_official_time_capture_utc"] = datetime.now(timezone.utc) #
-                app_state.qualifying_segment_state["last_capture_replay_speed"] = app_state.replay_speed #
-                app_state.qualifying_segment_state["session_status_at_capture"] = current_session_feed_status #
-                logger.debug(f"ExtrapolatedClock sync (Q): Seg='{current_segment_in_state_after_helper}', OfficialRem={remaining_seconds}s, Status='{current_session_feed_status}'") #
-            elif current_segment_in_state_after_helper in ["Between Segments", "Ended"] or \
-                 current_session_feed_status in ["Finished", "Ends", "Suspended", "Aborted", "Inactive"]: #
-                 # If paused, or segment ended, or session ended, official remaining should be 0,
-                 # or if it's Suspended/Aborted/Inactive, it should reflect the time *at the point of suspension*.
-                 # The callback handles display of this frozen time.
-                 # _process_session_data handles setting to 0 for Between/Ended.
-                 # For Suspended/Aborted/Inactive, we DON'T update official_segment_remaining_seconds here from EC,
-                 # as it should hold the value from before suspension.
-                 if current_segment_in_state_after_helper in ["Between Segments", "Ended"] or \
-                    current_session_feed_status in ["Finished", "Ends"]:
-                    app_state.qualifying_segment_state["official_segment_remaining_seconds"] = 0 #
-
-
-        # For Practice Sessions - record feed's view, but callback will use continuous calculation
-        elif session_type.startswith("practice"):
-            # We still record the feed's official remaining time.
-            # The callback will decide whether to use this or its continuous calculation.
-            if current_session_feed_status not in ["Finished", "Ends", "Aborted", "NotStarted"]:
-                remaining_seconds = utils.parse_session_time_to_seconds(remaining_str)
-                app_state.qualifying_segment_state["official_segment_remaining_seconds"] = remaining_seconds
-                app_state.qualifying_segment_state["last_official_time_capture_utc"] = datetime.now(timezone.utc)
-                app_state.qualifying_segment_state["last_capture_replay_speed"] = app_state.replay_speed
-                # Ensure current_segment is set to "Practice" if not already
-                if app_state.qualifying_segment_state.get("current_segment") != "Practice":
-                    app_state.qualifying_segment_state["current_segment"] = "Practice"
-                app_state.qualifying_segment_state["session_status_at_capture"] = current_session_feed_status
-                logger.debug(f"ExtrapolatedClock sync for 'Practice' (feed's view): Official Remaining {remaining_seconds}s")
-            else:
-                app_state.qualifying_segment_state["official_segment_remaining_seconds"] = 0
-                if app_state.qualifying_segment_state.get("current_segment") != "Practice Ended":
-                     app_state.qualifying_segment_state["current_segment"] = "Practice Ended"
     
-def _update_current_qualifying_segment_based_on_status(session_status_from_feed): # Renamed param for clarity
-    session_type = app_state.session_details.get("Type", "").lower()
-    # Crucially, get the current segment state *before* potentially changing it
-    # This was missing in some earlier thoughts, leading to complex self-referential updates.
-    # The primary update of current_segment should happen in _process_session_data.
-    # This helper is more about reacting to ExtrapolatedClock resets if a segment is unknown or just started.
+def _update_current_qualifying_segment_based_on_status(session_status_from_feed): #
+    session_type = app_state.session_details.get("Type", "").lower() #
+    q_state = app_state.qualifying_segment_state # Direct reference #
+    current_segment_in_q_state = q_state.get("current_segment") #
+    old_segment_in_q_state = q_state.get("old_segment") #
 
-    current_segment_in_state = app_state.qualifying_segment_state.get("current_segment")
+    segments_order = config.QUALIFYING_ORDER.get(session_type, []) #
+    if not segments_order: # Not a session type with a defined Q order (e.g., Practice)
+        if session_type.startswith("practice"):
+            if current_segment_in_q_state != "Practice": # If it's practice, ensure segment is "Practice"
+                # q_state["old_segment"] will be set by the main _process_session_data logic
+                q_state["current_segment"] = "Practice"
+                # logger.debug(f"_update_q_segment_helper: Set segment to 'Practice' for session type '{session_type}'.")
+        return # Exit if not a session type handled by this helper (Q or SQ)
 
-    if session_type == "qualifying":
-        segments_order = ["Q1", "Q2", "Q3"]
-        default_durations_s = {"Q1": 18*60, "Q2": 15*60, "Q3": 12*60}
-    elif session_type == "sprint shootout":
-        segments_order = ["SQ1", "SQ2", "SQ3"]
-        default_durations_s = {"SQ1": 12*60, "SQ2": 10*60, "SQ3": 8*60}
-    else:
-        # If not a quali type, ensure segment is None and return.
-        # This check might be redundant if calling context already knows the session type.
-        if app_state.qualifying_segment_state["current_segment"] is not None:
-            app_state.qualifying_segment_state["current_segment"] = None
-        return
+    if session_status_from_feed == "Started": #
+        newly_determined_segment = None
+        # If current state is unclear, or we just finished a segment (so current is "Between Segments" or "Ended"),
+        # or transitioning from Practice to Q.
+        if not current_segment_in_q_state or \
+           current_segment_in_q_state in ["Unknown", "Ended", "Practice", None, "Between Segments"]:
+            
+            if current_segment_in_q_state == "Between Segments": # Coming from a completed Q segment
+                if old_segment_in_q_state and old_segment_in_q_state in segments_order:
+                    try:
+                        current_idx = segments_order.index(old_segment_in_q_state)
+                        if current_idx < len(segments_order) - 1:
+                            newly_determined_segment = segments_order[current_idx + 1]
+                    except ValueError: 
+                        logger.warning(f"_update_q_segment_helper: Old segment '{old_segment_in_q_state}' not in defined order {segments_order}.")
+                        if segments_order : newly_determined_segment = segments_order[0] # Fallback to first if error
+            elif segments_order: # Default to first segment if no clear predecessor (e.g. initial start from None)
+                 newly_determined_segment = segments_order[0]
 
-    # This function's main job now is to react if ExtrapolatedClock resets to a known segment duration,
-    # especially if the current segment is unknown or we just transitioned.
-    # The main segment transition logic (Q1 -> Between -> Q2) is better handled in _process_session_data.
-
-    remaining_from_ec_str = app_state.extrapolated_clock_info.get("Remaining")
-
-    # Only try to infer segment from EC if session status indicates it's running/starting
-    # and we have a remaining time string from EC.
-    if session_status_from_feed == "Started" and remaining_from_ec_str:
-        remaining_s = utils.parse_session_time_to_seconds(
-            remaining_from_ec_str)
-        
-        for seg_name, dur_s in default_durations_s.items():
-            # If EC remaining time is very close to a segment's full duration
-            if abs(remaining_s - dur_s) < 5: # Tolerance of 5 seconds
-                # If this detected segment is different from what's in state,
-                # or if the state indicates we are between segments, update it.
-                if current_segment_in_state != seg_name or \
-                   current_segment_in_state in ["Between Segments", "Ended", None, "Unknown"]:
-                    logger.debug(f"Segment '{seg_name}' confirmed/set by ExtrapolatedClock reset (Remaining: {remaining_s}s, Expected: {dur_s}s)")
-                    app_state.qualifying_segment_state["current_segment"] = seg_name
-                    # This is an official signal for the start of this segment's timing
-                    app_state.qualifying_segment_state["official_segment_remaining_seconds"] = remaining_s # Use actual EC remaining_s
-                    app_state.qualifying_segment_state["last_official_time_capture_utc"] = datetime.now(timezone.utc)
-                    app_state.qualifying_segment_state["last_capture_replay_speed"] = app_state.replay_speed
-                    app_state.qualifying_segment_state["session_status_at_capture"] = session_status_from_feed
-                return # Found a matching segment start, no need to check further or assume first segment.
-
-        # If no exact match to a full duration, but we're in "Started" and segment is not clearly defined,
-        # and we haven't returned yet, it might be the very first segment starting up.
-        if current_segment_in_state in [None, "Unknown", "Ended"] and segments_order:
-             # This is a weaker assumption, _process_session_data should ideally set the first segment.
-             # logger.debug(f"Assuming first segment '{segments_order[0]}' as EC did not match a full duration reset.")
-             # app_state.qualifying_segment_state["current_segment"] = segments_order[0]
-             # Avoid setting it here if ExtrapolatedClock didn't confirm it. Let _process_session_data handle initial set.
-             pass
+        if newly_determined_segment and newly_determined_segment != current_segment_in_q_state:
+            # The main _process_session_data will handle setting old_segment correctly.
+            # This helper just determines the new current_segment name.
+            q_state["current_segment"] = newly_determined_segment #
+            logger.debug(f"_update_q_segment_helper: Tentatively set current_segment to '{newly_determined_segment}'.")
 
 
 def _process_race_control(data):
@@ -790,172 +773,216 @@ def _process_car_data(data):
                  lap_telemetry_history[data_key].append(value)
 
 
-def _process_session_data(data):
-    """ Processes SessionData updates (like status)."""
-    if not isinstance(data, dict):
-        logger.warning(f"SessionData handler received non-dict data: {data}")
+def _process_session_data(data): #
+    """ Processes SessionData updates (like status) and manages session/segment transitions. """
+    if not isinstance(data, dict): #
+        logger.warning(f"SessionData handler received non-dict data: {data}") #
         return
     try:
-        status_series = data.get('StatusSeries')
-        if isinstance(status_series, dict):
-             for entry_key, status_info in status_series.items():
-                 if isinstance(status_info, dict):
-                      session_status = status_info.get('SessionStatus')
-                      if session_status:
-                           app_state.session_details['SessionStatus'] = session_status
-                           logger.info(f"Session Status Updated: {session_status}")
-                           
-                           session_type = app_state.session_details.get("Type", "").lower() #
+        status_series = data.get('StatusSeries') #
+        if isinstance(status_series, dict): #
+            for entry_key, status_info in status_series.items():  #
+                if isinstance(status_info, dict): #
+                    session_status_from_feed = status_info.get('SessionStatus') # The new status from this message
+                    if not session_status_from_feed:
+                        continue
 
-                           previous_feed_status_for_logic = app_state.session_details.get('PreviousSessionStatus', None)
-                           app_state.session_details['PreviousSessionStatus'] = session_status # Update for next cycle
+                    # --- Get current states BEFORE any modifications for this specific status event ---
+                    session_type = app_state.session_details.get("Type", "").lower() #
+                    current_app_mode = app_state.app_status.get("state") #
                     
-                           if session_type.startswith("practice"): #
-                                if session_status == "Started" and app_state.practice_session_actual_start_utc is None: #
-                                    app_state.practice_session_actual_start_utc = datetime.now(timezone.utc) #
-                    
-                                    scheduled_duration = app_state.session_details.get('ScheduledDurationSeconds') #
-                                    if scheduled_duration and scheduled_duration > 0:
-                                        app_state.practice_session_scheduled_duration_seconds = scheduled_duration #
-                                    else:
-                                        logger.warning(f"Practice session '{app_state.session_details.get('Name', 'Unknown Session')}' started, but no valid scheduled duration from SessionInfo. Defaulting to 3600s (60 minutes).") #
-                                        app_state.practice_session_scheduled_duration_seconds = 3600 # Fallback #
-                    
-                                    old_segment_practice = app_state.qualifying_segment_state.get("current_segment") #
-                                    app_state.qualifying_segment_state["current_segment"] = "Practice" #
-                                    app_state.qualifying_segment_state["old_segment"] = old_segment_practice #
-                                    app_state.qualifying_segment_state["last_official_time_capture_utc"] = app_state.practice_session_actual_start_utc #
-                                    app_state.qualifying_segment_state["official_segment_remaining_seconds"] = app_state.practice_session_scheduled_duration_seconds #
-                                    app_state.qualifying_segment_state["just_resumed_flag"] = False # Ensure cleared for practice too
-                                    logger.info(f"Practice session started. Actual Start UTC: {app_state.practice_session_actual_start_utc}, Scheduled Duration: {app_state.practice_session_scheduled_duration_seconds}s") #
-                                elif session_status in ["Finished", "Ends"]: #
-                                    app_state.qualifying_segment_state["official_segment_remaining_seconds"] = 0 #
-                                    app_state.qualifying_segment_state["current_segment"] = "Practice Ended" #
-                                    app_state.qualifying_segment_state["just_resumed_flag"] = False
-                    
-                            # Handle Qualifying/Sprint Shootout Segments
-                           elif session_type in ["qualifying", "sprint shootout"]: #
-                                current_q_segment_in_state = app_state.qualifying_segment_state.get("current_segment") #
-                                segments = ["Q1", "Q2", "Q3"] if session_type == "qualifying" else ["SQ1", "SQ2", "SQ3"] #
-                                new_segment_candidate = current_q_segment_in_state
-                                resuming_after_pause = False
-                    
-                                if session_status == "Started": #
-                                    if not current_q_segment_in_state or current_q_segment_in_state in ["Ended", "Between Segments", "Unknown", None]: #
-                                        # This implies starting a new segment (e.g., Q1 first time, or Q2 after Q1 finished)
-                                        # _update_current_qualifying_segment_based_on_status will try to identify it.
-                                        # ExtrapolatedClock should then provide the full time for this new segment.
-                                        _update_current_qualifying_segment_based_on_status(session_status) #
-                                        new_segment_candidate = app_state.qualifying_segment_state.get("current_segment") #
-                                    elif previous_feed_status_for_logic in ["Aborted", "Inactive", "Suspended"] and \
-                                         current_q_segment_in_state in segments:
-                                        # This is the key condition for resuming the *same* Q segment after a pause
-                                        new_segment_candidate = current_q_segment_in_state # Segment itself doesn't change
-                                        resuming_after_pause = True
-                    
-                                elif session_status in ["Finished", "Ends"]: #
-                                    if current_q_segment_in_state and current_q_segment_in_state in segments: #
-                                        current_idx = segments.index(current_q_segment_in_state) #
-                                        new_segment_candidate = "Between Segments" if current_idx < len(segments) - 1 else "Ended" #
-                    
-                                elif session_status in ["Aborted", "Inactive", "Suspended"]: # Based on your log: Aborted -> Inactive for red flag
-                                    if current_q_segment_in_state and current_q_segment_in_state in segments: #
-                                        # When Aborted/Inactive/Suspended, the segment effectively pauses.
-                                        # We don't change app_state.qualifying_segment_state["current_segment"] here.
-                                        # The timer will pause in the callback due to current_session_feed_status.
-                                        # new_segment_candidate remains current_q_segment_in_state
-                                        # No state change needed for "current_segment" itself here, but log the status.
-                                        logger.info(f"Qualifying Segment '{current_q_segment_in_state}' Status: {session_status}. Timer will pause.")
-                                        app_state.qualifying_segment_state["just_resumed_flag"] = False # Ensure flag is false during pause
-                    
-                                # Update state if a meaningful segment transition occurred or resuming
-                                # A change from current_q_segment_in_state OR a resume event
-                                if new_segment_candidate != current_q_segment_in_state or resuming_after_pause:
-                                    logger.info(f"Qualifying Segment Logic: Status='{session_status}', PrevFeedStatus='{previous_feed_status_for_logic}', OldSegState='{current_q_segment_in_state}', NewCandidate='{new_segment_candidate}', Resuming='{resuming_after_pause}'")
-                                    app_state.qualifying_segment_state["old_segment"] = current_q_segment_in_state # Capture current before changing #
-                                    app_state.qualifying_segment_state["current_segment"] = new_segment_candidate #
-                    
-                                    if new_segment_candidate in ["Between Segments", "Ended"]: #
-                                        app_state.qualifying_segment_state["official_segment_remaining_seconds"] = 0 #
-                                        app_state.qualifying_segment_state["last_official_time_capture_utc"] = None #
-                                        app_state.qualifying_segment_state["just_resumed_flag"] = False #
-                                    elif resuming_after_pause:
-                                        app_state.qualifying_segment_state["last_official_time_capture_utc"] = datetime.now(timezone.utc) #
-                                        app_state.qualifying_segment_state["just_resumed_flag"] = True # Flag to guide ExtrapolatedClock processing #
-                                        logger.info(f"Resuming Q Segment '{new_segment_candidate}'. New capture UTC set. Remaining: {app_state.qualifying_segment_state.get('official_segment_remaining_seconds')}s") #
-                                    # If it's a brand new segment (e.g. Q1->Q2 or initial Q1), ExtrapolatedClock is expected to set the time.
-                                    # If current_segment changed and it's not a resume, clear the just_resumed_flag.
-                                    elif new_segment_candidate != current_q_segment_in_state and not resuming_after_pause:
-                                         app_state.qualifying_segment_state["just_resumed_flag"] = False #
+                    q_state = app_state.qualifying_segment_state # Direct reference for modification #
+                    # This is the segment name in app_state *before* we process THIS specific session_status_from_feed event
+                    segment_in_q_state_before_this_event = q_state.get("current_segment") #
+                    previous_recorded_feed_status = app_state.session_details.get('PreviousSessionStatus', None) # The status from the *previous event* #
 
-                           else: # Other session types
-                               app_state.qualifying_segment_state["current_segment"] = None # Clear segment info
-                               app_state.practice_session_actual_start_utc = None # Clear practice specific info
-                               app_state.practice_session_scheduled_duration_seconds = None
+                    # Update global feed status display value
+                    if app_state.session_details.get('SessionStatus') != session_status_from_feed: #
+                        logger.info(f"Session Status Updated: {session_status_from_feed} (from {app_state.session_details.get('SessionStatus')})") #
+                    app_state.session_details['SessionStatus'] = session_status_from_feed # This is the new current status from the feed #
 
+                    # --- Practice Session Logic ---
+                    if session_type.startswith("practice"): #
+                        if session_status_from_feed == "Started": #
+                            if q_state.get("current_segment") != "Practice": # If transitioning into Practice or first start #
+                                q_state["old_segment"] = segment_in_q_state_before_this_event #
+                                q_state["current_segment"] = "Practice" #
+                                logger.info(f"Segment changed to Practice. Old: {q_state['old_segment']}") #
 
-    except Exception as e:
-        logger.error(f"Error processing SessionData: {e}", exc_info=True)
+                            if app_state.practice_session_actual_start_utc is None: # First start for LIVE timer #
+                                app_state.practice_session_actual_start_utc = datetime.now(timezone.utc) #
+                                scheduled_duration = app_state.session_details.get('ScheduledDurationSeconds') #
+                                if scheduled_duration and scheduled_duration > 0:
+                                    app_state.practice_session_scheduled_duration_seconds = scheduled_duration #
+                                elif not app_state.practice_session_scheduled_duration_seconds: #
+                                    app_state.practice_session_scheduled_duration_seconds = 3600 # Fallback #
+                            
+                            if current_app_mode == "Replaying":
+                                app_state.session_start_feed_timestamp_utc_dt = None # Reset for Practice, next EC will set it. #
+                                app_state.current_segment_scheduled_duration_seconds = app_state.practice_session_scheduled_duration_seconds # Use overall practice duration #
+                            
+                            q_state["just_resumed_flag"] = False #
+                            if current_app_mode == "Live" and app_state.practice_session_scheduled_duration_seconds: #
+                                q_state["official_segment_remaining_seconds"] = app_state.practice_session_scheduled_duration_seconds #
+                                q_state["last_official_time_capture_utc"] = app_state.practice_session_actual_start_utc #
+
+                        elif session_status_from_feed in ["Finished", "Ends"]: #
+                            if q_state.get("current_segment") != "Practice Ended": #
+                                q_state["old_segment"] = q_state.get("current_segment") #
+                                q_state["current_segment"] = "Practice Ended" #
+                            q_state["official_segment_remaining_seconds"] = 0 #
+                            q_state["just_resumed_flag"] = False #
+                        # Practice red flags (Aborted, Inactive, Suspended) don't change practice segment state here.
+
+                    # --- Qualifying/Sprint Shootout Segment Logic ---
+                    elif session_type in ["qualifying", "sprint shootout"]: #
+                        segments = config.QUALIFYING_ORDER.get(session_type, []) #
+                        
+                        # This is the segment name that *will be* in q_state after logic below
+                        determined_next_segment_for_q_state = segment_in_q_state_before_this_event # Default to no change
+                        
+                        resuming_this_segment_after_pause = False
+                        is_brand_new_q_segment_starting = False # Define before use
+
+                        if session_status_from_feed == "Started": #
+                            # Call helper to determine current segment if needed (e.g. start of Q1, or Q2 after "Between")
+                            # _update_current_qualifying_segment_based_on_status directly modifies q_state["current_segment"]
+                            _update_current_qualifying_segment_based_on_status(session_status_from_feed)
+                            determined_next_segment_for_q_state = q_state.get("current_segment") # Get the (potentially) new segment name #
+
+                            if determined_next_segment_for_q_state != segment_in_q_state_before_this_event and \
+                               determined_next_segment_for_q_state in segments:
+                                is_brand_new_q_segment_starting = True 
+                            elif previous_recorded_feed_status in ["Aborted", "Inactive", "Suspended"] and \
+                                 segment_in_q_state_before_this_event in segments and \
+                                 determined_next_segment_for_q_state == segment_in_q_state_before_this_event: # Resuming the same segment
+                                resuming_this_segment_after_pause = True
+                        
+                        elif session_status_from_feed in ["Finished", "Ends"]: #
+                            if segment_in_q_state_before_this_event and segment_in_q_state_before_this_event in segments: #
+                                idx = segments.index(segment_in_q_state_before_this_event) #
+                                determined_next_segment_for_q_state = "Between Segments" if idx < len(segments) - 1 else "Ended" #
+                        
+                        elif session_status_from_feed in ["Aborted", "Inactive", "Suspended"]: #
+                            if segment_in_q_state_before_this_event and segment_in_q_state_before_this_event in segments: #
+                                determined_next_segment_for_q_state = segment_in_q_state_before_this_event 
+                                logger.info(f"Q Segment '{determined_next_segment_for_q_state}' Status: {session_status_from_feed}. Timer will pause/freeze.")
+                                if current_app_mode == "Replaying" and \
+                                   app_state.session_start_feed_timestamp_utc_dt and \
+                                   app_state.current_segment_scheduled_duration_seconds is not None and \
+                                   app_state.current_processed_feed_timestamp_utc_dt: #
+                                    elapsed_at_pause = (app_state.current_processed_feed_timestamp_utc_dt - app_state.session_start_feed_timestamp_utc_dt).total_seconds() #
+                                    remaining_at_pause = app_state.current_segment_scheduled_duration_seconds - elapsed_at_pause #
+                                    q_state["official_segment_remaining_seconds"] = max(0, remaining_at_pause) # Store for resume #
+                                    q_state["last_official_time_capture_utc"] = app_state.current_processed_feed_timestamp_utc_dt # Feed TS of pause #
+                                    logger.info(f"Q Replay Pause: Stored remaining {q_state['official_segment_remaining_seconds']:.1f}s for q_state at {q_state['last_official_time_capture_utc']}") #
+                                q_state["just_resumed_flag"] = False #
+
+                        # --- Apply identified segment state changes ---
+                        if determined_next_segment_for_q_state != segment_in_q_state_before_this_event or resuming_this_segment_after_pause:
+                            q_state["old_segment"] = segment_in_q_state_before_this_event # Set old_segment based on state *before this event*
+                            q_state["current_segment"] = determined_next_segment_for_q_state # This is the new or resumed segment
+                            logger.info(f"Q Segment State Change: From='{q_state['old_segment']}', To='{q_state['current_segment']}', Status='{session_status_from_feed}', Resuming='{resuming_this_segment_after_pause}'") #
+
+                            if determined_next_segment_for_q_state in ["Between Segments", "Ended"]: #
+                                q_state["official_segment_remaining_seconds"] = 0 #
+                                q_state["last_official_time_capture_utc"] = None #
+                                q_state["just_resumed_flag"] = False #
+                            elif resuming_this_segment_after_pause: 
+                                q_state["last_official_time_capture_utc"] = datetime.now(timezone.utc) # For LIVE timer extrapolation #
+                                q_state["just_resumed_flag"] = True # For LIVE timer to know it's resuming #
+                                if current_app_mode == "Replaying":
+                                    app_state.current_segment_scheduled_duration_seconds = q_state.get("official_segment_remaining_seconds", 0) # Duration for countdown is what was left #
+                                    app_state.session_start_feed_timestamp_utc_dt = app_state.current_processed_feed_timestamp_utc_dt # New T0 is feed time of resume #
+                                    logger.info(f"Q Replay Resume: Seg='{determined_next_segment_for_q_state}', New StartFeedTS='{app_state.session_start_feed_timestamp_utc_dt}', New SegDurationForCountdown='{app_state.current_segment_scheduled_duration_seconds}s'") #
+                            elif is_brand_new_q_segment_starting: # A new Q segment (Q1, Q2, Q3) is starting
+                                q_state["just_resumed_flag"] = False #
+                                segment_default_durations = config.QUALIFYING_SEGMENT_DEFAULT_DURATIONS #
+                                default_duration = segment_default_durations.get(determined_next_segment_for_q_state, 900) 
+                                q_state["official_segment_remaining_seconds"] = default_duration # CRITICAL FOR HIGHLIGHTING #
+                                q_state["last_official_time_capture_utc"] = None # CRITICAL FOR HIGHLIGHTING #
+                                logger.info(f"New Q Segment '{determined_next_segment_for_q_state}' init for q_state (live timer): Duration={default_duration}s, LastCaptureUTC=None.")
+                                if current_app_mode == "Replaying":
+                                    app_state.session_start_feed_timestamp_utc_dt = None # Next EC will set these for replay #
+                                    app_state.current_segment_scheduled_duration_seconds = None #
+                    
+                    # Update PreviousSessionStatus after all logic for this specific status_info item is done
+                    app_state.session_details['PreviousSessionStatus'] = session_status_from_feed #
+    except Exception as e: #
+        logger.error(f"Error processing SessionData: {e}", exc_info=True) #
+
 
 def _process_session_info(data): 
-    """ Processes SessionInfo data. Starts background track data fetch if session changes."""
+    """ 
+    Processes SessionInfo data. Calculates scheduled duration and starts background track data fetch if session changes.
+    """
     if not isinstance(data, dict):
-        logger.warning(f"SessionInfo non-dict: {data}"); return
+        logger.warning(f"SessionInfo non-dict: {data}"); return #
     try:
-        meeting_info = data.get('Meeting', {}); circuit_info = meeting_info.get('Circuit', {});
-        country_info = meeting_info.get('Country', {})
-        if not isinstance(circuit_info, dict): circuit_info = {}
-        if not isinstance(meeting_info, dict): meeting_info = {}
-        if not isinstance(country_info, dict): country_info = {}
+        meeting_info = data.get('Meeting', {}); #
+        circuit_info = meeting_info.get('Circuit', {}); #
+        country_info = meeting_info.get('Country', {}) #
+        if not isinstance(circuit_info, dict): circuit_info = {} #
+        if not isinstance(meeting_info, dict): meeting_info = {} #
+        if not isinstance(country_info, dict): country_info = {} #
         
-        new_session_type = data.get("Type", "").lower()
-        old_session_type = app_state.session_details.get("Type", "").lower()
+        new_session_type = data.get("Type", "").lower() #
+        old_session_type = app_state.session_details.get("Type", "").lower() #
 
-        if new_session_type != old_session_type or new_session_type not in ["qualifying", "sprint shootout"]:
-            logger.debug(f"SessionInfo: Resetting qualifying_segment_state due to session type change or non-quali type ('{new_session_type}').")
-            app_state.qualifying_segment_state = app_state.INITIAL_QUALIFYING_SEGMENT_STATE.copy()
+        # Reset qualifying/segment specific states if session type changes to non-Q/SQ, or is new
+        if new_session_type != old_session_type:
+            logger.debug(f"SessionInfo: Session type changed from '{old_session_type}' to '{new_session_type}'. Resetting related states.")
+            app_state.qualifying_segment_state = app_state.INITIAL_QUALIFYING_SEGMENT_STATE.copy() #
+            app_state.session_start_feed_timestamp_utc_dt = None # Reset feed-paced timer start #
+            app_state.current_segment_scheduled_duration_seconds = None #
+            app_state.practice_session_actual_start_utc = None #
+            # practice_session_scheduled_duration_seconds will be set from SessionInfo below
         
-        app_state.session_details['Type'] = data.get('Type') # Update type after comparison
+        app_state.session_details['Type'] = data.get('Type') # Update type #
+        app_state.session_details['Name'] = data.get('Name')  #
+        app_state.session_details['Meeting'] = meeting_info #
+        app_state.session_details['Circuit'] = circuit_info #
+        app_state.session_details['Country'] = country_info #
+        app_state.session_details['StartDate'] = data.get('StartDate') #
+        app_state.session_details['EndDate'] = data.get('EndDate') #
+        app_state.session_details['Path'] = data.get('Path') #
+        # ... (other session_details like GmtOffset if needed)
 
-        year_str = None; start_date_str = data.get('StartDate')
-        if start_date_str and isinstance(start_date_str, str) and len(start_date_str) >= 4:
-             try: int(start_date_str[:4]); year_str = start_date_str[:4]
-             except ValueError: logger.warning(f"Invalid year in StartDate: {start_date_str}")
+        year_str = None; start_date_str_val = data.get('StartDate') #
+        if start_date_str_val and isinstance(start_date_str_val, str) and len(start_date_str_val) >= 4: #
+             try: int(start_date_str_val[:4]); year_str = start_date_str_val[:4] #
+             except ValueError: logger.warning(f"Invalid year in StartDate: {start_date_str_val}") #
+        app_state.session_details['Year'] = year_str #
 
-        circuit_key = circuit_info.get('Key')
-        new_session_key = f"{year_str}_{circuit_key}" if year_str and circuit_key is not None and str(circuit_key).strip() else None
-        old_session_key = app_state.session_details.get('SessionKey')
-
-        app_state.session_details['Year'] = year_str
-        app_state.session_details['CircuitKey'] = circuit_key
-        app_state.session_details['SessionKey'] = new_session_key 
-        app_state.session_details['Meeting'] = meeting_info
-        app_state.session_details['Circuit'] = circuit_info
-        app_state.session_details['Country'] = country_info
-        app_state.session_details['Name'] = data.get('Name') 
-        app_state.session_details['Type'] = data.get('Type') 
-        app_state.session_details['StartDate'] = start_date_str
-        app_state.session_details['EndDate'] = data.get('EndDate')
-        app_state.session_details['ScheduledDurationSeconds'] = None
-        app_state.session_details['GmtOffset'] = data.get('GmtOffset')
-        app_state.session_details['Path'] = data.get('Path') 
+        circuit_key = circuit_info.get('Key') #
+        app_state.session_details['CircuitKey'] = circuit_key #
         
-        start_date_str = app_state.session_details.get('StartDate')
-        end_date_str = app_state.session_details.get('EndDate')
+        
+        new_session_key_val = f"{year_str}_{circuit_key}" if year_str and circuit_key is not None and str(circuit_key).strip() else None #
+        old_session_key_val = app_state.session_details.get('SessionKey') #
+        app_state.session_details['SessionKey'] = new_session_key_val #
+        old_session_key = old_session_key_val
+        new_session_key = new_session_key_val
+        
+        # Calculate and store scheduled duration
+        app_state.session_details['ScheduledDurationSeconds'] = None # Initialize #
+        s_date_str = app_state.session_details.get('StartDate') #
+        e_date_str = app_state.session_details.get('EndDate') #
 
-        if start_date_str and end_date_str:
-            # Assuming utils.parse_iso_timestamp_safe can handle the format.
-            # The F1 feed usually provides timestamps like "2024-05-03T16:30:00Z"
-            start_dt = utils.parse_iso_timestamp_safe(start_date_str)
-            end_dt = utils.parse_iso_timestamp_safe(end_date_str)
-            if start_dt and end_dt and end_dt > start_dt:
-                duration_timedelta = end_dt - start_dt
-                app_state.session_details['ScheduledDurationSeconds'] = duration_timedelta.total_seconds()
-                logger.info(f"SessionInfo: Calculated scheduled duration: {app_state.session_details['ScheduledDurationSeconds']}s from StartDate '{start_date_str}' and EndDate '{end_date_str}'.")
+        if s_date_str and e_date_str:
+            start_dt_obj = utils.parse_iso_timestamp_safe(s_date_str)
+            end_dt_obj = utils.parse_iso_timestamp_safe(e_date_str)
+            if start_dt_obj and end_dt_obj and end_dt_obj > start_dt_obj:
+                duration_td = end_dt_obj - start_dt_obj
+                app_state.session_details['ScheduledDurationSeconds'] = duration_td.total_seconds() #
+                # This duration is also used for practice_session_scheduled_duration_seconds if it's a practice session
+                if new_session_type.startswith("practice"):
+                    app_state.practice_session_scheduled_duration_seconds = app_state.session_details['ScheduledDurationSeconds'] #
+                    logger.info(f"SessionInfo: Set practice_session_scheduled_duration_seconds to {app_state.practice_session_scheduled_duration_seconds}s for {new_session_type}") #
             else:
-                logger.warning(f"SessionInfo: Could not calculate valid duration from StartDate '{start_date_str}' and EndDate '{end_date_str}'. Timestamps: Start={start_dt}, End={end_dt}")
+                logger.warning(f"SessionInfo: Could not calculate valid duration. StartDate='{s_date_str}', EndDate='{e_date_str}'") #
         else:
-            logger.warning("SessionInfo: StartDate or EndDate missing, cannot calculate scheduled duration.")
+            logger.warning("SessionInfo: StartDate or EndDate missing, cannot set scheduled duration.")
 
         needs_fetch = False
         if new_session_key:
@@ -1037,6 +1064,13 @@ def data_processing_loop():
             stream_name = item['stream']
             actual_data = item['data']
             timestamp = item.get('timestamp')
+            
+            if timestamp and app_state.app_status.get("state") == "Replaying": #
+                msg_dt = utils.parse_iso_timestamp_safe(timestamp)
+                if msg_dt:
+                    # This lock is brief and specific to this state variable.
+                    with app_state.app_state_lock: #
+                        app_state.current_processed_feed_timestamp_utc_dt = msg_dt #
 
             with app_state.app_state_lock:
                 app_state.data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
