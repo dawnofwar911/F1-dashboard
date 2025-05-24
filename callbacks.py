@@ -810,7 +810,7 @@ def update_main_data_displays(n):
         )
 
         excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
-                            'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat'] #
+                            'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'Heartbeat'] #
         sorted_streams = sorted(
             [s for s in data_store_copy.keys() if s not in excluded_streams]) #
         for stream in sorted_streams: #
@@ -1787,6 +1787,30 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
 
     return fig_with_data
 
+@app.callback(
+    Output('race-control-log-display', 'value'),
+    Input('interval-component-medium', 'n_intervals') # Update periodically
+)
+def update_race_control_display(n_intervals):
+    try:
+        with app_state.app_state_lock:
+            # The deque stores messages with newest first due to appendleft
+            # To display them chronologically (oldest at top), we reverse.
+            # Or, if you want newest at top, just join directly.
+            log_messages = list(app_state.race_control_log) # Get a snapshot
+
+        if not log_messages:
+            return config.TEXT_RC_WAITING # Use constant
+
+        # To display newest messages at the top of the textarea:
+        display_text = "\n".join(log_messages)
+        # If you prefer oldest messages at the top (more traditional log):
+        # display_text = "\n".join(reversed(log_messages))
+        
+        return display_text
+    except Exception as e:
+        logger.error(f"Error updating race control display: {e}", exc_info=True)
+        return config.TEXT_RC_ERROR # Use constant
 
 @app.callback(
     Output("debug-data-accordion-item", "className"),
