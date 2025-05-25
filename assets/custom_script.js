@@ -206,48 +206,90 @@ window.dash_clientside.clientside = {
              } catch (e) { console.error("[JS setupTrackMapResizeListener] Error setting up ResizeObserver:", e); }
         }
         return window.dash_clientside.no_update;
-    }
+    },
     
-    setupClickToFocusListener: function(figure) {
-        // This function is designed to be called once to set up the listener.
-        // The 'figure' input is mostly to make Dash call this when the graph is ready.
+    setupClickToFocusListener: function(figure) { // figure input is just to ensure it runs when graph is ready
         const graphDivId = 'track-map-graph';
         const gd = document.getElementById(graphDivId);
+        const clickDataHolderId = 'js-click-data-holder'; // ID of the hidden div
 
-        if (gd && Plotly) {
-            // Check if a click listener is already attached to avoid duplicates
-            // This simple check might need to be more robust if the graph fully re-renders often
-            if (gd.hasOwnProperty('_hasF1ClickFocusListener')) {
-                // console.log('[JS ClickToFocus] Listener already attached.');
+        if (gd && typeof Plotly !== 'undefined') {
+            if (gd.hasOwnProperty('_hasF1ClickFocusListenerPolling')) {
+                // console.log('[JS ClickToFocusPolling] Listener already attached.');
                 return window.dash_clientside.no_update;
             }
 
-            console.log('[JS ClickToFocus] Setting up plotly_click listener for:', graphDivId);
+            console.log('[JS ClickToFocusPolling] Setting up plotly_click listener for:', graphDivId);
             gd.on('plotly_click', function(data) {
                 if (data.points.length > 0) {
                     const point = data.points[0];
-                    // Car marker traces have a 'uid' property set to the car number
-                    if (point.data && typeof point.data.uid !== 'undefined' && point.data.uid !== null) {
-                        const carNumber = String(point.data.uid); // Ensure it's a string
-                        console.log('[JS ClickToFocus] Car clicked on map. UID:', carNumber);
+                    // Car marker traces have a 'uid' property
+                    if (point.data && typeof point.data.uid === 'string' && point.data.uid.trim() !== "") {
+                        const carNumber = point.data.uid;
+                        const timestamp = new Date().getTime();
+                        const clickEventData = JSON.stringify({ carNumber: carNumber, ts: timestamp });
                         
-                        // Update the dcc.Store with the clicked car number
-                        // This uses Dash.setProps, which is the standard way for clientside to update component props
-                        if (window.Dash && window.Dash.setProps) {
-                            window.Dash.setProps('clicked-car-driver-number-store', { data: carNumber });
+                        const dataHolderDiv = document.getElementById(clickDataHolderId);
+                        if (dataHolderDiv) {
+                            console.log('[JS ClickToFocusPolling] Car clicked. Writing to js-click-data-holder:', clickEventData);
+                            // Update a property that the polling clientside callback can read.
+                            // Using textContent is simple.
+                            dataHolderDiv.textContent = clickEventData; 
                         } else {
-                            console.warn('[JS ClickToFocus] Dash.setProps not available. Cannot update clicked-car-driver-number-store.');
+                            console.warn('[JS ClickToFocusPolling] js-click-data-holder div not found.');
                         }
-                    } else {
-                        // console.log('[JS ClickToFocus] Clicked on non-car-marker point or point with no UID.');
                     }
                 }
             });
-            gd._hasF1ClickFocusListener = true; // Mark that listener is attached
+            gd._hasF1ClickFocusListenerPolling = true; // Mark listener as attached
         } else {
-            if (!gd) console.warn('[JS ClickToFocus] Graph div not found for click listener.');
-            if (!Plotly) console.warn('[JS ClickToFocus] Plotly object not found for click listener.');
+            if (!gd) console.warn('[JS ClickToFocusPolling] Graph div not found for click listener.');
+            if (typeof Plotly === 'undefined') console.warn('[JS ClickToFocusPolling] Plotly object not found for click listener.');
         }
-        return window.dash_clientside.no_update; // This callback doesn't update a Dash output directly
+        return window.dash_clientside.no_update; 
+    },
+
+    // NEW Clientside Function for polling
+    pollClickDataAndUpdateStore: function(n_intervals, _ignored_clickDataFromDivChildren_via_state) {
+        // We receive clickDataFromDivChildren via State but will ignore it and read directly from DOM
+        // as direct DOM manipulation by another JS function might not update Dash's State understanding immediately.
+        
+        const clickDataHolderId = 'js-click-data-holder';
+        const dataHolderDiv = document.getElementById(clickDataHolderId);
+        let currentClickDataInDiv = null;
+
+        if (dataHolderDiv) {
+            currentClickDataInDiv = dataHolderDiv.textContent; // Read directly from DOM
+        }
+
+        console.log(`[JS PollAndUpdateStore ENTRY] Interval: ${n_intervals}, Data directly from Div ('${clickDataHolderId}.textContent'): '${currentClickDataInDiv}'`);
+
+        // Initialize _lastClickDataSentToStore if it's the first run or undefined
+        if (typeof window.dash_clientside.clientside._lastClickDataSentToStore === 'undefined') {
+            window.dash_clientside.clientside._lastClickDataSentToStore = null; 
+            console.log('[JS PollAndUpdateStore] Initialized _lastClickDataSentToStore to null.');
+        }
+
+        if (currentClickDataInDiv === null || typeof currentClickDataInDiv === 'undefined' || currentClickDataInDiv.trim() === "") { 
+            // If the div is actually empty, nothing to process.
+            // If it was previously something, this means it has been "cleared".
+            // We might want to update the store to reflect this clearing.
+            if (window.dash_clientside.clientside._lastClickDataSentToStore !== null && window.dash_clientside.clientside._lastClickDataSentToStore !== "") {
+                console.log('[JS PollAndUpdateStore] Div content is now empty/null. Clearing store.');
+                window.dash_clientside.clientside._lastClickDataSentToStore = ""; // Reflect that we've processed the "empty" state
+                return ""; // Send empty string to store to potentially clear it
+            }
+            return window.dash_clientside.no_update;
+        }
+        
+        // Compare the fresh DOM content with what this function last sent to the Dash store
+        if (currentClickDataInDiv !== window.dash_clientside.clientside._lastClickDataSentToStore) {
+            console.log('[JS PollAndUpdateStore] New/different click data found by direct DOM read:', currentClickDataInDiv, "-> Attempting to update clicked-car-driver-number-store.");
+            window.dash_clientside.clientside._lastClickDataSentToStore = currentClickDataInDiv; 
+            return currentClickDataInDiv; // This value updates 'clicked-car-driver-number-store.data'
+        } else {
+            // console.log('[JS PollAndUpdateStore] Direct DOM read data is the same as _lastClickDataSentToStore. No update to store.');
+            return window.dash_clientside.no_update;
+        }
     }
 };

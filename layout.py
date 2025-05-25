@@ -42,11 +42,13 @@ def create_layout():
         dcc.Interval(id='interval-component-slow', interval=5000, n_intervals=0),
         dcc.Interval(id='interval-component-real-slow', interval=10000, n_intervals=0),
         html.Div(id='dummy-output-for-controls', style={'display': 'none'}),
+        html.Div(id='js-click-data-holder', children=None, style={'display': 'none'}),
         dcc.Store(id='car-positions-store'),
         dcc.Store(id='current-track-layout-cache-key-store'),
         dcc.Store(id='track-map-figure-version-store'),
         dcc.Store(id='track-map-yellow-key-store', storage_type='memory', data=""),
         dcc.Store(id='clicked-car-driver-number-store', storage_type='memory'),
+        dcc.Interval(id='clientside-click-poll-interval', interval=100, n_intervals=0), # Polls every 100ms
         dcc.Interval(id='clientside-update-interval', interval=1250, n_intervals=0, disabled=True)
     ])
 

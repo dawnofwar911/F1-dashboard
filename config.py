@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 # --- Core Application & Server ---
-DASH_DEBUG_MODE = False
+DASH_DEBUG_MODE = True
 DASH_HOST = "0.0.0.0"
 DASH_PORT = 8050
 

@@ -1954,26 +1954,36 @@ def toggle_debug_data_visibility(debug_mode_enabled):
 @app.callback(
     Output('driver-select-dropdown', 'value'),
     Input('clicked-car-driver-number-store', 'data'),
-    State('driver-select-dropdown', 'options'), # Get current options to validate
-    prevent_initial_call=True # Don't run on initial load if store is None/empty
+    State('driver-select-dropdown', 'options'), 
+    prevent_initial_call=True 
 )
-def update_dropdown_from_map_click(clicked_driver_number, dropdown_options):
-    if clicked_driver_number is None:
+def update_dropdown_from_map_click(click_data_json_str, dropdown_options): # Renamed arg
+    if click_data_json_str is None:
         return dash.no_update
-
-    logger.info(f"Map click: Attempting to select driver number: {clicked_driver_number}")
-
-    # Validate that the clicked_driver_number is a valid option in the dropdown
-    if dropdown_options and isinstance(dropdown_options, list):
-        valid_driver_numbers = [opt['value'] for opt in dropdown_options if 'value' in opt]
-        if str(clicked_driver_number) in valid_driver_numbers:
-            logger.info(f"Map click: Setting driver-select-dropdown to: {clicked_driver_number}")
-            return str(clicked_driver_number) # Dropdown value usually expects string
-        else:
-            logger.warning(f"Map click: Driver number {clicked_driver_number} not found in dropdown options: {valid_driver_numbers}")
-            return dash.no_update
     
-    logger.warning(f"Map click: No dropdown options available to validate driver {clicked_driver_number}.")
+    try:
+        # The data from the store is now the JSON string written by JS
+        click_data = json.loads(click_data_json_str) 
+        clicked_driver_number = click_data.get('carNumber')
+
+        if clicked_driver_number is None:
+            return dash.no_update
+            
+        logger.info(f"Map click: Attempting to select driver number: {clicked_driver_number}")
+
+        if dropdown_options and isinstance(dropdown_options, list):
+            valid_driver_numbers = [opt['value'] for opt in dropdown_options if 'value' in opt]
+            if str(clicked_driver_number) in valid_driver_numbers:
+                logger.info(f"Map click: Setting driver-select-dropdown to: {clicked_driver_number}")
+                return str(clicked_driver_number) 
+            else:
+                logger.warning(f"Map click: Driver number {clicked_driver_number} not found in dropdown options: {valid_driver_numbers}")
+                return dash.no_update
+    except json.JSONDecodeError:
+        logger.error(f"update_dropdown_from_map_click: Could not decode JSON from store: {click_data_json_str}")
+    except Exception as e:
+        logger.error(f"update_dropdown_from_map_click: Error processing click data: {e}")
+        
     return dash.no_update
 
 app.clientside_callback(
@@ -2008,6 +2018,17 @@ app.clientside_callback(
     Output('track-map-graph', 'id'), # Dummy output, just needs to target something on the graph
     Input('track-map-graph', 'figure'), # Trigger when the figure is first drawn or updated
     prevent_initial_call=False # Allow it to run on initial load
+)
+
+app.clientside_callback(
+    ClientsideFunction(
+        namespace='clientside',
+        function_name='pollClickDataAndUpdateStore'
+    ),
+    Output('clicked-car-driver-number-store', 'data'),
+    Input('clientside-click-poll-interval', 'n_intervals'),
+    State('js-click-data-holder', 'children'),
+    prevent_initial_call=True # Read the data JS wrote
 )
 
 print("Callback definitions processed") #
