@@ -207,4 +207,47 @@ window.dash_clientside.clientside = {
         }
         return window.dash_clientside.no_update;
     }
+    
+    setupClickToFocusListener: function(figure) {
+        // This function is designed to be called once to set up the listener.
+        // The 'figure' input is mostly to make Dash call this when the graph is ready.
+        const graphDivId = 'track-map-graph';
+        const gd = document.getElementById(graphDivId);
+
+        if (gd && Plotly) {
+            // Check if a click listener is already attached to avoid duplicates
+            // This simple check might need to be more robust if the graph fully re-renders often
+            if (gd.hasOwnProperty('_hasF1ClickFocusListener')) {
+                // console.log('[JS ClickToFocus] Listener already attached.');
+                return window.dash_clientside.no_update;
+            }
+
+            console.log('[JS ClickToFocus] Setting up plotly_click listener for:', graphDivId);
+            gd.on('plotly_click', function(data) {
+                if (data.points.length > 0) {
+                    const point = data.points[0];
+                    // Car marker traces have a 'uid' property set to the car number
+                    if (point.data && typeof point.data.uid !== 'undefined' && point.data.uid !== null) {
+                        const carNumber = String(point.data.uid); // Ensure it's a string
+                        console.log('[JS ClickToFocus] Car clicked on map. UID:', carNumber);
+                        
+                        // Update the dcc.Store with the clicked car number
+                        // This uses Dash.setProps, which is the standard way for clientside to update component props
+                        if (window.Dash && window.Dash.setProps) {
+                            window.Dash.setProps('clicked-car-driver-number-store', { data: carNumber });
+                        } else {
+                            console.warn('[JS ClickToFocus] Dash.setProps not available. Cannot update clicked-car-driver-number-store.');
+                        }
+                    } else {
+                        // console.log('[JS ClickToFocus] Clicked on non-car-marker point or point with no UID.');
+                    }
+                }
+            });
+            gd._hasF1ClickFocusListener = true; // Mark that listener is attached
+        } else {
+            if (!gd) console.warn('[JS ClickToFocus] Graph div not found for click listener.');
+            if (!Plotly) console.warn('[JS ClickToFocus] Plotly object not found for click listener.');
+        }
+        return window.dash_clientside.no_update; // This callback doesn't update a Dash output directly
+    }
 };
