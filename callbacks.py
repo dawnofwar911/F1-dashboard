@@ -1627,7 +1627,7 @@ def initialize_track_map(n_intervals, expected_session_id,
     yellow_key_store_output = active_yellow_sectors_key_for_current_render 
 
     if needs_full_rebuild:
-        logger.info(f"Performing FULL track map rebuild for SID: {expected_session_id}. Target Layout uirevision: {target_persistent_layout_uirevision}")
+        logger.debug(f"Performing FULL track map rebuild for SID: {expected_session_id}. Target Layout uirevision: {target_persistent_layout_uirevision}")
         fig_data = []
         # 1. Base Track Line
         fig_data.append(go.Scatter(x=list(cached_data['x']), y=list(cached_data['y']), mode='lines', line=dict(color='grey', width=getattr(config, 'TRACK_LINE_WIDTH', 2)), name='Track', hoverinfo='none'))
@@ -1781,7 +1781,7 @@ def initialize_track_map(n_intervals, expected_session_id,
     
     if figure_output is not no_update:
         trace_names_in_output_final = [getattr(t, 'name', 'Unnamed') for t in figure_output.data]
-        logger.info(f"FINAL Figure Output Data Traces (Placeholder Method): {trace_names_in_output_final}")
+        logger.debug(f"FINAL Figure Output Data Traces (Placeholder Method): {trace_names_in_output_final}")
         active_yellow_trace_names = [getattr(t, 'name') for t in figure_output.data if getattr(t, 'name', '').startswith("Yellow Sector ") and getattr(t, 'visible', False)]
         logger.debug(f"Visibly active yellow traces in output: {active_yellow_trace_names} (based on snapshot: {active_yellow_sectors_snapshot})")
 
