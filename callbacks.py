@@ -1950,6 +1950,31 @@ def toggle_debug_data_visibility(debug_mode_enabled):
     else:
         logger.info("Debug mode disabled: Hiding 'Other Data Streams'.")
         return "d-none" # Bootstrap display none class
+        
+@app.callback(
+    Output('driver-select-dropdown', 'value'),
+    Input('clicked-car-driver-number-store', 'data'),
+    State('driver-select-dropdown', 'options'), # Get current options to validate
+    prevent_initial_call=True # Don't run on initial load if store is None/empty
+)
+def update_dropdown_from_map_click(clicked_driver_number, dropdown_options):
+    if clicked_driver_number is None:
+        return dash.no_update
+
+    logger.info(f"Map click: Attempting to select driver number: {clicked_driver_number}")
+
+    # Validate that the clicked_driver_number is a valid option in the dropdown
+    if dropdown_options and isinstance(dropdown_options, list):
+        valid_driver_numbers = [opt['value'] for opt in dropdown_options if 'value' in opt]
+        if str(clicked_driver_number) in valid_driver_numbers:
+            logger.info(f"Map click: Setting driver-select-dropdown to: {clicked_driver_number}")
+            return str(clicked_driver_number) # Dropdown value usually expects string
+        else:
+            logger.warning(f"Map click: Driver number {clicked_driver_number} not found in dropdown options: {valid_driver_numbers}")
+            return dash.no_update
+    
+    logger.warning(f"Map click: No dropdown options available to validate driver {clicked_driver_number}.")
+    return dash.no_update
 
 app.clientside_callback(
     ClientsideFunction(
@@ -1973,6 +1998,16 @@ app.clientside_callback(
     Output('track-map-graph', 'figure', allow_duplicate=True), # Dummy output or can update figure if resize logic is complex
     Input('track-map-graph', 'figure'), # Triggered when figure initially renders or changes
     prevent_initial_call='initial_duplicate' # Avoids running on initial load before figure exists
+)
+
+app.clientside_callback(
+    ClientsideFunction(
+        namespace='clientside',
+        function_name='setupClickToFocusListener'
+    ),
+    Output('track-map-graph', 'id'), # Dummy output, just needs to target something on the graph
+    Input('track-map-graph', 'figure'), # Trigger when the figure is first drawn or updated
+    prevent_initial_call=False # Allow it to run on initial load
 )
 
 print("Callback definitions processed") #
