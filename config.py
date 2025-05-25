@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 # --- Core Application & Server ---
-DASH_DEBUG_MODE = False
+DASH_DEBUG_MODE = True
 DASH_HOST = "0.0.0.0"
 DASH_PORT = 8050
 
@@ -33,6 +33,9 @@ QUALIFYING_ELIMINATED_STYLE = {
     'backgroundColor': '#484848', 'color': '#a0a0a0'}
 # Dim Grey (used for Q3 P1-P10 in previous versions, now unused based on your latest Q3 rule)
 QUALIFYING_WATCH_GREY_STYLE = {'backgroundColor': '#696969', 'color': 'white'}
+
+MAX_YELLOW_SECTOR_PLACEHOLDERS = 25 # Max marshal sectors you expect for any track
+YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX = "YellowSectorPlaceholder_" 
 
 QUALIFYING_ORDER = {
     "qualifying": ["Q1", "Q2", "Q3"],
