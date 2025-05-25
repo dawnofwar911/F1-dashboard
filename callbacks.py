@@ -810,7 +810,7 @@ def update_main_data_displays(n):
         )
 
         excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
-                            'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'RaceControlMessages', 'Heartbeat'] #
+                            'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'Heartbeat'] #
         sorted_streams = sorted(
             [s for s in data_store_copy.keys() if s not in excluded_streams]) #
         for stream in sorted_streams: #
@@ -1564,103 +1564,230 @@ def update_clientside_interval_speed(replay_speed, interval_disabled):
     return new_interval_ms
 
 @app.callback(
-    [Output('track-map-graph', 'figure', allow_duplicate=True),
-     Output('track-map-figure-version-store', 'data')],
-    [Input('interval-component-medium', 'n_intervals'), # Periodic check
-     Input('current-track-layout-cache-key-store', 'data')], # Triggered when session ID changes
-    State('track-map-graph', 'figure'), # Current figure state
-    prevent_initial_call=True
+    Output('track-map-graph', 'figure', allow_duplicate=True),
+    Output('track-map-figure-version-store', 'data', allow_duplicate=True),
+    Output('track-map-yellow-key-store', 'data'), 
+    [Input('interval-component-medium', 'n_intervals'),
+     Input('current-track-layout-cache-key-store', 'data')],
+    [State('track-map-graph', 'figure'),
+     State('track-map-figure-version-store', 'data'),
+     State('track-map-yellow-key-store', 'data')],
+    prevent_initial_call='initial_duplicate'
 )
-def initialize_track_map(n_intervals, expected_session_id, current_track_map_figure):
-    ctx = dash.callback_context
-    triggered_input_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered and ctx.triggered[0] else "Unknown"
-    new_figure_version = time.time() 
+def initialize_track_map(n_intervals, expected_session_id, 
+                         current_track_map_figure_state, 
+                         current_figure_version_in_store_state,
+                         previous_rendered_yellow_key_from_store):
 
-    logger.debug(f"INIT_TRACK_MAP --- Triggered by: {triggered_input_id}. Expected Session ID: '{expected_session_id}'")
-    current_fig_uirevision = current_track_map_figure.get('layout', {}).get('uirevision') if current_track_map_figure and current_track_map_figure.get('layout') else 'None'
-    logger.debug(f"INIT_TRACK_MAP --- Current Figure Uirevision in State: '{current_fig_uirevision}'")
+    ctx = dash.callback_context
+    triggered_prop_id = ctx.triggered[0]['prop_id']
+    triggering_input_id = triggered_prop_id.split('.')[0]
+
+    logger.debug(f"INIT_TRACK_MAP Trigger: {triggering_input_id}, SID: {expected_session_id}, PrevYellowKey: {previous_rendered_yellow_key_from_store}")
 
     with app_state.app_state_lock:
         cached_data = app_state.track_coordinates_cache.copy()
-        driver_list_snapshot = app_state.timing_state.copy() # For adding car markers initially
-        logger.debug(f"INIT_TRACK_MAP --- AppState session_details.SessionKey: '{app_state.session_details.get('SessionKey')}'")
-        logger.debug(f"INIT_TRACK_MAP --- AppState track_coordinates_cache.session_key: '{cached_data.get('session_key')}'")
+        driver_list_snapshot = app_state.timing_state.copy()
+        active_yellow_sectors_snapshot = set(app_state.active_yellow_sectors)
 
     if not expected_session_id or not isinstance(expected_session_id, str) or '_' not in expected_session_id:
-        empty_map_uirevision = f"empty_map_undefined_session_{new_figure_version}" 
-        
-        if current_fig_uirevision == empty_map_uirevision:
-             logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (already showing specific empty map: {empty_map_uirevision})")
-             return no_update, no_update
-
-        fig_empty = utils.create_empty_figure_with_message( #
-            config.TRACK_MAP_WRAPPER_HEIGHT, empty_map_uirevision, #
-            config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS #
-        )
+        fig_empty = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"empty_map_init_{time.time()}", config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS)
         fig_empty.layout.plot_bgcolor = 'rgb(30,30,30)'; fig_empty.layout.paper_bgcolor = 'rgba(0,0,0,0)'
-        logger.debug(f"INIT_TRACK_MAP --- Returning EMPTY map (no valid expected_session_id: '{expected_session_id}'). New uirev: {empty_map_uirevision}")
-        return fig_empty, new_figure_version
+        return fig_empty, f"empty_map_ver_{time.time()}", "" 
 
-    data_loaded_uirevision = f"tracklayout_{expected_session_id}"
-    loading_uirevision = f"loading_{expected_session_id}_{new_figure_version}" 
+    is_cache_ready_for_base = (cached_data.get('session_key') == expected_session_id and cached_data.get('x') and cached_data.get('y'))
+    if not is_cache_ready_for_base:
+        fig_loading = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"loading_{expected_session_id}_{time.time()}", f"{config.TEXT_TRACK_MAP_LOADING_FOR_SESSION_PREFIX}{expected_session_id}...", config.TRACK_MAP_MARGINS)
+        fig_loading.layout.plot_bgcolor = 'rgb(30,30,30)'; fig_loading.layout.paper_bgcolor = 'rgba(0,0,0,0)'
+        return fig_loading, f"loading_ver_{time.time()}", ""
 
-    logger.debug(f"INIT_TRACK_MAP --- For SID '{expected_session_id}': TargetLoadedUirev='{data_loaded_uirevision}', TargetLoadingUirev='{loading_uirevision}'")
+    corners_c = len(cached_data.get('corners_data') or [])
+    lights_c = len(cached_data.get('marshal_lights_data') or [])
+    # Increment version due to placeholder strategy
+    layout_structure_version = "v3.3_placeholders" 
+    target_persistent_layout_uirevision = f"trackmap_layout_{expected_session_id}_c{corners_c}_l{lights_c}_{layout_structure_version}"
+    active_yellow_sectors_key_for_current_render = "_".join(sorted(map(str, list(active_yellow_sectors_snapshot))))
 
-    is_cache_ready_for_session = (
-        cached_data.get('session_key') == expected_session_id and
-        cached_data.get('x') and cached_data.get('y')
-    )
+    needs_full_rebuild = False
+    current_layout_uirevision_from_state = current_track_map_figure_state.get('layout', {}).get('uirevision') if current_track_map_figure_state and current_track_map_figure_state.get('layout') else None
 
-    if is_cache_ready_for_session:
-        if current_fig_uirevision == data_loaded_uirevision:
-            logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (map already displays correct loaded uirev: {data_loaded_uirevision})")
-            return no_update, no_update
+    if triggering_input_id == 'current-track-layout-cache-key-store': needs_full_rebuild = True
+    elif not current_track_map_figure_state or not current_track_map_figure_state.get('layout'): needs_full_rebuild = True
+    elif current_layout_uirevision_from_state != target_persistent_layout_uirevision: needs_full_rebuild = True
+    
+    processed_previous_yellow_key = previous_rendered_yellow_key_from_store
+    if previous_rendered_yellow_key_from_store is None: processed_previous_yellow_key = "" 
+
+    if not needs_full_rebuild and processed_previous_yellow_key == active_yellow_sectors_key_for_current_render:
+        logger.debug(f"INIT_TRACK_MAP --- No change for SID '{expected_session_id}', yellow key '{active_yellow_sectors_key_for_current_render}' unchanged. No update.")
+        return no_update, no_update, no_update 
+
+    figure_output: go.Figure
+    version_store_output = no_update 
+    yellow_key_store_output = active_yellow_sectors_key_for_current_render 
+
+    if needs_full_rebuild:
+        logger.debug(f"Performing FULL track map rebuild for SID: {expected_session_id}. Target Layout uirevision: {target_persistent_layout_uirevision}")
+        fig_data = []
+        # 1. Base Track Line
+        fig_data.append(go.Scatter(x=list(cached_data['x']), y=list(cached_data['y']), mode='lines', line=dict(color='grey', width=getattr(config, 'TRACK_LINE_WIDTH', 2)), name='Track', hoverinfo='none'))
+        # 2. Static Corner Markers
+        if cached_data.get('corners_data'):
+            valid_corners = [c for c in cached_data['corners_data'] if c.get('x') is not None and c.get('y') is not None]
+            if valid_corners:
+                fig_data.append(go.Scatter(
+                    x=[c['x'] for c in valid_corners], 
+                    y=[c['y'] for c in valid_corners], 
+                    mode='markers+text', 
+                    marker=dict(
+                        size=config.CORNER_MARKER_SIZE, 
+                        color=config.CORNER_MARKER_COLOR, 
+                        symbol='circle-open'
+                    ), 
+                    text=[str(c['number']) for c in valid_corners], 
+                    textposition=config.CORNER_TEXT_POSITION,
+                    textfont=dict(
+                        size=config.CORNER_TEXT_SIZE, 
+                        color=config.CORNER_TEXT_COLOR
+                    ),
+                    dx=config.CORNER_TEXT_DX,  # Added dx
+                    dy=config.CORNER_TEXT_DY,  # Added dy
+                    name='Corners', 
+                    hoverinfo='text' 
+                ))
+        # 3. Static Marshal Light/Post Markers
+        if cached_data.get('marshal_lights_data'):
+            valid_lights = [m for m in cached_data['marshal_lights_data'] if m.get('x') is not None and m.get('y') is not None]
+            if valid_lights:
+                fig_data.append(go.Scatter(x=[m['x'] for m in valid_lights], y=[m['y'] for m in valid_lights], mode='markers', marker=dict(size=getattr(config, 'MARSHAL_MARKER_SIZE', 5), color=getattr(config, 'MARSHAL_MARKER_COLOR', 'orange'), symbol='diamond'), name='Marshal Posts', hoverinfo='text', text=[f"M{m['number']}" for m in valid_lights]))
         
-        logger.debug(f"INIT_TRACK_MAP --- Cache HIT for '{expected_session_id}'. Drawing track. New uirev: {data_loaded_uirevision}")
-        fig_data = [
-            go.Scatter(x=list(cached_data['x']), y=list(cached_data['y']), mode='lines',
-                       line=dict(color='grey', width=2), name='Track', hoverinfo='none')
-        ]
-        # Add placeholders for car markers - clientside will update positions
-        for car_num, driver_state in driver_list_snapshot.items():
-            tla = driver_state.get('Tla', car_num)
-            team_color = driver_state.get('TeamColour', '808080')
-            if not isinstance(team_color, str) or not team_color.startswith('#'):
-                team_color = '#' + str(team_color).replace("#","") if isinstance(team_color, str) else '#808080'
-                if len(team_color) not in [4, 7]: team_color = '#808080' # Basic validation for hex
-            
+        # 4. Add Yellow Sector Placeholders (Invisible initially)
+        for i in range(config.MAX_YELLOW_SECTOR_PLACEHOLDERS):
             fig_data.append(go.Scatter(
-                x=[], y=[], # Positions will be updated by clientside
-                mode='markers+text', name=tla, uid=str(car_num), # UID for clientside to find trace
-                marker=dict(size=8, color=team_color, line=dict(width=1, color='Black')),
-                textfont=dict(size=8, color='white'), textposition='middle right',
-                hoverinfo='text', # Show TLA on hover
-                text=tla 
+                x=[None], y=[None], mode='lines',
+                line=dict(color=getattr(config, 'YELLOW_FLAG_COLOR', 'yellow'), width=getattr(config, 'YELLOW_FLAG_WIDTH', 4)),
+                name=f"{config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}", 
+                hoverinfo='name',
+                opacity=getattr(config, 'YELLOW_FLAG_OPACITY', 0.7),
+                visible=False 
             ))
+
+        # 5. Car Marker Placeholders
+        for car_num_str_init, driver_state_init in driver_list_snapshot.items():
+            tla_init = driver_state_init.get('Tla', car_num_str_init); team_color_hex_init = driver_state_init.get('TeamColour', '808080')
+            if not team_color_hex_init.startswith('#'): team_color_hex_init = '#' + team_color_hex_init.replace("#", "")
+            if len(team_color_hex_init) not in [4, 7]: team_color_hex_init = '#808080'
+            fig_data.append(go.Scatter(x=[None], y=[None], mode='markers+text', name=tla_init, uid=str(car_num_str_init), marker=dict(size=getattr(config, 'CAR_MARKER_SIZE', 8), color=team_color_hex_init, line=dict(width=1, color='Black')), textfont=dict(size=getattr(config, 'CAR_MARKER_TEXT_SIZE', 8), color='white'), textposition='middle right', hoverinfo='text', text=tla_init))
+
         fig_layout = go.Layout(
-            template='plotly_dark', uirevision=data_loaded_uirevision, # CRITICAL for clientside updates
+            template='plotly_dark', uirevision=target_persistent_layout_uirevision,
             xaxis=dict(visible=False, fixedrange=True, range=cached_data.get('range_x'), autorange=False if cached_data.get('range_x') else True),
             yaxis=dict(visible=False, fixedrange=True, scaleanchor="x", scaleratio=1, range=cached_data.get('range_y'), autorange=False if cached_data.get('range_y') else True),
             showlegend=False, plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='white'), margin=config.TRACK_MAP_MARGINS, height=config.TRACK_MAP_WRAPPER_HEIGHT, #
-            annotations=[] # Clear any previous "Loading..." messages
+            font=dict(color='white'), margin=config.TRACK_MAP_MARGINS, height=config.TRACK_MAP_WRAPPER_HEIGHT,
+            annotations=[]
         )
-        new_figure = go.Figure(data=fig_data, layout=fig_layout)
-        logger.debug(f"INIT_TRACK_MAP --- Returning NEW TRACK figure for '{expected_session_id}'. Final uirev: {new_figure.layout.uirevision}")
-        return new_figure, new_figure_version 
-    else: 
-        if current_fig_uirevision == loading_uirevision.rsplit('_',1)[0]: # Compare against base loading uirevision
-            logger.debug(f"INIT_TRACK_MAP --- Returning NO_UPDATE for figure & version (map already shows correct loading uirev prefix: {loading_uirevision.rsplit('_',1)[0]} for {expected_session_id})")
-            return no_update, no_update
+        figure_output = go.Figure(data=fig_data, layout=fig_layout)
+        version_store_output = f"trackbase_{expected_session_id}_{time.time()}" 
+        
+        # Update placeholders based on current active_yellow_sectors_snapshot for the new figure
+        # This logic is now INSIDE the needs_full_rebuild block as figure_output is brand new
+        if cached_data.get('marshal_sector_segments') and cached_data.get('x'):
+            track_x_full = cached_data['x']; track_y_full = cached_data['y']
+            placeholder_trace_offset = (1 + # Track
+                                       (1 if valid_corners else 0) +
+                                       (1 if valid_lights else 0))
 
-        fig_loading_specific = utils.create_empty_figure_with_message( #
-            config.TRACK_MAP_WRAPPER_HEIGHT, loading_uirevision, #
-            f"{config.TEXT_TRACK_MAP_LOADING_FOR_SESSION_PREFIX}{expected_session_id}...", #
-            config.TRACK_MAP_MARGINS #
-        )
-        fig_loading_specific.layout.plot_bgcolor = 'rgb(30,30,30)'; fig_loading_specific.layout.paper_bgcolor = 'rgba(0,0,0,0)'
-        logger.debug(f"INIT_TRACK_MAP --- Cache MISS for '{expected_session_id}'. Returning LOADING map. New uirev: {loading_uirevision}")
-        return fig_loading_specific, new_figure_version
+            for sector_num_active in active_yellow_sectors_snapshot:
+                placeholder_idx_for_sector = sector_num_active - 1 # Assuming 1-indexed sectors from RCM
+                if 0 <= placeholder_idx_for_sector < config.MAX_YELLOW_SECTOR_PLACEHOLDERS:
+                    trace_index_to_update = placeholder_trace_offset + placeholder_idx_for_sector
+                    if trace_index_to_update < len(figure_output.data): # Check bounds
+                        segment_indices = cached_data['marshal_sector_segments'].get(sector_num_active)
+                        if segment_indices:
+                            start_idx, end_idx = segment_indices
+                            if 0 <= start_idx < len(track_x_full) and \
+                               0 <= end_idx < len(track_x_full) and \
+                               start_idx <= end_idx:
+                                x_seg = track_x_full[start_idx : end_idx + 1]
+                                y_seg = track_y_full[start_idx : end_idx + 1]
+                                if len(x_seg) >= 1:
+                                    figure_output.data[trace_index_to_update].x = list(x_seg)
+                                    figure_output.data[trace_index_to_update].y = list(y_seg)
+                                    figure_output.data[trace_index_to_update].visible = True
+                                    figure_output.data[trace_index_to_update].name = f"Yellow Sector {sector_num_active}"
+                                    figure_output.data[trace_index_to_update].mode = 'lines' if len(x_seg) > 1 else 'markers'
+                                    if len(x_seg) == 1 and hasattr(config, 'YELLOW_FLAG_MARKER_SIZE'): # Check if config exists
+                                        figure_output.data[trace_index_to_update].marker = dict(color=getattr(config, 'YELLOW_FLAG_COLOR', 'yellow'), size=getattr(config, 'YELLOW_FLAG_MARKER_SIZE', 8))
+
+    else: # Not a full rebuild: update existing figure's placeholder traces
+        figure_output = go.Figure(current_track_map_figure_state) 
+        figure_output.layout.uirevision = target_persistent_layout_uirevision 
+        version_store_output = current_figure_version_in_store_state 
+
+        if cached_data.get('marshal_sector_segments') and cached_data.get('x') and figure_output.data:
+            track_x_full = cached_data['x']; track_y_full = cached_data['y']
+            
+            # Calculate offset of first placeholder trace
+            placeholder_trace_offset = 0
+            temp_valid_corners = [c for c in (cached_data.get('corners_data') or []) if c.get('x') is not None and c.get('y') is not None]
+            temp_valid_lights = [m for m in (cached_data.get('marshal_lights_data') or []) if m.get('x') is not None and m.get('y') is not None]
+
+            if True: placeholder_trace_offset +=1 # For 'Track'
+            if temp_valid_corners: placeholder_trace_offset +=1
+            if temp_valid_lights: placeholder_trace_offset +=1
+
+            logger.debug(f"Updating yellow placeholders on existing figure. Active: {active_yellow_sectors_snapshot}. Placeholder offset: {placeholder_trace_offset}")
+
+            for i in range(config.MAX_YELLOW_SECTOR_PLACEHOLDERS):
+                trace_index_for_placeholder = placeholder_trace_offset + i
+                if trace_index_for_placeholder < len(figure_output.data):
+                    # Assume sector number `i+1` maps to placeholder `i`
+                    current_sector_represented_by_placeholder = i + 1 
+                    
+                    if current_sector_represented_by_placeholder in active_yellow_sectors_snapshot:
+                        segment_indices = cached_data['marshal_sector_segments'].get(current_sector_represented_by_placeholder)
+                        if segment_indices:
+                            start_idx, end_idx = segment_indices
+                            if 0 <= start_idx < len(track_x_full) and \
+                               0 <= end_idx < len(track_x_full) and \
+                               start_idx <= end_idx:
+                                x_seg = track_x_full[start_idx : end_idx + 1]
+                                y_seg = track_y_full[start_idx : end_idx + 1]
+                                if len(x_seg) >= 1:
+                                    figure_output.data[trace_index_for_placeholder].x = list(x_seg)
+                                    figure_output.data[trace_index_for_placeholder].y = list(y_seg)
+                                    figure_output.data[trace_index_for_placeholder].visible = True
+                                    figure_output.data[trace_index_for_placeholder].name = f"Yellow Sector {current_sector_represented_by_placeholder}"
+                                    figure_output.data[trace_index_for_placeholder].mode = 'lines' if len(x_seg) > 1 else 'markers'
+                                    if len(x_seg) == 1 and hasattr(config, 'YELLOW_FLAG_MARKER_SIZE'):
+                                        figure_output.data[trace_index_for_placeholder].marker = dict(color=getattr(config, 'YELLOW_FLAG_COLOR', 'yellow'), size=getattr(config, 'YELLOW_FLAG_MARKER_SIZE', 8))
+                                else: # Segment is empty, hide placeholder
+                                    figure_output.data[trace_index_for_placeholder].x = [None]
+                                    figure_output.data[trace_index_for_placeholder].y = [None]
+                                    figure_output.data[trace_index_for_placeholder].visible = False
+                                    figure_output.data[trace_index_for_placeholder].name = f"{config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}"
+                            else: # Invalid segment indices
+                                figure_output.data[trace_index_for_placeholder].x = [None]; figure_output.data[trace_index_for_placeholder].y = [None]; figure_output.data[trace_index_for_placeholder].visible = False; figure_output.data[trace_index_for_placeholder].name = f"{config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}"
+                        else: # No segment definition for this active sector for this placeholder
+                            figure_output.data[trace_index_for_placeholder].x = [None]; figure_output.data[trace_index_for_placeholder].y = [None]; figure_output.data[trace_index_for_placeholder].visible = False; figure_output.data[trace_index_for_placeholder].name = f"{config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}"
+                    else: # This placeholder is not for an active yellow sector
+                        figure_output.data[trace_index_for_placeholder].x = [None]
+                        figure_output.data[trace_index_for_placeholder].y = [None]
+                        figure_output.data[trace_index_for_placeholder].visible = False
+                        figure_output.data[trace_index_for_placeholder].name = f"{config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}"
+                else:
+                    logger.warning(f"Placeholder index {trace_index_for_placeholder} out of bounds for fig.data len {len(figure_output.data)}")
+    
+    if figure_output is not no_update:
+        trace_names_in_output_final = [getattr(t, 'name', 'Unnamed') for t in figure_output.data]
+        logger.debug(f"FINAL Figure Output Data Traces (Placeholder Method): {trace_names_in_output_final}")
+        active_yellow_trace_names = [getattr(t, 'name') for t in figure_output.data if getattr(t, 'name', '').startswith("Yellow Sector ") and getattr(t, 'visible', False)]
+        logger.debug(f"Visibly active yellow traces in output: {active_yellow_trace_names} (based on snapshot: {active_yellow_sectors_snapshot})")
+
+    logger.debug(f"INIT_TRACK_MAP --- Outputting. FullRebuild: {needs_full_rebuild}, FigUpdate: {figure_output is not no_update}, PrevYellowKey: '{previous_rendered_yellow_key_from_store}', RenderedYellowKey: '{yellow_key_store_output}', VersionStoreOutIsUpdate: {version_store_output is not no_update and version_store_output != current_figure_version_in_store_state }")
+    return figure_output, version_store_output, yellow_key_store_output
+
 
 @app.callback(
     Output('driver-select-dropdown', 'options'),
@@ -1787,6 +1914,30 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
 
     return fig_with_data
 
+@app.callback(
+    Output('race-control-log-display', 'value'),
+    Input('interval-component-medium', 'n_intervals') # Update periodically
+)
+def update_race_control_display(n_intervals):
+    try:
+        with app_state.app_state_lock:
+            # The deque stores messages with newest first due to appendleft
+            # To display them chronologically (oldest at top), we reverse.
+            # Or, if you want newest at top, just join directly.
+            log_messages = list(app_state.race_control_log) # Get a snapshot
+
+        if not log_messages:
+            return config.TEXT_RC_WAITING # Use constant
+
+        # To display newest messages at the top of the textarea:
+        display_text = "\n".join(log_messages)
+        # If you prefer oldest messages at the top (more traditional log):
+        # display_text = "\n".join(reversed(log_messages))
+        
+        return display_text
+    except Exception as e:
+        logger.error(f"Error updating race control display: {e}", exc_info=True)
+        return config.TEXT_RC_ERROR # Use constant
 
 @app.callback(
     Output("debug-data-accordion-item", "className"),

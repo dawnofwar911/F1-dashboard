@@ -203,42 +203,82 @@ def _update_current_qualifying_segment_based_on_status(session_status_from_feed)
             logger.debug(f"_update_q_segment_helper: Tentatively set current_segment to '{newly_determined_segment}'.")
 
 
-def _process_race_control(data):
-    """ Helper function to process RaceControlMessages stream """
+def _process_race_control(data): # Existing function
+    """ Helper function to process RaceControlMessages stream and update active_yellow_sectors """
     messages_to_process = []
     if isinstance(data, dict) and 'Messages' in data:
         messages_payload = data.get('Messages')
         if isinstance(messages_payload, list):
             messages_to_process = messages_payload
         elif isinstance(messages_payload, dict): 
-            messages_to_process = messages_payload.values()
+            # Handle if Messages is a dict of dicts (key is message number)
+            messages_to_process = list(messages_payload.values()) # Process all messages in the dict
         else:
             logger.warning(f"RaceControlMessages 'Messages' field was not a list or dict: {type(messages_payload)}")
             return
-    elif data: 
+    elif data: # If data is not None but also not the expected dict structure
          logger.warning(f"Unexpected RaceControlMessages format received: {type(data)}. Expected dict with 'Messages'.")
-         return
-    else: 
+         return # Added return to avoid processing malformed data
+    else: # If data is None or empty
         return
 
-    new_messages_added = 0
-    for i, msg in enumerate(messages_to_process):
-        if isinstance(msg, dict):
+
+    new_messages_added_to_log = 0
+    for i, msg_dict in enumerate(messages_to_process): # Renamed msg to msg_dict for clarity
+        if isinstance(msg_dict, dict):
             try:
-                timestamp = msg.get('Utc', 'Timestamp?')
-                lap_num_str = str(msg.get('Lap', '-')) 
-                message_text = msg.get('Message', '')
+                # --- Existing logic for adding to race_control_log ---
+                timestamp = msg_dict.get('Utc', 'Timestamp?')
+                lap_num_str = str(msg_dict.get('Lap', '-')) 
+                message_text_from_feed = msg_dict.get('Message', '') # Renamed
                 time_str = "Timestamp?"
                 if isinstance(timestamp, str) and 'T' in timestamp:
                      try: time_str = timestamp.split('T')[1].split('.')[0] 
                      except: time_str = timestamp 
-                log_entry = f"[{time_str} L{lap_num_str}]: {message_text}"
-                app_state.race_control_log.appendleft(log_entry)
-                new_messages_added += 1
+                log_entry = f"[{time_str} L{lap_num_str}]: {message_text_from_feed}"
+                app_state.race_control_log.appendleft(log_entry) # Assumes app_state is imported
+                new_messages_added_to_log += 1
+                # --- End of existing logic ---
+
+                # --- NEW: Logic for Yellow Sector Flags ---
+                category = msg_dict.get('Category')
+                flag_status = msg_dict.get('Flag')
+                scope = msg_dict.get('Scope')
+                sector_number = msg_dict.get('Sector') # This will be an int if present
+
+                if category == 'Flag':
+                    if flag_status == 'YELLOW' and scope == 'Sector' and sector_number is not None:
+                        try:
+                            sector_int = int(sector_number)
+                            if sector_int not in app_state.active_yellow_sectors: # Use app_state
+                                app_state.active_yellow_sectors.add(sector_int) # Use app_state
+                                logger.info(f"YELLOW flag: Sector {sector_int} added to active_yellow_sectors. Current: {app_state.active_yellow_sectors}")
+                        except ValueError:
+                            logger.warning(f"Could not convert sector number '{sector_number}' to int for YELLOW flag.")
+                    
+                    elif flag_status == 'CLEAR' and scope == 'Sector' and sector_number is not None:
+                        try:
+                            sector_int = int(sector_number)
+                            if sector_int in app_state.active_yellow_sectors: # Use app_state
+                                app_state.active_yellow_sectors.discard(sector_int) # Use app_state
+                                logger.info(f"CLEAR flag: Sector {sector_int} removed from active_yellow_sectors. Current: {app_state.active_yellow_sectors}")
+                        except ValueError:
+                            logger.warning(f"Could not convert sector number '{sector_number}' to int for CLEAR flag.")
+                    
+                    elif flag_status == 'GREEN' or (category == 'TrackMessage' and "TRACK CLEAR" in message_text_from_feed.upper()):
+                        # Assuming "GREEN" flag or a "TRACK CLEAR" message clears all sector yellows
+                        if app_state.active_yellow_sectors: # Use app_state
+                            logger.info(f"GREEN flag or TRACK CLEAR: Clearing all active yellow sectors. Was: {app_state.active_yellow_sectors}")
+                            app_state.active_yellow_sectors.clear() # Use app_state
+                # --- End of NEW logic ---
+
             except Exception as e:
-                 logger.error(f"Error processing RC message item #{i+1}: {msg} - Error: {e}", exc_info=True)
+                 logger.error(f"Error processing RC message item #{i+1}: {msg_dict} - Error: {e}", exc_info=True)
         else:
-             logger.warning(f"Unexpected item type #{i+1} in RaceControlMessages source: {type(msg)}")
+             logger.warning(f"Unexpected item type #{i+1} in RaceControlMessages source: {type(msg_dict)}")
+    
+    # if new_messages_added_to_log > 0: # This log can be verbose, consider debug level
+    #     logger.debug(f"Added {new_messages_added_to_log} messages to RC log.")
 
 
 def _process_weather_data(data):

@@ -45,6 +45,7 @@ def create_layout():
         dcc.Store(id='car-positions-store'),
         dcc.Store(id='current-track-layout-cache-key-store'),
         dcc.Store(id='track-map-figure-version-store'),
+        dcc.Store(id='track-map-yellow-key-store', storage_type='memory', data=""),
         dcc.Interval(id='clientside-update-interval', interval=1250, n_intervals=0, disabled=True)
     ])
 

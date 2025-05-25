@@ -34,6 +34,9 @@ QUALIFYING_ELIMINATED_STYLE = {
 # Dim Grey (used for Q3 P1-P10 in previous versions, now unused based on your latest Q3 rule)
 QUALIFYING_WATCH_GREY_STYLE = {'backgroundColor': '#696969', 'color': 'white'}
 
+MAX_YELLOW_SECTOR_PLACEHOLDERS = 25 # Max marshal sectors you expect for any track
+YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX = "YellowSectorPlaceholder_" 
+
 QUALIFYING_ORDER = {
     "qualifying": ["Q1", "Q2", "Q3"],
     "sprint shootout": ["SQ1", "SQ2", "SQ3"]
@@ -172,6 +175,22 @@ SESSION_TYPE_SPRINT = "Sprint" # Assuming "Sprint" is the exact string used for 
 SESSION_TYPE_QUALI = "Qualifying"
 SESSION_TYPE_PRACTICE = "Practice"
  
+ # Track Map Element Styling
+TRACK_LINE_WIDTH = 2
+CORNER_MARKER_SIZE = 6
+CORNER_MARKER_COLOR = 'cyan'
+CORNER_TEXT_SIZE = 8
+CORNER_TEXT_COLOR = 'cyan'
+CORNER_TEXT_POSITION = 'middle right'
+CORNER_TEXT_DX = 5
+CORNER_TEXT_DY = 0
+MARSHAL_MARKER_SIZE = 5
+MARSHAL_MARKER_COLOR = '#FFA500' # Orange
+YELLOW_FLAG_COLOR = 'yellow'
+YELLOW_FLAG_WIDTH = 4 # Slightly wider than track line
+YELLOW_FLAG_OPACITY = 0.7 # Make it slightly transparent if desired
+CAR_MARKER_SIZE = 8
+CAR_MARKER_TEXT_SIZE = 8
 
 # Race Control
 TEXT_RC_WAITING = "Waiting for Race Control messages..."

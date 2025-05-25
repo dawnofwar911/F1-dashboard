@@ -22,7 +22,6 @@ app_state_lock = threading.Lock()
 stop_event = threading.Event()
 
 # --- Data Queue ---
-# Queue for passing raw/decoded messages from SignalR/Replay to processing loop
 data_queue = queue.Queue()
 
 # --- Data Storage ---
@@ -39,23 +38,29 @@ INITIAL_TRACK_STATUS_DATA = {}
 track_status_data = INITIAL_TRACK_STATUS_DATA.copy()
 
 INITIAL_SESSION_DETAILS = {
-    # ... other existing initial details ...
-    'ScheduledDurationSeconds': None, # Will be calculated from SessionInfo's Start/End Dates
-    'PreviousSessionStatus': None,    # For Q session resume logic
+    'ScheduledDurationSeconds': None,
+    'PreviousSessionStatus': None,
 }
 session_details = INITIAL_SESSION_DETAILS.copy()
 
-INITIAL_RACE_CONTROL_LOG_MAXLEN = 50 # Store maxlen for re-creation
+INITIAL_RACE_CONTROL_LOG_MAXLEN = 50
 race_control_log = collections.deque(maxlen=INITIAL_RACE_CONTROL_LOG_MAXLEN)
 
-INITIAL_TEAM_RADIO_MESSAGES_MAXLEN = 20 # Store latest 50 messages
+INITIAL_TEAM_RADIO_MESSAGES_MAXLEN = 20
 team_radio_messages = collections.deque(maxlen=INITIAL_TEAM_RADIO_MESSAGES_MAXLEN)
 
 INITIAL_TRACK_COORDINATES_CACHE = {
     'x': None, 'y': None, 'range_x': None, 'range_y': None,
-    'rotation': None, 'corner_x': None, 'corner_y': None, 'session_key': None
+    'rotation': None, 'session_key': None,
+    'corners_data': None,          # Will store list of dicts: [{'number': 1, 'x': X, 'y': Y}, ...]
+    'marshal_lights_data': None,   # Will store list of dicts: [{'number': 1, 'x': X, 'y': Y}, ...]
+    'marshal_sector_points': None, # List of raw dicts from JSON: [{'number':1, 'trackPosition':{'x':X, 'y':Y}, ...}, ...]
+    'marshal_sector_segments': None # Dict: {sector_num: (start_idx_on_trackline, end_idx_on_trackline), ...}
 }
 track_coordinates_cache = INITIAL_TRACK_COORDINATES_CACHE.copy()
+
+INITIAL_ACTIVE_YELLOW_SECTORS = set() # Using a set for efficient add/remove
+active_yellow_sectors = INITIAL_ACTIVE_YELLOW_SECTORS.copy()
 
 INITIAL_TELEMETRY_DATA = {}
 telemetry_data = INITIAL_TELEMETRY_DATA.copy()
@@ -162,6 +167,7 @@ def reset_to_default_state():
         global current_segment_scheduled_duration_seconds
         global qualifying_segment_state
         global practice_session_actual_start_utc
+        global active_yellow_sectors
 
         app_status = INITIAL_APP_STATUS.copy()
         data_store = INITIAL_DATA_STORE.copy()
@@ -176,6 +182,7 @@ def reset_to_default_state():
         team_radio_messages.clear()
 
         track_coordinates_cache = INITIAL_TRACK_COORDINATES_CACHE.copy()
+        active_yellow_sectors = INITIAL_ACTIVE_YELLOW_SECTORS.copy()
         telemetry_data = INITIAL_TELEMETRY_DATA.copy()
         driver_info = INITIAL_DRIVER_INFO.copy() # <<< ENSURE THIS IS RESET IF USED
 
