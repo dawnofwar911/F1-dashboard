@@ -1583,7 +1583,7 @@ def initialize_track_map(n_intervals, expected_session_id,
     triggered_prop_id = ctx.triggered[0]['prop_id']
     triggering_input_id = triggered_prop_id.split('.')[0]
 
-    logger.info(f"INIT_TRACK_MAP Trigger: {triggering_input_id}, SID: {expected_session_id}, PrevYellowKey: {previous_rendered_yellow_key_from_store}")
+    logger.debug(f"INIT_TRACK_MAP Trigger: {triggering_input_id}, SID: {expected_session_id}, PrevYellowKey: {previous_rendered_yellow_key_from_store}")
 
     with app_state.app_state_lock:
         cached_data = app_state.track_coordinates_cache.copy()
@@ -1619,7 +1619,7 @@ def initialize_track_map(n_intervals, expected_session_id,
     if previous_rendered_yellow_key_from_store is None: processed_previous_yellow_key = "" 
 
     if not needs_full_rebuild and processed_previous_yellow_key == active_yellow_sectors_key_for_current_render:
-        logger.info(f"INIT_TRACK_MAP --- No change for SID '{expected_session_id}', yellow key '{active_yellow_sectors_key_for_current_render}' unchanged. No update.")
+        logger.debug(f"INIT_TRACK_MAP --- No change for SID '{expected_session_id}', yellow key '{active_yellow_sectors_key_for_current_render}' unchanged. No update.")
         return no_update, no_update, no_update 
 
     figure_output: go.Figure
@@ -1635,7 +1635,26 @@ def initialize_track_map(n_intervals, expected_session_id,
         if cached_data.get('corners_data'):
             valid_corners = [c for c in cached_data['corners_data'] if c.get('x') is not None and c.get('y') is not None]
             if valid_corners:
-                fig_data.append(go.Scatter(x=[c['x'] for c in valid_corners], y=[c['y'] for c in valid_corners], mode='markers+text', marker=dict(size=getattr(config, 'CORNER_MARKER_SIZE', 6), color=getattr(config, 'CORNER_MARKER_COLOR', 'cyan'), symbol='circle-open'), text=[str(c['number']) for c in valid_corners], textposition='top center', textfont=dict(size=getattr(config, 'CORNER_TEXT_SIZE', 9), color=getattr(config, 'CORNER_TEXT_COLOR', 'cyan')), name='Corners', hoverinfo='text'))
+                fig_data.append(go.Scatter(
+                    x=[c['x'] for c in valid_corners], 
+                    y=[c['y'] for c in valid_corners], 
+                    mode='markers+text', 
+                    marker=dict(
+                        size=config.CORNER_MARKER_SIZE, 
+                        color=config.CORNER_MARKER_COLOR, 
+                        symbol='circle-open'
+                    ), 
+                    text=[str(c['number']) for c in valid_corners], 
+                    textposition=config.CORNER_TEXT_POSITION,
+                    textfont=dict(
+                        size=config.CORNER_TEXT_SIZE, 
+                        color=config.CORNER_TEXT_COLOR
+                    ),
+                    dx=config.CORNER_TEXT_DX,  # Added dx
+                    dy=config.CORNER_TEXT_DY,  # Added dy
+                    name='Corners', 
+                    hoverinfo='text' 
+                ))
         # 3. Static Marshal Light/Post Markers
         if cached_data.get('marshal_lights_data'):
             valid_lights = [m for m in cached_data['marshal_lights_data'] if m.get('x') is not None and m.get('y') is not None]
@@ -1718,7 +1737,7 @@ def initialize_track_map(n_intervals, expected_session_id,
             if temp_valid_corners: placeholder_trace_offset +=1
             if temp_valid_lights: placeholder_trace_offset +=1
 
-            logger.info(f"Updating yellow placeholders on existing figure. Active: {active_yellow_sectors_snapshot}. Placeholder offset: {placeholder_trace_offset}")
+            logger.debug(f"Updating yellow placeholders on existing figure. Active: {active_yellow_sectors_snapshot}. Placeholder offset: {placeholder_trace_offset}")
 
             for i in range(config.MAX_YELLOW_SECTOR_PLACEHOLDERS):
                 trace_index_for_placeholder = placeholder_trace_offset + i
@@ -1764,9 +1783,9 @@ def initialize_track_map(n_intervals, expected_session_id,
         trace_names_in_output_final = [getattr(t, 'name', 'Unnamed') for t in figure_output.data]
         logger.info(f"FINAL Figure Output Data Traces (Placeholder Method): {trace_names_in_output_final}")
         active_yellow_trace_names = [getattr(t, 'name') for t in figure_output.data if getattr(t, 'name', '').startswith("Yellow Sector ") and getattr(t, 'visible', False)]
-        logger.info(f"Visibly active yellow traces in output: {active_yellow_trace_names} (based on snapshot: {active_yellow_sectors_snapshot})")
+        logger.debug(f"Visibly active yellow traces in output: {active_yellow_trace_names} (based on snapshot: {active_yellow_sectors_snapshot})")
 
-    logger.info(f"INIT_TRACK_MAP --- Outputting. FullRebuild: {needs_full_rebuild}, FigUpdate: {figure_output is not no_update}, PrevYellowKey: '{previous_rendered_yellow_key_from_store}', RenderedYellowKey: '{yellow_key_store_output}', VersionStoreOutIsUpdate: {version_store_output is not no_update and version_store_output != current_figure_version_in_store_state }")
+    logger.debug(f"INIT_TRACK_MAP --- Outputting. FullRebuild: {needs_full_rebuild}, FigUpdate: {figure_output is not no_update}, PrevYellowKey: '{previous_rendered_yellow_key_from_store}', RenderedYellowKey: '{yellow_key_store_output}', VersionStoreOutIsUpdate: {version_store_output is not no_update and version_store_output != current_figure_version_in_store_state }")
     return figure_output, version_store_output, yellow_key_store_output
 
 
