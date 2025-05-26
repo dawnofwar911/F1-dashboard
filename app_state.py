@@ -65,6 +65,11 @@ active_yellow_sectors = INITIAL_ACTIVE_YELLOW_SECTORS.copy()
 INITIAL_TELEMETRY_DATA = {}
 telemetry_data = INITIAL_TELEMETRY_DATA.copy()
 
+# NEW: Store detailed stint data for each driver
+INITIAL_DRIVER_STINT_DATA = {}
+driver_stint_data = INITIAL_DRIVER_STINT_DATA.copy()
+
+
 INITIAL_DRIVER_INFO = {} # Though this seems unused, keeping for consistency if planned
 driver_info = INITIAL_DRIVER_INFO.copy()
 
@@ -171,7 +176,8 @@ def reset_to_default_state():
         global qualifying_segment_state
         global practice_session_actual_start_utc
         global active_yellow_sectors
-        global selected_driver_for_map_and_lap_chart # <<< ADDED
+        global selected_driver_for_map_and_lap_chart
+        global driver_stint_data # <<< ADDED
 
         app_status = INITIAL_APP_STATUS.copy()
         data_store = INITIAL_DATA_STORE.copy()
@@ -179,20 +185,21 @@ def reset_to_default_state():
         lap_time_history = INITIAL_LAP_TIME_HISTORY.copy()
         track_status_data = INITIAL_TRACK_STATUS_DATA.copy()
         session_details = INITIAL_SESSION_DETAILS.copy()
-        extrapolated_clock_info = INITIAL_EXTRAPOLATED_CLOCK_INFO.copy() # Reset it
-        qualifying_segment_state = INITIAL_QUALIFYING_SEGMENT_STATE.copy() # Reset new state
-        
+        extrapolated_clock_info = INITIAL_EXTRAPOLATED_CLOCK_INFO.copy()
+        qualifying_segment_state = INITIAL_QUALIFYING_SEGMENT_STATE.copy()
+
         race_control_log.clear()
         team_radio_messages.clear()
 
         track_coordinates_cache = INITIAL_TRACK_COORDINATES_CACHE.copy()
         active_yellow_sectors = INITIAL_ACTIVE_YELLOW_SECTORS.copy()
         telemetry_data = INITIAL_TELEMETRY_DATA.copy()
-        driver_info = INITIAL_DRIVER_INFO.copy() # <<< ENSURE THIS IS RESET IF USED
+        driver_stint_data = INITIAL_DRIVER_STINT_DATA.copy() # <<< RESET
+        driver_info = INITIAL_DRIVER_INFO.copy()
 
-        session_bests = INITIAL_SESSION_BESTS.copy() # <<< ADDED RESET
+        session_bests = INITIAL_SESSION_BESTS.copy()
         last_known_total_laps = None
-        
+
         last_known_overall_weather_condition = INITIAL_LAST_KNOWN_OVERALL_WEATHER_CONDITION
         last_known_weather_card_color = INITIAL_LAST_KNOWN_WEATHER_CARD_COLOR
         last_known_weather_card_inverse = INITIAL_LAST_KNOWN_WEATHER_CARD_INVERSE
@@ -204,14 +211,13 @@ def reset_to_default_state():
         last_known_wind_speed = INITIAL_LAST_KNOWN_WIND_SPEED
         last_known_wind_direction = INITIAL_LAST_KNOWN_WIND_DIRECTION
         last_known_rainfall_val = INITIAL_LAST_KNOWN_RAINFALL_VAL
-        
+
         current_processed_feed_timestamp_utc_dt = None
         session_start_feed_timestamp_utc_dt = None
         current_segment_scheduled_duration_seconds = None
-    
-        practice_session_actual_start_utc = None #
-        
-        selected_driver_for_map_and_lap_chart = None # <<< RESET
+
+        practice_session_actual_start_utc = None
+        selected_driver_for_map_and_lap_chart = None
 
         while not data_queue.empty():
             try:
@@ -229,7 +235,7 @@ def reset_to_default_state():
         live_data_file = None
         is_saving_active = False
         current_recording_filename = None
-        
+
         logger.info("Application state has been reset to defaults.")
 
 print("DEBUG: app_state module loaded")
