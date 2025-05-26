@@ -142,6 +142,9 @@ last_known_wind_speed = INITIAL_LAST_KNOWN_WIND_SPEED
 last_known_wind_direction = INITIAL_LAST_KNOWN_WIND_DIRECTION
 last_known_rainfall_val = INITIAL_LAST_KNOWN_RAINFALL_VAL
 
+selected_driver_for_map_and_lap_chart = None
+
+
 logger = logging.getLogger("F1App.AppState") # Logger for this module
 
 def reset_to_default_state():
@@ -157,7 +160,7 @@ def reset_to_default_state():
         global live_data_file, is_saving_active, current_recording_filename
         global session_bests
         global extrapolated_clock_info
-        global last_known_total_laps 
+        global last_known_total_laps
         global last_known_overall_weather_condition, last_known_weather_card_color
         global last_known_weather_card_inverse, last_known_main_weather_icon_key
         global last_known_air_temp, last_known_track_temp, last_known_humidity
@@ -168,6 +171,7 @@ def reset_to_default_state():
         global qualifying_segment_state
         global practice_session_actual_start_utc
         global active_yellow_sectors
+        global selected_driver_for_map_and_lap_chart # <<< ADDED
 
         app_status = INITIAL_APP_STATUS.copy()
         data_store = INITIAL_DATA_STORE.copy()
@@ -206,6 +210,9 @@ def reset_to_default_state():
         current_segment_scheduled_duration_seconds = None
     
         practice_session_actual_start_utc = None #
+        
+        selected_driver_for_map_and_lap_chart = None # <<< RESET
+
         while not data_queue.empty():
             try:
                 data_queue.get_nowait()

@@ -46,7 +46,7 @@ logger = logging.getLogger("F1App.Callbacks")
 @app.callback(
     Output('timing-data-actual-table', 'columns'),
     Input('interval-component-medium', 'n_intervals') # Trigger based on an interval
-    # Consider adding State('session-info-display', 'children') or a dcc.Store 
+    # Consider adding State('session-info-display', 'children') or a dcc.Store
     # if you want to trigger more specifically on session type changes,
     # but interval-component-medium should catch session updates.
 )
@@ -57,15 +57,15 @@ def update_timing_table_columns(n_intervals):
     """
     with app_state.app_state_lock:
         session_type = app_state.session_details.get('Type', None)
-    
-    # Assuming config.TIMING_TABLE_COLUMNS_CONFIG is a list of dicts, 
+
+    # Assuming config.TIMING_TABLE_COLUMNS_CONFIG is a list of dicts,
     # where each dict has at least an 'id' and 'name' key.
     all_columns = config.TIMING_TABLE_COLUMNS_CONFIG
-    
+
     # Define columns that are primarily relevant for Race/Sprint sessions
-    race_sprint_specific_column_ids = ['Pits', 'IntervalGap'] 
-    
-    if session_type is None: 
+    race_sprint_specific_column_ids = ['Pits', 'IntervalGap']
+
+    if session_type is None:
         logger.debug("Session type is None, hiding race/sprint specific columns by default.")
         columns_to_display = [
             col for col in all_columns if col.get('id') not in race_sprint_specific_column_ids
@@ -81,7 +81,7 @@ def update_timing_table_columns(n_intervals):
             col for col in all_columns if col.get('id') not in race_sprint_specific_column_ids
         ]
         return columns_to_display
-        
+
 @app.callback(
     Output('team-radio-display', 'children'),
     Input('interval-component-medium', 'n_intervals') # Update periodically
@@ -90,7 +90,7 @@ def update_team_radio_display(n_intervals):
     try:
         with app_state.app_state_lock:
             # Make a copy of the deque for safe iteration
-            radio_messages_snapshot = list(app_state.team_radio_messages) 
+            radio_messages_snapshot = list(app_state.team_radio_messages)
             session_path = app_state.session_details.get('Path') # Needed for the audio URL
 
         if not radio_messages_snapshot:
@@ -106,14 +106,14 @@ def update_team_radio_display(n_intervals):
 
         display_elements = []
         # radio_messages_snapshot is already newest first due to appendleft in data_processing
-        
+
         for msg in radio_messages_snapshot: # Iterate over the copy
             utc_time_str = msg.get('Utc', 'N/A')
             # Convert UTC to a more readable format (HH:MM:SS)
             try:
                 # Parse timestamp, handling potential milliseconds and 'Z'
                 if '.' in utc_time_str:
-                    utc_time_str = utc_time_str.split('.')[0] 
+                    utc_time_str = utc_time_str.split('.')[0]
                 dt_obj = datetime.strptime(utc_time_str.replace('Z', ''), "%Y-%m-%dT%H:%M:%S")
                 time_display = dt_obj.strftime("%H:%M:%S")
             except ValueError as e_time:
@@ -122,23 +122,23 @@ def update_team_radio_display(n_intervals):
 
             driver_tla = msg.get('DriverTla', msg.get('RacingNumber', 'Unknown'))
             audio_file_path = msg.get('Path') # Relative path like "TeamRadio/MAXVER01_..."
-            
+
             if not audio_file_path:
                 logger.debug(f"Skipping radio message due to missing audio path: {msg}")
                 continue
 
             # Ensure no double slashes if audio_file_path might start with one (it shouldn't based on example)
             full_audio_url = f"{base_audio_url.rstrip('/')}/{audio_file_path.lstrip('/')}"
-            
+
             message_style = {
                 'padding': '6px 2px', # Adjusted padding
                 'borderBottom': '1px solid #383838', # Slightly lighter separator
                 'display': 'flex',
                 'alignItems': 'center',
                 'justifyContent': 'space-between', # Pushes items apart
-                'gap': '8px' 
+                'gap': '8px'
             }
-            
+
             text_info_style = {
                 'fontSize': '0.7rem', # Smaller font for timestamp/TLA
                 'whiteSpace': 'nowrap',
@@ -153,15 +153,15 @@ def update_team_radio_display(n_intervals):
                 'flexGrow': '1', # Allow player to take available space
                 'maxWidth': 'calc(100% - 90px)' # Max width considering text part
             }
-            
+
             timestamp_tla_span = html.Span(f"[{time_display}] {driver_tla}:", style=text_info_style)
-            
+
             audio_player = html.Audio(
-                src=full_audio_url, 
-                controls=True, 
+                src=full_audio_url,
+                controls=True,
                 style=audio_player_style
             )
-            
+
             # Append to the start to keep newest at the top if not using appendleft initially
             # Since we are iterating a snapshot of a deque that had appendleft, this order is fine.
             display_elements.append(html.Div([timestamp_tla_span, audio_player], style=message_style))
@@ -195,14 +195,14 @@ def update_lap_and_session_info(n_intervals):
     try:
         with app_state.app_state_lock: #
             current_app_overall_status = app_state.app_status.get("state", "Idle") #
-            
+
             if current_app_overall_status not in ["Live", "Replaying"]: #
                 return lap_value_str, lap_counter_div_style, session_timer_label_text, session_time_str, session_timer_div_style #
 
             session_type_from_state = app_state.session_details.get('Type', "Unknown") #
             current_session_feed_status = app_state.session_details.get('SessionStatus', 'Unknown') #
             current_replay_speed = app_state.replay_speed # Used for LIVE extrapolation, replay speed is inherent in feed pace #
-            
+
             lap_count_data_payload = app_state.data_store.get('LapCount', {}) #
             lap_count_data = lap_count_data_payload.get('data', {}) if isinstance(lap_count_data_payload, dict) else {} #
             if not isinstance(lap_count_data, dict): lap_count_data = {} #
@@ -213,16 +213,16 @@ def update_lap_and_session_info(n_intervals):
                 except (ValueError, TypeError): pass #
             actual_total_laps_to_display = app_state.last_known_total_laps if app_state.last_known_total_laps is not None else '--' #
             current_lap_to_display = str(current_lap_from_feed) if current_lap_from_feed is not None else '-' #
-            
+
             session_type_lower = session_type_from_state.lower() #
-            
+
             # q_state is for LIVE timer extrapolation and Q REPLAY pause states
             q_state_live_anchor = app_state.qualifying_segment_state.copy() #
-            
+
             # For Practice LIVE timing
             practice_start_utc_live = app_state.practice_session_actual_start_utc #
             practice_overall_duration_s = app_state.practice_session_scheduled_duration_seconds #
-            
+
             # For REPLAY feed-paced timing (Practice and Q)
             current_feed_ts_dt_replay = app_state.current_processed_feed_timestamp_utc_dt if current_app_overall_status == "Replaying" else None #
             start_feed_ts_dt_replay = app_state.session_start_feed_timestamp_utc_dt if current_app_overall_status == "Replaying" else None #
@@ -297,7 +297,7 @@ def update_lap_and_session_info(n_intervals):
                     if old_q_segment == "SQ1": next_q_segment_name = "SQ2" #
                     elif old_q_segment == "SQ2": next_q_segment_name = "SQ3" #
                 session_timer_label_text = f"Next Up: {next_q_segment_name}" if next_q_segment_name else "Next Up: ..."
-            
+
             elif segment_label == "Ended": #
                 session_timer_label_text = "Session Ended:" #
 
@@ -322,7 +322,7 @@ def update_lap_and_session_info(n_intervals):
                         session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds) #
                     else:
                         session_time_str = "Awaiting..."
-            
+
             elif segment_label and segment_label not in ["Unknown", "Between Segments", "Ended"] and \
                  current_session_feed_status in ["Suspended", "Aborted", "Inactive"]: # Paused Q segment #
                 session_timer_label_text = f"{segment_label} Paused:" #
@@ -332,7 +332,7 @@ def update_lap_and_session_info(n_intervals):
                     session_time_str = utils.format_seconds_to_time_str(displayed_remaining_seconds) #
                 else:
                     session_time_str = "Awaiting..."
-            
+
             else: # Fallback for Q: NotStarted, Unknown segment etc.
                 if session_name_from_details and current_session_feed_status == "NotStarted": #
                     session_timer_label_text = f"Next Up: {session_name_from_details}"
@@ -340,7 +340,7 @@ def update_lap_and_session_info(n_intervals):
                 else:
                     session_timer_label_text = "Time Left:" #
                     session_time_str = extrapolated_clock_remaining if extrapolated_clock_remaining and extrapolated_clock_remaining != "0" else "Awaiting..."
-        
+
         else: # Default for unknown/other session types
             lap_counter_div_style = {'display': 'inline-block', 'margin-right': '20px'} #
             session_timer_div_style = {'display': 'inline-block'} #
@@ -414,7 +414,7 @@ def update_connection_status(n):
 def update_session_and_weather_info(n):
     session_info_str = config.TEXT_SESSION_INFO_AWAITING
     weather_details_spans = []
-    
+
     with app_state.app_state_lock:
         # Overall condition state
         overall_condition = app_state.last_known_overall_weather_condition
@@ -507,11 +507,11 @@ def update_session_and_weather_info(n):
         temp_overall_condition_candidate = overall_condition # Start with persisted overall
         temp_card_color_candidate = weather_card_color
         temp_card_inverse_candidate = weather_card_inverse
-        
+
         # Only try to change overall condition if there's relevant new data
         if parsed_rainfall_val is not None or parsed_air_temp is not None or parsed_humidity is not None:
             new_overall_condition_determined_this_update = True # Attempt to determine
-            
+
             # Default to a neutral if we are re-evaluating based on new partial data
             effective_air_temp_for_condition = parsed_air_temp if parsed_air_temp is not None else air_temp_to_display
             effective_humidity_for_condition = parsed_humidity if parsed_humidity is not None else humidity_to_display
@@ -546,11 +546,11 @@ def update_session_and_weather_info(n):
                     temp_overall_condition_candidate = "partly_cloudy"
                     temp_card_color_candidate = "light"
                     temp_card_inverse_candidate = False
-            elif parsed_rainfall_val is not None and not current_cycle_is_raining: 
+            elif parsed_rainfall_val is not None and not current_cycle_is_raining:
                 # If rainfall data came in and it's explicitly NOT raining,
                 # and we couldn't determine based on temp/humidity, default to something sensible
                 # This helps clear a "rain" state if rain stops but other data is missing.
-                temp_overall_condition_candidate = "default" 
+                temp_overall_condition_candidate = "default"
                 temp_card_color_candidate = "light"
                 temp_card_inverse_candidate = False
             else:
@@ -569,7 +569,7 @@ def update_session_and_weather_info(n):
                 app_state.last_known_weather_card_color = weather_card_color
                 app_state.last_known_weather_card_inverse = weather_card_inverse
                 app_state.last_known_main_weather_icon_key = main_weather_icon_key
-        
+
         current_main_weather_icon = config.WEATHER_ICON_MAP.get(main_weather_icon_key, config.WEATHER_ICON_MAP["default"])
 
         # --- Step 4: Build weather_details_spans using the 'to_display' values ---
@@ -586,7 +586,7 @@ def update_session_and_weather_info(n):
 
         # "RAIN" text display logic, based on the most up-to-date rainfall_val_for_text
         is_raining_for_text_span = rainfall_val_for_text == '1' or rainfall_val_for_text == 1
-        
+
         rain_text_color_on_light_card = "#007bff"
         rain_text_color_on_dark_card = "white"
 
@@ -600,20 +600,20 @@ def update_session_and_weather_info(n):
 
 
         if not weather_details_spans and overall_condition == "default":
-            final_weather_display_children = [html.Em(config.TEXT_WEATHER_UNAVAILABLE)] 
+            final_weather_display_children = [html.Em(config.TEXT_WEATHER_UNAVAILABLE)]
         elif not weather_details_spans and overall_condition != "default":
-             final_weather_display_children = [html.Em(config.TEXT_WEATHER_CONDITION_GENERIC.format(condition=overall_condition.replace("_"," ").title()))] 
+             final_weather_display_children = [html.Em(config.TEXT_WEATHER_CONDITION_GENERIC.format(condition=overall_condition.replace("_"," ").title()))]
         else:
             final_weather_display_children = weather_details_spans
-        
+
         return session_info_str, html.Div(children=final_weather_display_children), current_main_weather_icon, weather_card_color, weather_card_inverse
 
     except Exception as e:
         logger.error(f"Session/Weather Display Error in callback: {e}", exc_info=True)
-        return (config.TEXT_SESSION_INFO_ERROR, 
-                config.TEXT_WEATHER_ERROR, 
-                config.WEATHER_ICON_MAP["default"], 
-                "light", 
+        return (config.TEXT_SESSION_INFO_ERROR,
+                config.TEXT_WEATHER_ERROR,
+                config.WEATHER_ICON_MAP["default"],
+                "light",
                 False)
 
 @app.callback(
@@ -657,12 +657,12 @@ def update_main_data_displays(n):
         current_feed_ts_dt_replay_local = None
         start_feed_ts_dt_replay_local = None
         segment_duration_s_replay_local = None
-        
-        active_segment_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0} 
-        q1_eliminated_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0} 
-        q2_eliminated_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0} 
-        
-        with app_state.app_state_lock: 
+
+        active_segment_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0}
+        q1_eliminated_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0}
+        q2_eliminated_highlight_rule = {"type": "NONE", "lower_pos": 0, "upper_pos": 0}
+
+        with app_state.app_state_lock:
             app_overall_status = app_state.app_status.get("state", "Idle") #
             session_type_from_state_str = app_state.session_details.get('Type', "").lower() #
             q_state_snapshot_for_live = app_state.qualifying_segment_state.copy() #
@@ -670,7 +670,7 @@ def update_main_data_displays(n):
             previous_q_segment_from_state = q_state_snapshot_for_live.get("old_segment") #
             current_replay_speed_snapshot = app_state.replay_speed #
             session_feed_status_snapshot = app_state.session_details.get('SessionStatus', 'Unknown') #
-            
+
             if app_overall_status == "Replaying": #
                 current_feed_ts_dt_replay_local = app_state.current_processed_feed_timestamp_utc_dt #
                 start_feed_ts_dt_replay_local = app_state.session_start_feed_timestamp_utc_dt #
@@ -679,7 +679,7 @@ def update_main_data_displays(n):
             timing_state_copy = app_state.timing_state.copy() #
             data_store_copy = app_state.data_store #
 
-        current_segment_time_remaining_seconds = float('inf') 
+        current_segment_time_remaining_seconds = float('inf')
         is_active_q_segment_for_highlight = (
             session_type_from_state_str in ["qualifying", "sprint shootout"] and #
             current_q_segment_from_state and
@@ -717,13 +717,13 @@ def update_main_data_displays(n):
         elif current_q_segment_from_state in ["Between Segments", "Ended"] or \
              session_feed_status_snapshot in ["Finished", "Ends"]: #
             current_segment_time_remaining_seconds = 0 #
-        
+
         five_mins_in_seconds = 5 * 60 #
         is_qualifying_type_session = session_type_from_state_str in ["qualifying", "sprint shootout"] #
 
         # --- MODIFIED HIGHLIGHTING LOGIC ---
         apply_danger_zone_highlight = False
-        danger_zone_applies_to_segment = None 
+        danger_zone_applies_to_segment = None
         apply_q1_elimination_highlight = False
         apply_q2_elimination_highlight = False
 
@@ -734,7 +734,7 @@ def update_main_data_displays(n):
                 if is_session_status_for_running_danger_zone and current_segment_time_remaining_seconds <= five_mins_in_seconds: #
                     apply_danger_zone_highlight = True
                     danger_zone_applies_to_segment = current_q_segment_from_state #
-            
+
             if not apply_danger_zone_highlight and session_feed_status_snapshot == "Finished": #
                 if current_q_segment_from_state in ["Q1", "SQ1", "Q2", "SQ2"]: #
                     apply_danger_zone_highlight = True
@@ -755,13 +755,13 @@ def update_main_data_displays(n):
                     upper_b_q2_active = config.QUALIFYING_CARS_Q2 #
                     active_segment_highlight_rule = {
                         "type": "RED_DANGER", "lower_pos": lower_b_q2_active, "upper_pos": upper_b_q2_active} #
-            
+
             # Conditions for ELIMINATION HIGHLIGHT (GREY)
             # Q1 Eliminations:
             # Trigger: Q1 -> Between Segments + Inactive
             # Maintain: If in Q2, Q3, or Between Segments (after Q1), or Ended (after Q1)
-            if (previous_q_segment_from_state in ["Q1", "SQ1"] and 
-                current_q_segment_from_state == "Between Segments" and 
+            if (previous_q_segment_from_state in ["Q1", "SQ1"] and
+                current_q_segment_from_state == "Between Segments" and
                 session_feed_status_snapshot == "Inactive"): #
                 apply_q1_elimination_highlight = True  # Trigger point
             elif current_q_segment_from_state in ["Q2", "SQ2", "Q3", "SQ3"]: #
@@ -776,8 +776,8 @@ def update_main_data_displays(n):
             # Q2 Eliminations:
             # Trigger: Q2 -> Between Segments + Inactive
             # Maintain: If in Q3, or Between Segments (after Q2), or Ended (after Q2)
-            if (previous_q_segment_from_state in ["Q2", "SQ2"] and 
-                current_q_segment_from_state == "Between Segments" and 
+            if (previous_q_segment_from_state in ["Q2", "SQ2"] and
+                current_q_segment_from_state == "Between Segments" and
                 session_feed_status_snapshot == "Inactive"): #
                 apply_q2_elimination_highlight = True  # Trigger point
             elif current_q_segment_from_state in ["Q3", "SQ3"]: #
@@ -788,16 +788,16 @@ def update_main_data_displays(n):
             elif current_q_segment_from_state == "Ended" and \
                  previous_q_segment_from_state in ["Q2", "SQ2", "Q3", "SQ3"]: # # Session ended after Q2 or Q3
                 apply_q2_elimination_highlight = True # Maintain
-            
+
             # Set elimination highlight rule dicts
             if apply_q1_elimination_highlight:
                 q1_eliminated_highlight_rule = {
-                    "type": "GREY_ELIMINATED", 
+                    "type": "GREY_ELIMINATED",
                     "lower_pos": config.QUALIFYING_CARS_Q1 - config.QUALIFYING_ELIMINATED_Q1 + 1, #
                     "upper_pos": config.QUALIFYING_CARS_Q1 } #
             if apply_q2_elimination_highlight:
                 q2_eliminated_highlight_rule = {
-                    "type": "GREY_ELIMINATED", 
+                    "type": "GREY_ELIMINATED",
                     "lower_pos": config.QUALIFYING_CARS_Q2 - config.QUALIFYING_ELIMINATED_Q2 + 1, #
                     "upper_pos": config.QUALIFYING_CARS_Q2 } #
         # --- END OF MODIFIED HIGHLIGHTING LOGIC ---
@@ -999,11 +999,11 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
 
     with app_state.app_state_lock:
         old_speed = app_state.replay_speed # Speed active *before* this change
-        
+
         # If speed hasn't actually changed, do nothing to avoid potential float precision issues
         if abs(old_speed - new_speed) < 0.01: # Tolerance for float comparison
             # Still update app_state.replay_speed to the precise new_speed_value if slider was just wiggled
-            app_state.replay_speed = new_speed 
+            app_state.replay_speed = new_speed
             return no_update
 
         session_type = app_state.session_details.get('Type', "Unknown").lower() #
@@ -1011,7 +1011,7 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
 
         current_official_remaining_s_at_anchor = q_state.get("official_segment_remaining_seconds") #
         last_capture_utc_anchor = q_state.get("last_official_time_capture_utc") #
-        
+
         now_utc = datetime.now(timezone.utc) #
         calculated_current_true_remaining_s = None
 
@@ -1024,7 +1024,7 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
                 wall_time_elapsed_practice = (now_utc - practice_start_utc).total_seconds() #
                 session_time_elapsed_practice = wall_time_elapsed_practice * old_speed
                 calculated_current_true_remaining_s = practice_duration_s - session_time_elapsed_practice
-        
+
         # For Qualifying (or if Practice didn't have its continuous model vars set yet)
         # Use the q_state anchor point.
         if calculated_current_true_remaining_s is None and \
@@ -1043,7 +1043,7 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
             # last_capture_replay_speed will be effectively the new_speed for next extrapolation
             # session_status_at_capture might need an update if relevant, but for re-speed, it's less critical
             q_state["last_capture_replay_speed"] = new_speed # Reflect that this anchor is for the new speed
-            
+
             logger.info(
                 f"Replay speed changing from {old_speed:.2f}x to {new_speed:.2f}x. "
                 f"Original anchor: {current_official_remaining_s_at_anchor:.2f}s at {last_capture_utc_anchor}. "
@@ -1056,14 +1056,14 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
             if session_type.startswith("practice") and \
                app_state.practice_session_actual_start_utc and \
                app_state.practice_session_scheduled_duration_seconds is not None:
-                
+
                 duration_s = app_state.practice_session_scheduled_duration_seconds #
                 if new_speed > 0: # Avoid division by zero
                     # We want: new_anchor_remaining_s = duration_s - (now_utc - new_practice_start_utc) * new_speed
                     # (now_utc - new_practice_start_utc) * new_speed = duration_s - new_anchor_remaining_s
                     # (now_utc - new_practice_start_utc) = (duration_s - new_anchor_remaining_s) / new_speed
                     # new_practice_start_utc = now_utc - timedelta(seconds = (duration_s - new_anchor_remaining_s) / new_speed)
-                    
+
                     wall_time_offset_for_new_start = (duration_s - new_anchor_remaining_s) / new_speed
                     app_state.practice_session_actual_start_utc = now_utc - timedelta(seconds=wall_time_offset_for_new_start) #
                     logger.info(
@@ -1126,18 +1126,19 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
     if button_id == 'connect-button':
         with app_state.app_state_lock:
             current_app_s = app_state.app_status["state"]
-            if current_app_s in ["Replaying", "Playback Complete", "Stopped", "Error"]: 
+            if current_app_s in ["Replaying", "Playback Complete", "Stopped", "Error"]:
                 logger.info(f"Connect Live: Transitioning from {current_app_s}. Resetting track map related states for a clean live start.")
                 app_state.track_coordinates_cache = app_state.INITIAL_TRACK_COORDINATES_CACHE.copy()
-                app_state.session_details['SessionKey'] = None 
+                app_state.session_details['SessionKey'] = None
+                app_state.selected_driver_for_map_and_lap_chart = None # Reset selected driver
 
-                track_map_figure_output = generate_reset_track_map_figure() 
-                car_positions_store_output = {'status': 'reset_map_display', 'timestamp': time.time()} 
+                track_map_figure_output = generate_reset_track_map_figure()
+                car_positions_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
 
-            if current_app_s not in ["Idle", "Stopped", "Error", "Playback Complete", "Replaying"]: 
+            if current_app_s not in ["Idle", "Stopped", "Error", "Playback Complete", "Replaying"]:
                 logger.warning(f"Connect ignored. App state: {current_app_s}")
                 return dummy_output, track_map_figure_output, car_positions_store_output
-            
+
             if app_state.stop_event.is_set(): logger.info("Connect Live: Clearing pre-existing stop_event.")
             app_state.stop_event.clear()
             should_record_live = app_state.record_live_data # Use the state variable
@@ -1150,7 +1151,7 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
         except Exception as e:
             logger.error(f"Negotiation error: {e}", exc_info=True)
             with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": config.TEXT_SIGNALR_NEGOTIATION_ERROR_PREFIX + str(type(e).__name__)}) # Use constant
-            return dummy_output, track_map_figure_output, car_positions_store_output 
+            return dummy_output, track_map_figure_output, car_positions_store_output
         if websocket_url and ws_headers:
             if should_record_live:
                 if not replay.init_live_file(): logger.error("Failed to init recording.") #
@@ -1165,16 +1166,17 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
             active_live_session = False
             with app_state.app_state_lock:
                 state = app_state.app_status["state"]
+                app_state.selected_driver_for_map_and_lap_chart = None # Reset selected driver on new replay
                 if state in ["Live", "Connecting"]: active_live_session = True
                 elif state == "Replaying":
                     logger.warning(config.TEXT_REPLAY_ALREADY_RUNNING) # Use constant
-                    return dummy_output, track_map_figure_output, car_positions_store_output 
+                    return dummy_output, track_map_figure_output, car_positions_store_output
             if active_live_session:
                 logger.info("Stopping live feed for replay.")
                 try: signalr_client.stop_connection(); time.sleep(0.3) #
                 except Exception as e:
                     logger.error(f"Error stopping live feed for replay: {e}", exc_info=True)
-                    return dummy_output, track_map_figure_output, car_positions_store_output 
+                    return dummy_output, track_map_figure_output, car_positions_store_output
             try:
                 speed_float = float(replay_speed); speed_float = max(0.1, speed_float)
                 full_replay_path = Path(config.REPLAY_DIR) / selected_replay_file #
@@ -1203,7 +1205,7 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
 
         logger.info("Stop & Reset: Resetting application state...")
         try:
-            app_state.reset_to_default_state() #
+            app_state.reset_to_default_state() # This will now also reset selected_driver_for_map_and_lap_chart
             track_map_figure_output = generate_reset_track_map_figure()
             car_positions_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
             logger.info("Stop & Reset: State reset; track map set to empty; car_positions_store signaled.")
@@ -1218,7 +1220,7 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
             else: logger.info("Stop & Reset: Global stop_event was already clear.")
             if any_action_failed and current_status != "Error":
                 logger.warning("Stop & Reset: Forcing app status to 'Error' due to failures.")
-                app_state.app_status["state"] = "Error"; app_state.app_status["connection"] = "Reset failed" 
+                app_state.app_status["state"] = "Error"; app_state.app_status["connection"] = "Reset failed"
             elif not any_action_failed and current_status != "Idle":
                  logger.info(f"Stop & Reset: Actions succeeded. Current state '{current_status}' (expected Idle). Ensuring Idle.")
                  app_state.app_status["state"] = "Idle"; app_state.app_status["connection"] = config.TEXT_SIGNALR_DISCONNECTED_STATUS # Use constant
@@ -1366,7 +1368,7 @@ def display_driver_details(selected_driver_number, selected_lap, current_telemet
 
         if valid_indices:
             timestamps_plot = [timestamps_dt[i] for i in valid_indices]
-            channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS'] 
+            channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
             fig_with_data = make_subplots(rows=len(channels), cols=1, shared_xaxes=True,
                                           subplot_titles=[c[:10] for c in channels], vertical_spacing=0.06)
             for i, channel in enumerate(channels):
@@ -1427,6 +1429,11 @@ def update_current_session_id_for_map(n_intervals, existing_session_id_in_store)
 
     if not year or not circuit_key or app_status_state in ["Idle", "Stopped", "Error"]:
         if existing_session_id_in_store is not None:
+            # Clear the selected driver if session changes or becomes invalid
+            with app_state.app_state_lock:
+                if app_state.selected_driver_for_map_and_lap_chart is not None:
+                    logger.debug("Clearing selected_driver_for_map_and_lap_chart due to invalid/changed session.")
+                    app_state.selected_driver_for_map_and_lap_chart = None
             return None
         return dash.no_update
 
@@ -1434,7 +1441,9 @@ def update_current_session_id_for_map(n_intervals, existing_session_id_in_store)
 
     if current_session_id != existing_session_id_in_store:
         logger.debug(
-            f"Updating current-track-layout-cache-key-store to: {current_session_id}")
+            f"Updating current-track-layout-cache-key-store to: {current_session_id}. Clearing selected driver.")
+        with app_state.app_state_lock: # Clear selected driver on session change
+            app_state.selected_driver_for_map_and_lap_chart = None
         return current_session_id
 
     return dash.no_update
@@ -1505,9 +1514,13 @@ def update_car_data_for_clientside(n_intervals):
     with app_state.app_state_lock:
         current_app_status = app_state.app_status.get("state", "Idle")
         timing_state_snapshot = app_state.timing_state.copy()
+        # Get the currently selected driver for highlighting
+        selected_driver_rno = app_state.selected_driver_for_map_and_lap_chart
 
     if current_app_status not in ["Live", "Replaying"] or not timing_state_snapshot:
-        return dash.no_update # Or return {'status': 'inactive', 'timestamp': time.time()}
+        # Ensure to include selected_driver even if inactive, so JS can clear highlight
+        return {'status': 'inactive', 'timestamp': time.time(), 'selected_driver': selected_driver_rno}
+
 
     processed_car_data = {}
     for car_num_str, driver_state in timing_state_snapshot.items():
@@ -1537,9 +1550,17 @@ def update_car_data_for_clientside(n_intervals):
         }
 
     if not processed_car_data: # If after processing, there's nothing, send no update
-        return dash.no_update
+        return {'status': 'active_no_cars', 'timestamp': time.time(), 'selected_driver': selected_driver_rno}
 
-    return processed_car_data
+
+    # Add the selected driver information to the output for JS
+    output_data = {
+        'status': 'active', # Indicate data is active
+        'timestamp': time.time(),
+        'selected_driver': selected_driver_rno, # Pass the selected driver's racing number
+        'cars': processed_car_data
+    }
+    return output_data
 
 @app.callback(
     Output('clientside-update-interval', 'interval'),
@@ -1566,7 +1587,7 @@ def update_clientside_interval_speed(replay_speed, interval_disabled):
 @app.callback(
     Output('track-map-graph', 'figure', allow_duplicate=True),
     Output('track-map-figure-version-store', 'data', allow_duplicate=True),
-    Output('track-map-yellow-key-store', 'data'), 
+    Output('track-map-yellow-key-store', 'data'),
     [Input('interval-component-medium', 'n_intervals'),
      Input('current-track-layout-cache-key-store', 'data')],
     [State('track-map-graph', 'figure'),
@@ -1574,8 +1595,8 @@ def update_clientside_interval_speed(replay_speed, interval_disabled):
      State('track-map-yellow-key-store', 'data')],
     prevent_initial_call='initial_duplicate'
 )
-def initialize_track_map(n_intervals, expected_session_id, 
-                         current_track_map_figure_state, 
+def initialize_track_map(n_intervals, expected_session_id,
+                         current_track_map_figure_state,
                          current_figure_version_in_store_state,
                          previous_rendered_yellow_key_from_store):
 
@@ -1587,13 +1608,13 @@ def initialize_track_map(n_intervals, expected_session_id,
 
     with app_state.app_state_lock:
         cached_data = app_state.track_coordinates_cache.copy()
-        driver_list_snapshot = app_state.timing_state.copy()
+        driver_list_snapshot = app_state.timing_state.copy() # For car marker placeholders
         active_yellow_sectors_snapshot = set(app_state.active_yellow_sectors)
 
     if not expected_session_id or not isinstance(expected_session_id, str) or '_' not in expected_session_id:
         fig_empty = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"empty_map_init_{time.time()}", config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS)
         fig_empty.layout.plot_bgcolor = 'rgb(30,30,30)'; fig_empty.layout.paper_bgcolor = 'rgba(0,0,0,0)'
-        return fig_empty, f"empty_map_ver_{time.time()}", "" 
+        return fig_empty, f"empty_map_ver_{time.time()}", ""
 
     is_cache_ready_for_base = (cached_data.get('session_key') == expected_session_id and cached_data.get('x') and cached_data.get('y'))
     if not is_cache_ready_for_base:
@@ -1604,7 +1625,7 @@ def initialize_track_map(n_intervals, expected_session_id,
     corners_c = len(cached_data.get('corners_data') or [])
     lights_c = len(cached_data.get('marshal_lights_data') or [])
     # Increment version due to placeholder strategy
-    layout_structure_version = "v3.3_placeholders" 
+    layout_structure_version = "v3.3_placeholders"
     target_persistent_layout_uirevision = f"trackmap_layout_{expected_session_id}_c{corners_c}_l{lights_c}_{layout_structure_version}"
     active_yellow_sectors_key_for_current_render = "_".join(sorted(map(str, list(active_yellow_sectors_snapshot))))
 
@@ -1614,17 +1635,17 @@ def initialize_track_map(n_intervals, expected_session_id,
     if triggering_input_id == 'current-track-layout-cache-key-store': needs_full_rebuild = True
     elif not current_track_map_figure_state or not current_track_map_figure_state.get('layout'): needs_full_rebuild = True
     elif current_layout_uirevision_from_state != target_persistent_layout_uirevision: needs_full_rebuild = True
-    
+
     processed_previous_yellow_key = previous_rendered_yellow_key_from_store
-    if previous_rendered_yellow_key_from_store is None: processed_previous_yellow_key = "" 
+    if previous_rendered_yellow_key_from_store is None: processed_previous_yellow_key = ""
 
     if not needs_full_rebuild and processed_previous_yellow_key == active_yellow_sectors_key_for_current_render:
         logger.debug(f"INIT_TRACK_MAP --- No change for SID '{expected_session_id}', yellow key '{active_yellow_sectors_key_for_current_render}' unchanged. No update.")
-        return no_update, no_update, no_update 
+        return no_update, no_update, no_update
 
     figure_output: go.Figure
-    version_store_output = no_update 
-    yellow_key_store_output = active_yellow_sectors_key_for_current_render 
+    version_store_output = no_update
+    yellow_key_store_output = active_yellow_sectors_key_for_current_render
 
     if needs_full_rebuild:
         logger.debug(f"Performing FULL track map rebuild for SID: {expected_session_id}. Target Layout uirevision: {target_persistent_layout_uirevision}")
@@ -1632,52 +1653,79 @@ def initialize_track_map(n_intervals, expected_session_id,
         # 1. Base Track Line
         fig_data.append(go.Scatter(x=list(cached_data['x']), y=list(cached_data['y']), mode='lines', line=dict(color='grey', width=getattr(config, 'TRACK_LINE_WIDTH', 2)), name='Track', hoverinfo='none'))
         # 2. Static Corner Markers
+        valid_corners = []
         if cached_data.get('corners_data'):
             valid_corners = [c for c in cached_data['corners_data'] if c.get('x') is not None and c.get('y') is not None]
             if valid_corners:
                 fig_data.append(go.Scatter(
-                    x=[c['x'] for c in valid_corners], 
-                    y=[c['y'] for c in valid_corners], 
-                    mode='markers+text', 
+                    x=[c['x'] for c in valid_corners],
+                    y=[c['y'] for c in valid_corners],
+                    mode='markers+text',
                     marker=dict(
-                        size=config.CORNER_MARKER_SIZE, 
-                        color=config.CORNER_MARKER_COLOR, 
+                        size=config.CORNER_MARKER_SIZE,
+                        color=config.CORNER_MARKER_COLOR,
                         symbol='circle-open'
-                    ), 
-                    text=[str(c['number']) for c in valid_corners], 
+                    ),
+                    text=[str(c['number']) for c in valid_corners],
                     textposition=config.CORNER_TEXT_POSITION,
                     textfont=dict(
-                        size=config.CORNER_TEXT_SIZE, 
+                        size=config.CORNER_TEXT_SIZE,
                         color=config.CORNER_TEXT_COLOR
                     ),
                     dx=config.CORNER_TEXT_DX,  # Added dx
                     dy=config.CORNER_TEXT_DY,  # Added dy
-                    name='Corners', 
-                    hoverinfo='text' 
+                    name='Corners',
+                    hoverinfo='text'
                 ))
         # 3. Static Marshal Light/Post Markers
+        valid_lights = []
         if cached_data.get('marshal_lights_data'):
             valid_lights = [m for m in cached_data['marshal_lights_data'] if m.get('x') is not None and m.get('y') is not None]
             if valid_lights:
                 fig_data.append(go.Scatter(x=[m['x'] for m in valid_lights], y=[m['y'] for m in valid_lights], mode='markers', marker=dict(size=getattr(config, 'MARSHAL_MARKER_SIZE', 5), color=getattr(config, 'MARSHAL_MARKER_COLOR', 'orange'), symbol='diamond'), name='Marshal Posts', hoverinfo='text', text=[f"M{m['number']}" for m in valid_lights]))
-        
+
         # 4. Add Yellow Sector Placeholders (Invisible initially)
         for i in range(config.MAX_YELLOW_SECTOR_PLACEHOLDERS):
             fig_data.append(go.Scatter(
                 x=[None], y=[None], mode='lines',
                 line=dict(color=getattr(config, 'YELLOW_FLAG_COLOR', 'yellow'), width=getattr(config, 'YELLOW_FLAG_WIDTH', 4)),
-                name=f"{config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}", 
+                name=f"{config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}",
                 hoverinfo='name',
                 opacity=getattr(config, 'YELLOW_FLAG_OPACITY', 0.7),
-                visible=False 
+                visible=False
             ))
 
-        # 5. Car Marker Placeholders
+        # 5. Car Marker Placeholders (using driver_list_snapshot)
         for car_num_str_init, driver_state_init in driver_list_snapshot.items():
-            tla_init = driver_state_init.get('Tla', car_num_str_init); team_color_hex_init = driver_state_init.get('TeamColour', '808080')
+            # Ensure driver_state_init is a dict
+            if not isinstance(driver_state_init, dict):
+                logger.warning(f"Skipping car marker placeholder for {car_num_str_init} due to invalid driver_state_init type: {type(driver_state_init)}")
+                continue
+
+            tla_init = driver_state_init.get('Tla', car_num_str_init);
+            team_color_hex_init = driver_state_init.get('TeamColour', '808080')
             if not team_color_hex_init.startswith('#'): team_color_hex_init = '#' + team_color_hex_init.replace("#", "")
             if len(team_color_hex_init) not in [4, 7]: team_color_hex_init = '#808080'
-            fig_data.append(go.Scatter(x=[None], y=[None], mode='markers+text', name=tla_init, uid=str(car_num_str_init), marker=dict(size=getattr(config, 'CAR_MARKER_SIZE', 8), color=team_color_hex_init, line=dict(width=1, color='Black')), textfont=dict(size=getattr(config, 'CAR_MARKER_TEXT_SIZE', 8), color='white'), textposition='middle right', hoverinfo='text', text=tla_init))
+
+            # UID should be the racing number string for consistent identification with JS
+            # Make sure car_num_str_init is what you expect (e.g. from timing_state keys)
+            racing_number_for_uid = driver_state_init.get('RacingNumber', car_num_str_init)
+
+            fig_data.append(go.Scatter(
+                x=[None], y=[None], mode='markers+text', name=tla_init,
+                uid=str(racing_number_for_uid), # Ensure UID is string
+                marker=dict(
+                    size=getattr(config, 'CAR_MARKER_SIZE', 8),
+                    color=team_color_hex_init,
+                    line=dict(width=1, color='Black')
+                ),
+                textfont=dict(
+                    size=getattr(config, 'CAR_MARKER_TEXT_SIZE', 8),
+                    color='white'
+                ),
+                textposition='middle right', hoverinfo='text', text=tla_init
+            ))
+
 
         fig_layout = go.Layout(
             template='plotly_dark', uirevision=target_persistent_layout_uirevision,
@@ -1688,8 +1736,8 @@ def initialize_track_map(n_intervals, expected_session_id,
             annotations=[]
         )
         figure_output = go.Figure(data=fig_data, layout=fig_layout)
-        version_store_output = f"trackbase_{expected_session_id}_{time.time()}" 
-        
+        version_store_output = f"trackbase_{expected_session_id}_{time.time()}"
+
         # Update placeholders based on current active_yellow_sectors_snapshot for the new figure
         # This logic is now INSIDE the needs_full_rebuild block as figure_output is brand new
         if cached_data.get('marshal_sector_segments') and cached_data.get('x'):
@@ -1721,13 +1769,13 @@ def initialize_track_map(n_intervals, expected_session_id,
                                         figure_output.data[trace_index_to_update].marker = dict(color=getattr(config, 'YELLOW_FLAG_COLOR', 'yellow'), size=getattr(config, 'YELLOW_FLAG_MARKER_SIZE', 8))
 
     else: # Not a full rebuild: update existing figure's placeholder traces
-        figure_output = go.Figure(current_track_map_figure_state) 
-        figure_output.layout.uirevision = target_persistent_layout_uirevision 
-        version_store_output = current_figure_version_in_store_state 
+        figure_output = go.Figure(current_track_map_figure_state)
+        figure_output.layout.uirevision = target_persistent_layout_uirevision
+        version_store_output = current_figure_version_in_store_state
 
         if cached_data.get('marshal_sector_segments') and cached_data.get('x') and figure_output.data:
             track_x_full = cached_data['x']; track_y_full = cached_data['y']
-            
+
             # Calculate offset of first placeholder trace
             placeholder_trace_offset = 0
             temp_valid_corners = [c for c in (cached_data.get('corners_data') or []) if c.get('x') is not None and c.get('y') is not None]
@@ -1743,8 +1791,8 @@ def initialize_track_map(n_intervals, expected_session_id,
                 trace_index_for_placeholder = placeholder_trace_offset + i
                 if trace_index_for_placeholder < len(figure_output.data):
                     # Assume sector number `i+1` maps to placeholder `i`
-                    current_sector_represented_by_placeholder = i + 1 
-                    
+                    current_sector_represented_by_placeholder = i + 1
+
                     if current_sector_represented_by_placeholder in active_yellow_sectors_snapshot:
                         segment_indices = cached_data['marshal_sector_segments'].get(current_sector_represented_by_placeholder)
                         if segment_indices:
@@ -1778,7 +1826,7 @@ def initialize_track_map(n_intervals, expected_session_id,
                         figure_output.data[trace_index_for_placeholder].name = f"{config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}"
                 else:
                     logger.warning(f"Placeholder index {trace_index_for_placeholder} out of bounds for fig.data len {len(figure_output.data)}")
-    
+
     if figure_output is not no_update:
         trace_names_in_output_final = [getattr(t, 'name', 'Unnamed') for t in figure_output.data]
         logger.debug(f"FINAL Figure Output Data Traces (Placeholder Method): {trace_names_in_output_final}")
@@ -1821,7 +1869,7 @@ def update_lap_chart_driver_options(n_intervals):
 
 @app.callback(
     Output('lap-time-progression-graph', 'figure'),
-    Input('lap-time-driver-selector', 'value'),
+    Input('lap-time-driver-selector', 'value'), # This is the primary input for data
     Input('interval-component-medium', 'n_intervals') # Keep to refresh if data changes for selected drivers
 )
 def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
@@ -1833,6 +1881,11 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
 
     if not selected_drivers_rnos:
         return fig_empty_lap_prog
+
+    # Ensure selected_drivers_rnos is a list for consistent processing
+    if not isinstance(selected_drivers_rnos, list):
+        selected_drivers_rnos = [selected_drivers_rnos]
+
 
     # Create a uirevision based on sorted list of selected drivers to ensure graph redraws if selection changes
     # but not if only data for those drivers changes (handled by plotly's internal diffing if figure structure is same)
@@ -1862,12 +1915,12 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
         # Ensure we use the string version for lookups if lap_history_snapshot keys are strings
         driver_laps = lap_history_snapshot.get(str(driver_rno_str), [])
         if not driver_laps: continue
-        
+
         driver_info = timing_state_snapshot.get(str(driver_rno_str), {})
         tla = driver_info.get('Tla', str(driver_rno_str))
         team_color_hex = driver_info.get('TeamColour', 'FFFFFF')
         if not team_color_hex.startswith('#'): team_color_hex = '#' + team_color_hex
-        
+
         # Filter for valid laps as per your existing logic in data_processing for lap_history
         valid_laps = [lap for lap in driver_laps if lap.get('is_valid', True)]
         if not valid_laps: continue
@@ -1933,7 +1986,7 @@ def update_race_control_display(n_intervals):
         display_text = "\n".join(log_messages)
         # If you prefer oldest messages at the top (more traditional log):
         # display_text = "\n".join(reversed(log_messages))
-        
+
         return display_text
     except Exception as e:
         logger.error(f"Error updating race control display: {e}", exc_info=True)
@@ -1950,6 +2003,102 @@ def toggle_debug_data_visibility(debug_mode_enabled):
     else:
         logger.info("Debug mode disabled: Hiding 'Other Data Streams'.")
         return "d-none" # Bootstrap display none class
+
+@app.callback(
+    Output('driver-select-dropdown', 'value'),
+    Input('clicked-car-driver-number-store', 'data'),
+    State('driver-select-dropdown', 'options'),
+    prevent_initial_call=True
+)
+def update_dropdown_from_map_click(click_data_json_str, dropdown_options): # Renamed arg
+    if click_data_json_str is None:
+        return dash.no_update
+
+    try:
+        # The data from the store is now the JSON string written by JS
+        click_data = json.loads(click_data_json_str)
+        clicked_driver_number_str = str(click_data.get('carNumber')) # Ensure it's a string
+
+        if clicked_driver_number_str is None or clicked_driver_number_str == 'None': # Check for None or 'None' string
+            with app_state.app_state_lock: # If click is invalid, clear selection
+                if app_state.selected_driver_for_map_and_lap_chart is not None:
+                    logger.info("Map click invalid, clearing app_state.selected_driver_for_map_and_lap_chart.")
+                    app_state.selected_driver_for_map_and_lap_chart = None
+            return dash.no_update
+
+        logger.info(f"Map click: Attempting to select driver number: {clicked_driver_number_str} for telemetry dropdown.")
+
+        # Update app_state with the clicked driver
+        with app_state.app_state_lock:
+            app_state.selected_driver_for_map_and_lap_chart = clicked_driver_number_str
+            logger.info(f"Updated app_state.selected_driver_for_map_and_lap_chart to: {clicked_driver_number_str}")
+
+
+        if dropdown_options and isinstance(dropdown_options, list):
+            valid_driver_numbers = [opt['value'] for opt in dropdown_options if 'value' in opt]
+            if clicked_driver_number_str in valid_driver_numbers:
+                logger.info(f"Map click: Setting driver-select-dropdown (telemetry) to: {clicked_driver_number_str}")
+                return clicked_driver_number_str
+            else:
+                logger.warning(f"Map click: Driver number {clicked_driver_number_str} not found in telemetry dropdown options: {valid_driver_numbers}")
+                # Even if not in telemetry dropdown, keep it selected in app_state for map/lap chart
+                return dash.no_update # Don't change telemetry dropdown if invalid for it
+    except json.JSONDecodeError:
+        logger.error(f"update_dropdown_from_map_click: Could not decode JSON from store: {click_data_json_str}")
+        with app_state.app_state_lock: app_state.selected_driver_for_map_and_lap_chart = None # Clear on error
+    except Exception as e:
+        logger.error(f"update_dropdown_from_map_click: Error processing click data: {e}")
+        with app_state.app_state_lock: app_state.selected_driver_for_map_and_lap_chart = None # Clear on error
+
+    return dash.no_update
+
+# NEW CALLBACK to update Lap Progression Chart Driver Selection
+@app.callback(
+    Output('lap-time-driver-selector', 'value'),
+    Input('clicked-car-driver-number-store', 'data'), # Triggered by map click via JS
+    State('lap-time-driver-selector', 'options'),   # To check if driver is valid option
+    State('lap-time-driver-selector', 'value'),     # Current selection (to potentially keep if multi-select later)
+    prevent_initial_call=True
+)
+def update_lap_chart_driver_selection_from_map_click(click_data_json_str, lap_chart_options, current_lap_chart_selection):
+    if click_data_json_str is None:
+        return dash.no_update
+
+    try:
+        click_data = json.loads(click_data_json_str)
+        clicked_driver_number_str = str(click_data.get('carNumber')) # Ensure string
+
+        if clicked_driver_number_str is None or clicked_driver_number_str == 'None':
+             # If click is invalid, potentially clear selection or do nothing
+            return dash.no_update # Or return [] to clear selection
+
+        logger.info(f"Map click: Attempting to select driver {clicked_driver_number_str} in lap progression chart.")
+
+        if lap_chart_options and isinstance(lap_chart_options, list):
+            valid_driver_numbers_for_lap_chart = [opt['value'] for opt in lap_chart_options if 'value' in opt]
+
+            if clicked_driver_number_str in valid_driver_numbers_for_lap_chart:
+                # For now, we'll make it select ONLY the clicked driver.
+                # If you want to ADD to a multi-selection, the logic would be:
+                # current_selection = list(current_lap_chart_selection) if current_lap_chart_selection else []
+                # if clicked_driver_number_str not in current_selection:
+                #     current_selection.append(clicked_driver_number_str)
+                # return current_selection
+                logger.info(f"Map click: Setting lap-time-driver-selector to: [{clicked_driver_number_str}]")
+                return [clicked_driver_number_str] # Lap chart dropdown expects a list for its 'value'
+            else:
+                logger.warning(f"Map click: Driver {clicked_driver_number_str} not in lap chart options. Lap chart selection unchanged.")
+                return dash.no_update # Or return [] to clear if driver not available
+        else:
+            logger.warning("Map click: No options available for lap chart driver selector.")
+            return dash.no_update
+
+    except json.JSONDecodeError:
+        logger.error(f"update_lap_chart_driver_selection_from_map_click: Could not decode JSON: {click_data_json_str}")
+    except Exception as e:
+        logger.error(f"update_lap_chart_driver_selection_from_map_click: Error: {e}")
+    return dash.no_update
+
 
 app.clientside_callback(
     ClientsideFunction(
@@ -1973,6 +2122,27 @@ app.clientside_callback(
     Output('track-map-graph', 'figure', allow_duplicate=True), # Dummy output or can update figure if resize logic is complex
     Input('track-map-graph', 'figure'), # Triggered when figure initially renders or changes
     prevent_initial_call='initial_duplicate' # Avoids running on initial load before figure exists
+)
+
+app.clientside_callback(
+    ClientsideFunction(
+        namespace='clientside',
+        function_name='setupClickToFocusListener'
+    ),
+    Output('track-map-graph', 'id'), # Dummy output, just needs to target something on the graph
+    Input('track-map-graph', 'figure'), # Trigger when the figure is first drawn or updated
+    prevent_initial_call=False # Allow it to run on initial load
+)
+
+app.clientside_callback(
+    ClientsideFunction(
+        namespace='clientside',
+        function_name='pollClickDataAndUpdateStore'
+    ),
+    Output('clicked-car-driver-number-store', 'data'),
+    Input('clientside-click-poll-interval', 'n_intervals'),
+    State('js-click-data-holder', 'children'),
+    prevent_initial_call=True # Read the data JS wrote
 )
 
 print("Callback definitions processed") #
