@@ -299,16 +299,28 @@ def _process_timing_app_data(data):
         for car_num_str, line_data in data['Lines'].items():
             driver_current_state = app_state.timing_state.get(car_num_str)
             if driver_current_state and isinstance(line_data, dict):
-                stints_payload = line_data.get('Stints')
+                stints_payload = line_data.get('Stints') # This is a DICT of stints
+                
+                # <<< --- ADD THIS CALL for Stint Data Processing --- >>>
                 if isinstance(stints_payload, dict) and stints_payload:
-                    driver_current_state['StintsData'] = stints_payload
-                    driver_current_state['ReliablePitStops'] = max(0, len(stints_payload) - 1)
+                    # Pass the entire driver_current_state, which includes NumberOfLaps, InPit, etc.
+                    _update_driver_stint_data(car_num_str, stints_payload, driver_current_state)
+
+                # Your existing logic for updating TyreCompound, TyreAge, IsNewTyre
+                # from the 'latest_stint_info' can remain as a way to update the
+                # *current snapshot* in app_state.timing_state[driver_num_str].
+                # The _update_driver_stint_data function handles the historical list in app_state.driver_stint_data.
+
+                if isinstance(stints_payload, dict) and stints_payload:
+                    # driver_current_state['StintsData'] = stints_payload # You might still want to store raw payload if used elsewhere
+                    # driver_current_state['ReliablePitStops'] = max(0, len(stints_payload) - 1) # This might be an oversimplification
 
                     current_compound = driver_current_state.get('TyreCompound', '-')
                     current_age = driver_current_state.get('TyreAge', '?')
                     is_new_tyre = driver_current_state.get('IsNewTyre', False)
 
                     try:
+                        # Sort keys numerically to get the truly latest stint by its number
                         latest_stint_key = sorted(stints_payload.keys(), key=int)[-1]
                         latest_stint_info = stints_payload[latest_stint_key]
 
@@ -318,8 +330,11 @@ def _process_timing_app_data(data):
                                 current_compound = compound_value.upper()
 
                             new_status_str = latest_stint_info.get('New')
-                            if isinstance(new_status_str, str):
+                            if isinstance(new_status_str, str): # Check if it's a string first
                                 is_new_tyre = new_status_str.lower() == 'true'
+                            elif isinstance(new_status_str, bool): # Handle if it's already a boolean
+                                is_new_tyre = new_status_str
+
 
                             age_determined = False
                             total_laps_value = latest_stint_info.get('TotalLaps')
@@ -328,21 +343,25 @@ def _process_timing_app_data(data):
                                     current_age = int(total_laps_value)
                                     age_determined = True
                                 except (ValueError, TypeError):
-                                    logger.warning(f"Driver {car_num_str}: Could not convert TotalLaps '{total_laps_value}' to int for Stint {latest_stint_key}.")
+                                    # This warning is now less critical if _update_driver_stint_data handles it
+                                    # logger.warning(f"Driver {car_num_str}: Could not convert TotalLaps '{total_laps_value}' to int for Stint {latest_stint_key}.")
+                                    pass
 
-                            if not age_determined:
+
+                            if not age_determined: # Fallback age calculation if TotalLaps not usable
                                 start_laps_value = latest_stint_info.get('StartLaps')
-                                num_laps_value = driver_current_state.get('NumberOfLaps')
+                                num_laps_value = driver_current_state.get('NumberOfLaps') # From timing_state
                                 if start_laps_value is not None and num_laps_value is not None:
                                     try:
                                         start_lap = int(start_laps_value)
                                         current_lap_completed = int(num_laps_value)
-                                        age_calc = current_lap_completed - start_lap + 1
+                                        age_calc = current_lap_completed - start_lap + 1 # Laps run in current stint
                                         current_age = age_calc if age_calc >= 0 else '?'
                                     except (ValueError, TypeError) as e:
-                                         logger.warning(f"Driver {car_num_str}: Error converting StartLaps/NumberOfLaps for age calc: {e}. Stint: {latest_stint_key}")
-                        else:
-                            logger.warning(f"Driver {car_num_str}: Data for Stint {latest_stint_key} is not a dict: {type(latest_stint_info)}")
+                                         # logger.warning(f"Driver {car_num_str}: Error converting StartLaps/NumberOfLaps for age calc: {e}. Stint: {latest_stint_key}")
+                                         pass
+                        # ... (rest of your existing logic for PitInTime/PitOutTime from latest_stint_info for immediate display) ...
+                        # This part seems to be for your 'last_pit_duration' display, which can coexist.
                         if isinstance(latest_stint_info, dict) and \
                            'PitInTime' in latest_stint_info and latest_stint_info['PitInTime'] and \
                            'PitOutTime' in latest_stint_info and latest_stint_info['PitOutTime']:
@@ -351,43 +370,32 @@ def _process_timing_app_data(data):
                             pit_out_time_str = latest_stint_info['PitOutTime']
                             latest_stint_key_str = latest_stint_key
                             
-                            
-                            logger.debug(f"[PIT_DEBUG] Car {car_num_str}, Stint {latest_stint_key_str}: Found PitInTime='{pit_in_time_str}', PitOutTime='{pit_out_time_str}'")
-
                             pit_in_seconds = utils.parse_feed_time_to_seconds(pit_in_time_str)
                             pit_out_seconds = utils.parse_feed_time_to_seconds(pit_out_time_str)
                             
-                            logger.debug(f"[PIT_DEBUG] Car {car_num_str}, Stint {latest_stint_key_str}: Parsed PitInSec={pit_in_seconds}, PitOutSec={pit_out_seconds}")
-
                             if pit_in_seconds is not None and pit_out_seconds is not None and pit_out_seconds >= pit_in_seconds:
                                 duration = round(pit_out_seconds - pit_in_seconds, 1)
-                                logger.debug(f"[PIT_INFO] Car {car_num_str}, Stint {latest_stint_key_str}: Calculated pit duration: {duration}s.")
-                                
-                                # Check if this is a new duration for this specific stint to avoid redundant updates of timestamp
                                 if driver_current_state.get('last_pit_stint_key_ref') != latest_stint_key_str or \
                                    driver_current_state.get('last_pit_duration') != duration:
                                     driver_current_state['last_pit_duration'] = duration
                                     driver_current_state['last_pit_duration_timestamp'] = time.time()
                                     driver_current_state['last_pit_stint_key_ref'] = latest_stint_key_str
-                                    logger.debug(f"[PIT_INFO] Car {car_num_str}: Stored last_pit_duration={duration}s, last_pit_duration_timestamp={driver_current_state['last_pit_duration_timestamp']:.2f}, stint_ref={latest_stint_key_str}.")
-                                else:
-                                    logger.debug(f"[PIT_DEBUG] Car {car_num_str}, Stint {latest_stint_key_str}: Duration {duration}s already processed.")
-                            else:
-                                logger.warning(f"[PIT_WARN] Car {car_num_str}, Stint {latest_stint_key_str}: Invalid parsed times or out_time < in_time. PitInSec={pit_in_seconds}, PitOutSec={pit_out_seconds}")
-                        # <<< END LOGGING FOR PIT STOP DURATION CALCULATION >>>
-
+                                    # logger.debug(f"[PIT_INFO] Car {car_num_str}: Stored last_pit_duration={duration}s, ...")
+                            # else:
+                                # logger.warning(f"[PIT_WARN] Car {car_num_str}, Stint {latest_stint_key_str}: Invalid parsed times ...")
                     except (ValueError, IndexError, KeyError, TypeError) as e:
-                         logger.error(f"Driver {car_num_str}: Error processing Stints data in TimingAppData: {e} - Data: {stints_payload}", exc_info=False)
+                         logger.error(f"Driver {car_num_str}: Error processing Stints data in TimingAppData (main part): {e} - Data: {stints_payload}", exc_info=False)
 
+                    # Update the main timing_state with the latest tyre info for immediate display needs (e.g., main timing table)
                     driver_current_state['TyreCompound'] = current_compound
                     driver_current_state['TyreAge'] = current_age
                     driver_current_state['IsNewTyre'] = is_new_tyre
-        else: # Stints_payload is not a dict or is empty
-            if 'Stints' in line_data: # Check if 'Stints' key exists but is empty/invalid
-                 logger.debug(f"Car {car_num_str}: Stints data received but empty or not a dict: {stints_payload}")
+        # else: # Stints_payload is not a dict or is empty
+        #     if 'Stints' in line_data: 
+        #          logger.debug(f"Car {car_num_str}: Stints data received but empty or not a dict in TimingAppData: {stints_payload}")
 
 
-    elif data: # If data is not None but also not the expected dict structure
+    elif data: 
          logger.warning(f"Unexpected TimingAppData format received: {type(data)}")
 
 def _process_driver_list(data):
@@ -703,7 +711,165 @@ def _process_timing_data(data): # Using your provided function structure
             
     elif data: 
          logger.warning(f"Unexpected TimingData format received (not 'Lines' or 'CutOffTime'): {type(data)}. Content: {data}")
+         
+def _update_driver_stint_data(driver_rno_str, stints_payload_from_app_data, driver_info_from_timing_state):
+    """
+    Updates app_state.driver_stint_data based on the Stints payload from TimingAppData.
+    """
+    if not isinstance(stints_payload_from_app_data, dict) or not stints_payload_from_app_data:
+        return
 
+    driver_stints_history = app_state.driver_stint_data.setdefault(driver_rno_str, [])
+    
+    driver_laps_completed = 0 
+    if driver_info_from_timing_state.get('NumberOfLaps') is not None:
+        try:
+            driver_laps_completed = int(driver_info_from_timing_state['NumberOfLaps'])
+        except (ValueError, TypeError):
+            if driver_stints_history:
+                 driver_laps_completed = driver_stints_history[-1].get('end_lap', 0) # Use end_lap of last historical stint
+    
+    # logger.debug(f"StintUpdate ENTER for {driver_rno_str}: DrvLapsCompleted={driver_laps_completed}, StintsPayload={stints_payload_from_app_data}")
+
+    try:
+        sorted_incoming_stint_keys = sorted(stints_payload_from_app_data.keys(), key=int)
+    except ValueError:
+        logger.error(f"StintUpdate: Stint keys for driver {driver_rno_str} are not all sortable as integers. Payload: {stints_payload_from_app_data}")
+        return
+
+    for stint_feed_key in sorted_incoming_stint_keys:
+        incoming_stint_info = stints_payload_from_app_data[stint_feed_key]
+        if not isinstance(incoming_stint_info, dict):
+            logger.warning(f"StintUpdate: Data for stint key '{stint_feed_key}' for driver {driver_rno_str} is not a dict.")
+            continue
+        
+        existing_stint_entry = None
+        for hist_stint in driver_stints_history:
+            if hist_stint.get('feed_stint_key') == stint_feed_key:
+                existing_stint_entry = hist_stint
+                break
+        
+        # Determine compound: from feed if present, else from history if updating existing stint
+        parsed_compound = incoming_stint_info.get('Compound')
+        if parsed_compound is None and existing_stint_entry:
+            parsed_compound = existing_stint_entry.get('compound')
+            if parsed_compound:
+                 logger.debug(f"StintUpdate: Drv {driver_rno_str}, FeedKey {stint_feed_key}: Used compound '{parsed_compound}' from history for partial update.")
+        
+        if not parsed_compound: # If still no compound, we cannot proceed with this stint_feed_key
+            logger.info(f"StintUpdate: SKIPPING StintFeedKey '{stint_feed_key}' for {driver_rno_str} due to ultimately missing compound. Incoming: {incoming_stint_info}")
+            continue
+
+        # Parse other fields, using defaults from existing_stint_entry if this is an update and field is missing in incoming_stint_info
+        try:
+            start_laps_from_feed = int(incoming_stint_info.get('StartLaps', existing_stint_entry.get('start_laps_from_feed_val', 0) if existing_stint_entry else 0))
+            
+            is_new_feed_str = str(incoming_stint_info.get('New', str(existing_stint_entry.get('is_new_tyre', False)).lower() if existing_stint_entry else 'false')).lower()
+            is_new_feed = (is_new_feed_str == 'true')
+            
+            total_laps_on_tyre_set_feed = int(incoming_stint_info.get('TotalLaps', existing_stint_entry.get('tyre_total_laps_at_stint_end', 0) if existing_stint_entry else 0))
+            
+            tyres_not_changed_feed_str = str(incoming_stint_info.get('TyresNotChanged', str(existing_stint_entry.get('tyres_not_changed', '0')).lower() if existing_stint_entry else '0')).lower()
+            tyres_not_changed_feed = (tyres_not_changed_feed_str == 'true' or tyres_not_changed_feed_str == '1')
+
+        except (ValueError, TypeError) as e:
+            logger.warning(f"StintParse: Error parsing non-critical data for stint key '{stint_feed_key}' for {driver_rno_str}: {incoming_stint_info}. Error: {e}")
+            # Continue with what could be parsed (compound is critical and already checked)
+            pass # Or decide to skip if any parse error is critical
+
+        # --- Determine actual_stint_start_lap ---
+        actual_stint_start_lap = start_laps_from_feed
+        if existing_stint_entry: 
+            actual_stint_start_lap = existing_stint_entry['start_lap'] 
+        else: # New stint (feed_stint_key not seen before)
+            is_initial_race_stint_feed_key_0 = (stint_feed_key == "0")
+            if is_initial_race_stint_feed_key_0 and start_laps_from_feed == 0:
+                actual_stint_start_lap = 1
+            elif not is_initial_race_stint_feed_key_0 and start_laps_from_feed == 0:
+                # If driver_laps_completed is 0 (e.g. start of race, before they complete lap 1)
+                # and this is for stint "1" (e.g. formation lap tyres changed on grid), 
+                # start lap should still be 1.
+                actual_stint_start_lap = (driver_laps_completed + 1) if driver_laps_completed > 0 else 1
+                logger.debug(f"StintUpdate: Drv {driver_rno_str}, New StintFeedKey {stint_feed_key}: Corrected StartLaps from feed val {start_laps_from_feed} to {actual_stint_start_lap} (DrvLapsCompleted {driver_laps_completed}).")
+        
+        if actual_stint_start_lap <= 0: actual_stint_start_lap = 1
+
+        current_stint_provisional_end_lap = driver_laps_completed
+        if driver_laps_completed < actual_stint_start_lap:
+             current_stint_provisional_end_lap = actual_stint_start_lap 
+        
+        laps_run_in_this_stint = max(0, current_stint_provisional_end_lap - actual_stint_start_lap + 1)
+        
+        if existing_stint_entry:
+            # Always update with the latest info if it's an existing stint
+            if (incoming_stint_info.get('Compound') and parsed_compound != existing_stint_entry.get('compound')):
+                 logger.warning(f"StintUpdate: Compound for existing Stint {existing_stint_entry['stint_number']} (FeedKey {stint_feed_key}) for {driver_rno_str} CHANGED from '{existing_stint_entry.get('compound')}' to '{parsed_compound}'. This is unexpected.")
+            
+            existing_stint_entry['compound'] = parsed_compound # Use the determined compound
+            existing_stint_entry['is_new_tyre'] = is_new_feed
+            existing_stint_entry['end_lap'] = current_stint_provisional_end_lap
+            existing_stint_entry['total_laps_on_tyre_in_stint'] = laps_run_in_this_stint
+            existing_stint_entry['tyre_total_laps_at_stint_end'] = total_laps_on_tyre_set_feed
+            existing_stint_entry['tyres_not_changed'] = tyres_not_changed_feed
+            # existing_stint_entry['start_laps_from_feed_val'] = start_laps_from_feed # Store original feed value if needed for debugging
+            
+            logger.info(f"StintUpdate: Updated Stint {existing_stint_entry['stint_number']} for {driver_rno_str} (FeedKey {stint_feed_key}, HistStartLap {existing_stint_entry['start_lap']}): EndLap={current_stint_provisional_end_lap}, LapsInStint={laps_run_in_this_stint}, TotalTyreAge={total_laps_on_tyre_set_feed}, New={is_new_feed}, Cmpd='{parsed_compound}'")
+        
+        else: # New stint to add to history
+            if driver_stints_history:
+                previous_stint_in_history = driver_stints_history[-1]
+                if not (previous_stint_in_history.get('feed_stint_key') == stint_feed_key):
+                    if previous_stint_in_history.get('end_lap') is None or previous_stint_in_history.get('end_lap', 0) < actual_stint_start_lap - 1:
+                        final_end_lap_for_previous = actual_stint_start_lap - 1
+                        if final_end_lap_for_previous < previous_stint_in_history['start_lap']:
+                            final_end_lap_for_previous = previous_stint_in_history['start_lap']
+                        
+                        previous_stint_in_history['end_lap'] = final_end_lap_for_previous
+                        new_laps_in_prev = max(0, final_end_lap_for_previous - previous_stint_in_history['start_lap'] + 1)
+                        previous_stint_in_history['total_laps_on_tyre_in_stint'] = new_laps_in_prev
+                        # If TotalTyreAge for previous stint was an estimate, try to make it consistent.
+                        # tyre_total_laps_at_stint_end for the *previous* stint should reflect its *actual* total age.
+                        # This is usually derived from the feed when that stint was active.
+                        # If it was a "TyresNotChanged" stint, its end age is start_age + laps_run.
+                        if previous_stint_in_history.get('tyres_not_changed', False):
+                            previous_stint_in_history['tyre_total_laps_at_stint_end'] = previous_stint_in_history.get('tyre_age_at_stint_start', 0) + new_laps_in_prev
+                        
+                        logger.info(f"StintUpdate: Finalized PREVIOUS Stint {previous_stint_in_history['stint_number']} for {driver_rno_str} at Lap {final_end_lap_for_previous} (New StintFeedKey {stint_feed_key} starts ActualLap {actual_stint_start_lap}).")
+
+            stint_number_for_history = len(driver_stints_history) + 1
+            
+            tyre_age_at_start_of_this_stint = 0
+            if not is_new_feed:
+                if tyres_not_changed_feed and driver_stints_history and stint_number_for_history > 1:
+                    prev_hist_stint_for_age = driver_stints_history[-1] # The one just finalized or last one
+                    if prev_hist_stint_for_age.get('compound') == parsed_compound:
+                        tyre_age_at_start_of_this_stint = prev_hist_stint_for_age.get('tyre_total_laps_at_stint_end', 0)
+                        logger.debug(f"StintUpdate: {driver_rno_str} Stint {stint_number_for_history} (FeedKey {stint_feed_key}) TyresNotChanged. Inheriting age {tyre_age_at_start_of_this_stint} from prev stint total age ({prev_hist_stint_for_age.get('tyre_total_laps_at_stint_end')}).")
+                    else: # Compound mismatch for TyresNotChanged, likely error or very unusual scenario
+                        tyre_age_at_start_of_this_stint = max(0, total_laps_on_tyre_set_feed - 1) if total_laps_on_tyre_set_feed > 0 else 0
+                        logger.warning(f"StintUpdate: {driver_rno_str} Stint {stint_number_for_history} TyresNotChanged=True but compound mismatch with previous. Prev: {prev_hist_stint_for_age.get('compound')}, New: {parsed_compound}. Using calculated age: {tyre_age_at_start_of_this_stint}")
+                else: 
+                    # Standard used tyre: its age before this fitting is TotalLaps from feed minus the 1 lap it's about to run/is running.
+                    tyre_age_at_start_of_this_stint = max(0, total_laps_on_tyre_set_feed - 1) if total_laps_on_tyre_set_feed > 0 else 0
+            
+            new_stint_record = {
+                "stint_number": stint_number_for_history,
+                "feed_stint_key": stint_feed_key,
+                "start_laps_from_feed_val": start_laps_from_feed, # Store original feed value
+                "start_lap": actual_stint_start_lap,
+                "compound": parsed_compound,
+                "is_new_tyre": is_new_feed,
+                "tyre_age_at_stint_start": tyre_age_at_start_of_this_stint,
+                "end_lap": current_stint_provisional_end_lap, 
+                "total_laps_on_tyre_in_stint": laps_run_in_this_stint,
+                "tyre_total_laps_at_stint_end": total_laps_on_tyre_set_feed,
+                "tyres_not_changed": tyres_not_changed_feed
+            }
+            driver_stints_history.append(new_stint_record)
+            logger.info(f"StintUpdate: Added NEW Stint {stint_number_for_history} for {driver_rno_str} (FeedKey {stint_feed_key}, ActualStartLap {actual_stint_start_lap}): Comp={parsed_compound}, New={is_new_feed}, AgeAtStart={tyre_age_at_start_of_this_stint}, EndLap(prov)={current_stint_provisional_end_lap}, LapsIn(prov)={laps_run_in_this_stint}, TotalTyreAge={total_laps_on_tyre_set_feed}, NotChanged={tyres_not_changed_feed}")
+
+    app_state.driver_stint_data[driver_rno_str] = sorted(driver_stints_history, key=lambda x: x['stint_number'])
+    
 def _process_track_status(data):
     """Handles TrackStatus data."""
     if not isinstance(data, dict):

@@ -1265,156 +1265,230 @@ def toggle_controls_collapse(n, is_open):
     return is_open
 
 @app.callback(
-    Output('driver-details-output', 'children'),
-    Output('lap-selector-dropdown', 'options'),
-    Output('lap-selector-dropdown', 'value'),
-    Output('lap-selector-dropdown', 'disabled'),
-    Output('telemetry-graph', 'figure'),
-    Input('driver-select-dropdown', 'value'),
-    Input('lap-selector-dropdown', 'value'),
-    State('telemetry-graph', 'figure'),
-    prevent_initial_call=True
+    [Output('driver-details-output', 'children'),      # For basic driver Name/Team
+     Output('lap-selector-dropdown', 'options'),       # For Telemetry Tab
+     Output('lap-selector-dropdown', 'value'),         # For Telemetry Tab
+     Output('lap-selector-dropdown', 'disabled'),      # For Telemetry Tab
+     Output('telemetry-graph', 'figure'),              # For Telemetry Tab
+     Output('stint-history-table', 'data'),            # For Stint History Tab
+     Output('stint-history-table', 'columns')],        # For Stint History Tab (if dynamic, else set in layout)
+    [Input('driver-select-dropdown', 'value'),         # Driver selected
+     Input('driver-focus-tabs', 'active_tab'),         # Which tab is active
+     Input('lap-selector-dropdown', 'value')],         # Lap selected for telemetry (if telemetry tab is active)
+    [State('telemetry-graph', 'figure'),               # Current telemetry figure state
+     State('stint-history-table', 'columns')]          # Current columns for stint table (if needed)
 )
-def display_driver_details(selected_driver_number, selected_lap, current_telemetry_figure):
+def update_driver_focus_content(selected_driver_number, active_tab_id, 
+                                selected_lap_for_telemetry, 
+                                current_telemetry_figure, current_stint_table_columns):
     ctx = dash.callback_context
     triggered_id = ctx.triggered_id if ctx.triggered else 'N/A'
-    logger.debug(f"Telemetry Update: Trigger={triggered_id}, Driver={selected_driver_number}, Lap={selected_lap}")
-
-    # Use constants
-    details_children = [html.P(config.TEXT_DRIVER_SELECT, style={'fontSize':'0.8rem', 'padding':'5px'})] #
-    lap_options = config.DROPDOWN_NO_LAPS_OPTIONS #
-    current_lap_value_for_dropdown = None
-    lap_disabled = True
-
-    # Use utils.create_empty_figure_with_message and config constants
-    fig_empty_telemetry = utils.create_empty_figure_with_message( #
-        config.TELEMETRY_WRAPPER_HEIGHT, config.INITIAL_TELEMETRY_UIREVISION, #
-        config.TEXT_DRIVER_SELECT_LAP, config.TELEMETRY_MARGINS_EMPTY #
+    
+    logger.debug(
+        f"Driver Focus Update: Trigger='{triggered_id}', Driver='{selected_driver_number}', "
+        f"ActiveTab='{active_tab_id}', SelectedLap='{selected_lap_for_telemetry}'"
     )
 
+    # --- Initial/Default Outputs ---
+    driver_basic_details_children = [html.P(config.TEXT_DRIVER_SELECT, style={'fontSize':'0.8rem', 'padding':'5px'})]
+    
+    # Telemetry defaults
+    telemetry_lap_options = config.DROPDOWN_NO_LAPS_OPTIONS
+    telemetry_lap_value = None
+    telemetry_lap_disabled = True
+    fig_telemetry = utils.create_empty_figure_with_message(
+        config.TELEMETRY_WRAPPER_HEIGHT, config.INITIAL_TELEMETRY_UIREVISION,
+        config.TEXT_DRIVER_SELECT_LAP, config.TELEMETRY_MARGINS_EMPTY
+    )
+
+    # Stint History defaults
+    stint_history_data = []
+    # Stint history columns are defined in layout, but can be overridden here if needed.
+    # For now, we assume they are static from layout, so we can pass no_update for columns.
+    stint_history_columns_output = no_update 
+    # If columns were dynamic:
+    # stint_history_columns_output = [{"name": i, "id": i} for i in ["Stint", "Lap In", "Compound", "Laps"]] # Example
+
+
+    # --- Handle No Selected Driver ---
     if not selected_driver_number:
+        # If telemetry figure is already the initial one, don't update it
         if current_telemetry_figure and \
-           current_telemetry_figure.get('layout', {}).get('uirevision') == config.INITIAL_TELEMETRY_UIREVISION: #
-            return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, no_update
-        return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_empty_telemetry
+           current_telemetry_figure.get('layout', {}).get('uirevision') == config.INITIAL_TELEMETRY_UIREVISION:
+            fig_telemetry = no_update
+        
+        return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry,
+                stint_history_data, stint_history_columns_output)
 
     driver_num_str = str(selected_driver_number)
 
+    # --- Get Driver Basic Info (always displayed) ---
     with app_state.app_state_lock:
-        available_laps = sorted(app_state.telemetry_data.get(driver_num_str, {}).keys())
         driver_info_state = app_state.timing_state.get(driver_num_str, {}).copy()
+        # For Stint History Tab
+        all_stints_for_driver = app_state.driver_stint_data.get(driver_num_str, [])
+        # For Telemetry Tab
+        available_telemetry_laps = sorted(app_state.telemetry_data.get(driver_num_str, {}).keys())
+
 
     if driver_info_state:
-        tla = driver_info_state.get('Tla', '?'); num = driver_info_state.get('RacingNumber', driver_num_str)
-        name = driver_info_state.get('FullName', 'Unknown'); team = driver_info_state.get('TeamName', '?')
-        details_children = [html.H5(f"#{num} {tla} - {name} ({team})", style={'marginTop': '5px', 'marginBottom':'5px', 'fontSize':'0.9rem'})]
-        ll = utils.get_nested_state(driver_info_state, 'LastLapTime', 'Value', default='-') #
-        bl = utils.get_nested_state(driver_info_state, 'BestLapTime', 'Value', default='-') #
-        tyre_str = f"{driver_info_state.get('TyreCompound','-')} ({driver_info_state.get('TyreAge','?')}L)" if driver_info_state.get('TyreCompound','-') != '-' else '-'
-        details_children.append(html.P(f"Last: {ll} | Best: {bl} | Tyre: {tyre_str}", style={'fontSize':'0.75rem', 'marginBottom':'0px'}))
-
-    driver_selected_uirevision = f"telemetry_{driver_num_str}_pendinglap"
-
-    if available_laps:
-        lap_options = [{'label': f'Lap {l}', 'value': l} for l in available_laps]
-        lap_disabled = False
-        if triggered_id == 'driver-select-dropdown' or not selected_lap or selected_lap not in available_laps:
-            current_lap_value_for_dropdown = available_laps[-1]
-        else:
-            current_lap_value_for_dropdown = selected_lap
-    else:
-        # Use constant
-        no_laps_message = config.TEXT_DRIVER_NO_LAP_DATA_PREFIX + driver_info_state.get('Tla', driver_num_str) + "." #
-        if current_telemetry_figure and \
-           current_telemetry_figure.get('layout', {}).get('uirevision') == driver_selected_uirevision and \
-           current_telemetry_figure.get('layout',{}).get('annotations',[{}])[0].get('text','') == no_laps_message:
-            return details_children, lap_options, None, True, no_update
-
-        # Use utils.create_empty_figure_with_message and config constants
-        fig_no_laps = utils.create_empty_figure_with_message( #
-            config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision, no_laps_message, config.TELEMETRY_MARGINS_EMPTY #
-        )
-        return details_children, lap_options, None, True, fig_no_laps
-
-    if not current_lap_value_for_dropdown:
-        # Use constant
-        select_lap_message = config.TEXT_DRIVER_SELECT_A_LAP_PREFIX + driver_info_state.get('Tla', driver_num_str) + "." #
-        if current_telemetry_figure and \
-           current_telemetry_figure.get('layout', {}).get('uirevision') == driver_selected_uirevision and \
-           current_telemetry_figure.get('layout',{}).get('annotations',[{}])[0].get('text','') == select_lap_message:
-             return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, no_update
-
-        # Use utils.create_empty_figure_with_message and config constants
-        fig_select_lap = utils.create_empty_figure_with_message( #
-            config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision, select_lap_message, config.TELEMETRY_MARGINS_EMPTY #
-        )
-        return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_select_lap
-
-    data_plot_uirevision = f"telemetry_data_{driver_num_str}_{current_lap_value_for_dropdown}"
-
-    if current_telemetry_figure and \
-       current_telemetry_figure.get('layout',{}).get('uirevision') == data_plot_uirevision and \
-       triggered_id not in ['driver-select-dropdown', 'lap-selector-dropdown']:
-        logger.debug("Telemetry already showing correct data, non-user trigger.")
-        return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, no_update
+        tla = driver_info_state.get('Tla', '?')
+        num = driver_info_state.get('RacingNumber', driver_num_str)
+        name = driver_info_state.get('FullName', 'Unknown')
+        team = driver_info_state.get('TeamName', '?')
+        # Basic details like name/team shown above tabs
+        driver_basic_details_children = [
+            html.H6(f"#{num} {tla} - {name}", style={'marginTop': '0px', 'marginBottom':'2px', 'fontSize':'0.9rem'}),
+            html.P(f"Team: {team}", style={'fontSize':'0.75rem', 'marginBottom':'0px', 'color': 'lightgrey'})
+        ]
+    else: # Should not happen if driver_num_str is valid, but as a fallback
+        driver_basic_details_children = [html.P(f"Details for driver {driver_num_str} not found.", style={'color':'orange'})]
 
 
-    try:
-        with app_state.app_state_lock:
-            lap_data = app_state.telemetry_data.get(driver_num_str, {}).get(current_lap_value_for_dropdown, {})
-        timestamps_str = lap_data.get('Timestamps', [])
-        timestamps_dt = [utils.parse_iso_timestamp_safe(ts) for ts in timestamps_str] #
-        valid_indices = [i for i, dt_obj in enumerate(timestamps_dt) if dt_obj is not None]
-
-        if valid_indices:
-            timestamps_plot = [timestamps_dt[i] for i in valid_indices]
-            channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
-            fig_with_data = make_subplots(rows=len(channels), cols=1, shared_xaxes=True,
-                                          subplot_titles=[c[:10] for c in channels], vertical_spacing=0.06)
-            for i, channel in enumerate(channels):
-                y_data_raw = lap_data.get(channel, [])
-                y_data_plot = [(y_data_raw[idx] if idx < len(y_data_raw) else None) for idx in valid_indices]
-                if channel == 'DRS':
-                    drs_plot = [1 if val in [10, 12, 14] else 0 for val in y_data_plot]
-                    fig_with_data.add_trace(go.Scattergl(x=timestamps_plot, y=drs_plot, mode='lines', name=channel, line_shape='hv', connectgaps=False), row=i+1, col=1)
-                    fig_with_data.update_yaxes(fixedrange=True, tickvals=[0,1], ticktext=['Off','On'], range=[-0.1,1.1], row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
-                else:
-                    fig_with_data.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel, connectgaps=False), row=i+1, col=1)
-                    fig_with_data.update_yaxes(fixedrange=True, row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
-
-            fig_with_data.update_layout(
-                template='plotly_dark',
-                height=config.TELEMETRY_WRAPPER_HEIGHT, # Use constant
-                hovermode="x unified",
-                showlegend=False,
-                margin=config.TELEMETRY_MARGINS_DATA, # Use constant
-                title_text=f"<b>{driver_info_state.get('Tla', driver_num_str)} - Lap {current_lap_value_for_dropdown} Telemetry</b>",
-                title_x=0.5, title_y=0.98, title_font_size=12,
-                uirevision=data_plot_uirevision,
-                annotations=[]
-            )
-
-            for i, annot in enumerate(fig_with_data.layout.annotations):
-                annot.font.size = 9; annot.yanchor = 'bottom'; annot.y = annot.y
-
-            for i_ax in range(len(channels)):
-                fig_with_data.update_xaxes(
-                    showline=(i_ax == len(channels)-1), zeroline=False,
-                    showticklabels=(i_ax == len(channels)-1), row=i_ax+1, col=1,
-                    tickfont_size=8
+    # --- Handle Active Tab Content ---
+    if active_tab_id == "tab-telemetry":
+        driver_selected_uirevision_telemetry = f"telemetry_{driver_num_str}_pendinglap"
+        
+        if available_telemetry_laps:
+            telemetry_lap_options = [{'label': f'Lap {l}', 'value': l} for l in available_telemetry_laps]
+            telemetry_lap_disabled = False
+            if triggered_id == 'driver-select-dropdown' or \
+               triggered_id == 'driver-focus-tabs' or \
+               not selected_lap_for_telemetry or \
+               selected_lap_for_telemetry not in available_telemetry_laps:
+                telemetry_lap_value = available_telemetry_laps[-1] # Default to last available lap
+            else:
+                telemetry_lap_value = selected_lap_for_telemetry
+        else: # No telemetry laps available for this driver
+            no_laps_message = config.TEXT_DRIVER_NO_LAP_DATA_PREFIX + tla + "."
+            if current_telemetry_figure and \
+               current_telemetry_figure.get('layout', {}).get('uirevision') == driver_selected_uirevision_telemetry and \
+               current_telemetry_figure.get('layout',{}).get('annotations',[{}])[0].get('text','') == no_laps_message:
+                fig_telemetry = no_update # Already showing "no laps"
+            else:
+                fig_telemetry = utils.create_empty_figure_with_message(
+                    config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision_telemetry, 
+                    no_laps_message, config.TELEMETRY_MARGINS_EMPTY
                 )
+            # Keep other telemetry outputs at their defaults (no options, disabled, etc.)
+            return (driver_basic_details_children, telemetry_lap_options, None, True, fig_telemetry,
+                    stint_history_data, stint_history_columns_output)
 
-            return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_with_data
+        if not telemetry_lap_value: # Should be set if laps were available, but as a safeguard
+            select_lap_message = config.TEXT_DRIVER_SELECT_A_LAP_PREFIX + tla + "."
+            if current_telemetry_figure and \
+               current_telemetry_figure.get('layout', {}).get('uirevision') == driver_selected_uirevision_telemetry and \
+               current_telemetry_figure.get('layout',{}).get('annotations',[{}])[0].get('text','') == select_lap_message:
+                fig_telemetry = no_update
+            else:
+                fig_telemetry = utils.create_empty_figure_with_message(
+                    config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision_telemetry, 
+                    select_lap_message, config.TELEMETRY_MARGINS_EMPTY
+                )
+            return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry,
+                    stint_history_data, stint_history_columns_output)
+
+        # If we have a driver and a lap for telemetry, proceed to plot
+        data_plot_uirevision_telemetry = f"telemetry_data_{driver_num_str}_{telemetry_lap_value}"
+        # Check if figure needs update (e.g. if user just switched tabs but data is same)
+        if current_telemetry_figure and \
+           current_telemetry_figure.get('layout',{}).get('uirevision') == data_plot_uirevision_telemetry and \
+           triggered_id not in ['driver-select-dropdown', 'lap-selector-dropdown', 'driver-focus-tabs']:
+            fig_telemetry = no_update
         else:
-            # Use constant
-            fig_empty_telemetry.layout.annotations[0].text = config.TEXT_TELEMETRY_NO_PLOT_DATA_FOR_LAP_PREFIX + str(current_lap_value_for_dropdown) + "." #
-            fig_empty_telemetry.layout.uirevision = data_plot_uirevision
-            return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_empty_telemetry
-    except Exception as plot_err:
-        logger.error(f"Error in telemetry plot: {plot_err}", exc_info=True)
-        fig_empty_telemetry.layout.annotations[0].text = config.TEXT_TELEMETRY_ERROR # Use constant
-        fig_empty_telemetry.layout.uirevision = data_plot_uirevision
-        return details_children, lap_options, current_lap_value_for_dropdown, lap_disabled, fig_empty_telemetry
+            try:
+                with app_state.app_state_lock: # Re-fetch specific lap data
+                    lap_data = app_state.telemetry_data.get(driver_num_str, {}).get(telemetry_lap_value, {})
+                
+                timestamps_str = lap_data.get('Timestamps', [])
+                timestamps_dt = [utils.parse_iso_timestamp_safe(ts) for ts in timestamps_str]
+                valid_indices = [i for i, dt_obj in enumerate(timestamps_dt) if dt_obj is not None]
+
+                if valid_indices:
+                    timestamps_plot = [timestamps_dt[i] for i in valid_indices]
+                    channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
+                    fig_telemetry = make_subplots(rows=len(channels), cols=1, shared_xaxes=True,
+                                                  subplot_titles=[c[:10] for c in channels], vertical_spacing=0.06)
+                    for i, channel in enumerate(channels):
+                        y_data_raw = lap_data.get(channel, [])
+                        y_data_plot = [(y_data_raw[idx] if idx < len(y_data_raw) else None) for idx in valid_indices]
+                        if channel == 'DRS':
+                            drs_plot = [1 if val in [10, 12, 14] else 0 for val in y_data_plot]
+                            fig_telemetry.add_trace(go.Scattergl(x=timestamps_plot, y=drs_plot, mode='lines', name=channel, line_shape='hv', connectgaps=False), row=i+1, col=1)
+                            fig_telemetry.update_yaxes(fixedrange=True, tickvals=[0,1], ticktext=['Off','On'], range=[-0.1,1.1], row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
+                        else:
+                            fig_telemetry.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel, connectgaps=False), row=i+1, col=1)
+                            fig_telemetry.update_yaxes(fixedrange=True, row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
+
+                    fig_telemetry.update_layout(
+                        template='plotly_dark', height=config.TELEMETRY_WRAPPER_HEIGHT,
+                        hovermode="x unified", showlegend=False, margin=config.TELEMETRY_MARGINS_DATA,
+                        title_text=f"<b>{tla} - Lap {telemetry_lap_value} Telemetry</b>",
+                        title_x=0.5, title_y=0.98, title_font_size=12,
+                        uirevision=data_plot_uirevision_telemetry, annotations=[]
+                    )
+                    for i, annot in enumerate(fig_telemetry.layout.annotations):
+                        annot.font.size = 9; annot.yanchor = 'bottom'; annot.y = annot.y
+                    for i_ax in range(len(channels)):
+                        fig_telemetry.update_xaxes(
+                            showline=(i_ax == len(channels)-1), zeroline=False,
+                            showticklabels=(i_ax == len(channels)-1), row=i_ax+1, col=1,
+                            tickfont_size=8
+                        )
+                else: # No valid plot data for this lap
+                    fig_telemetry = utils.create_empty_figure_with_message(
+                        config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
+                        config.TEXT_TELEMETRY_NO_PLOT_DATA_FOR_LAP_PREFIX + str(telemetry_lap_value) + ".",
+                        config.TELEMETRY_MARGINS_EMPTY
+                    )
+            except Exception as plot_err:
+                logger.error(f"Error in telemetry plot: {plot_err}", exc_info=True)
+                fig_telemetry = utils.create_empty_figure_with_message(
+                    config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
+                    config.TEXT_TELEMETRY_ERROR, config.TELEMETRY_MARGINS_EMPTY
+                )
+        # Stint history data remains empty for telemetry tab
+        stint_history_data = []
+
+
+    elif active_tab_id == "tab-stint-history":
+        if all_stints_for_driver:
+            # Process stint data for the table
+            for stint_entry in all_stints_for_driver:
+                # Create a display version for 'is_new_tyre'
+                processed_entry = stint_entry.copy() # Avoid modifying original app_state data
+                processed_entry['is_new_tyre_display'] = 'Y' if stint_entry.get('is_new_tyre') else 'N'
+                stint_history_data.append(processed_entry)
+        else:
+            # Add a placeholder row if no stint data, or could be handled by DataTable's `empty_यर` prop
+            stint_history_data = [{"stint_number": "No stint data available for this driver."}] 
+            # If you use placeholder, ensure all column IDs exist in this placeholder or DataTable might error.
+            # For simplicity, let's make sure all expected keys are there, even if None.
+            stint_history_data = [{
+                'stint_number': "No stint data", 'start_lap': '-', 'compound': '-', 
+                'is_new_tyre_display': '-', 'tyre_age_at_stint_start': '-', 
+                'end_lap': '-', 'total_laps_on_tyre_in_stint': '-', 
+                'tyre_total_laps_at_stint_end': '-'
+            }]
+
+
+        # Telemetry figure remains empty/initial for stint history tab
+        fig_telemetry = utils.create_empty_figure_with_message(
+            config.TELEMETRY_WRAPPER_HEIGHT, config.INITIAL_TELEMETRY_UIREVISION,
+            config.TEXT_DRIVER_SELECT_LAP, config.TELEMETRY_MARGINS_EMPTY # Or a different message like "Switch to Telemetry tab"
+        )
+        telemetry_lap_options = config.DROPDOWN_NO_LAPS_OPTIONS
+        telemetry_lap_value = None
+        telemetry_lap_disabled = True
+
+    else: # Unknown tab or no tab selected
+        logger.warning(f"Unknown or no active tab ID: {active_tab_id}")
+        # Return defaults for all outputs
+        return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry,
+                stint_history_data, stint_history_columns_output)
+
+    return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry,
+            stint_history_data, stint_history_columns_output)
 
 @app.callback(
     Output('current-track-layout-cache-key-store', 'data'),

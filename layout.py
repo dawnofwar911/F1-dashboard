@@ -23,15 +23,15 @@ def create_layout():
     # timing_table_columns = config.TIMING_TABLE_COLUMNS_CONFIG #
 
     tyre_style_base = {'textAlign': 'center', 'fontWeight': 'bold'}
-    
+
     # Define standard styles for personal and overall bests for readability
     # Colors can be moved to config.py if preferred
     PERSONAL_BEST_STYLE = {'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold'} # Green (Bootstrap success-like)
     OVERALL_BEST_STYLE = {'backgroundColor': '#6f42c1', 'color': 'white', 'fontWeight': 'bold'}  # Purple (Bootstrap purple-like)
     REGULAR_LAP_SECTOR_STYLE = {'backgroundColor': '#ffc107', 'color': '#343a40', 'fontWeight': 'normal'} # Bootstrap warning yellow, dark text
     # Ensure these styles are distinct enough from tyre colors
-    
-    IN_PIT_STYLE = {'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'} 
+
+    IN_PIT_STYLE = {'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'}
     PIT_DURATION_STYLE = {'backgroundColor': '#007bff', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'} # Bootstrap primary blue
 
     stores_and_intervals = html.Div([
@@ -101,149 +101,132 @@ def create_layout():
                     html.Span("0/0", id='lap-counter', className='lap-time-value')
                 ],
                 id='lap-counter-div',
-                className='lap-time-info-item', # You might want specific styling for these items
-                style={'display': 'inline-block', 'margin-right': '20px', 'color': 'white', 
-                       'font-size': '0.9rem'} # Example style
+                className='lap-time-info-item', 
+                style={'display': 'inline-block', 'margin-right': '20px', 'color': 'white',
+                       'font-size': '0.9rem'}
             ),
             # Session Timer / Extrapolated Clock Div
             html.Div(
                 [
-                    html.Span(id='session-timer-label', className='lap-time-label', 
-                              style={'margin-right': '5px', 'color': 'white', 'font-size': '0.9rem'}), # Example style
+                    html.Span(id='session-timer-label', className='lap-time-label',
+                              style={'margin-right': '5px', 'color': 'white', 'font-size': '0.9rem'}),
                     html.Span("00:00:00", id='session-timer', className='lap-time-value',
-                              style={'color': 'white', 'font-weight': 'bold', 'font-size': '0.9rem'}) # Example style
+                              style={'color': 'white', 'font-weight': 'bold', 'font-size': '0.9rem'})
                 ],
                 id='session-timer-div',
-                className='lap-time-info-item', # You might want specific styling
+                className='lap-time-info-item',
                 style={'display': 'inline-block'}
             )
         ],
-        id='lap-time-info', # Container ID
-        className='lap-time-info-container text-center', # Added text-center for alignment within the card
-        style={'padding': '0px'} # Adjust padding if needed to fit card body
+        id='lap-time-info', 
+        className='lap-time-info-container text-center',
+        style={'padding': '0px'}
     )
 
-    status_weather_bar = dbc.Row([ #
+    status_weather_bar = dbc.Row([
         dbc.Col(
             dbc.Card(
                 dbc.CardBody(
-                    children=[lap_and_session_time_info_component], # <= NEW CONTENT INSERTED HERE
-                    className="p-2", # Adjusted padding of card body
+                    children=[lap_and_session_time_info_component],
+                    className="p-2", 
                     style={'minHeight':'55px', 'display':'flex', 'alignItems':'center', 'justifyContent':'center'}
                 ),
                 color="dark",
                 inverse=True,
-                id="lap-session-timer-card" # Renamed ID for clarity
+                id="lap-session-timer-card"
             ),
-            # Adjust lg, md, sm, xs to control width. This might need to be wider.
-            # The className "d-none" will be removed by a callback if this element should always be visible
-            # or conditionally made visible. For now, let's assume it's part of this bar.
-            # If this column should *only* appear for Race/Quali/Practice, callback will handle visibility of its content.
-            # The old 'lap-counter-column' was 'd-none'. Let's make this one visible and control content inside.
-            lg=4, md=5, sm=12, xs=12, className="mb-2 mb-lg-0", 
-            id='lap-session-timer-column' # Renamed ID
+            lg=4, md=5, sm=12, xs=12, className="mb-2 mb-lg-0",
+            id='lap-session-timer-column'
         ),
-        dbc.Col( # Prominent Track Status
-            dbc.Card( #
-                dbc.CardBody( #
-                    html.Div([ #
-                        html.Strong("Track Status: ", style={'marginRight':'5px'}), #
-                        html.Span(id='prominent-track-status-text', children=config.TEXT_TRACK_STATUS_DEFAULT_LABEL, #
-                                  style={'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px'}) #
-                    ]), #
-                    className="p-2 text-center", #
-                    style={'minHeight':'55px', 'display':'flex', 'alignItems':'center', 'justifyContent':'center'} #
-                ), #
-                id='prominent-track-status-card', #
-                color="secondary", #
-                inverse=True #
-            ), #
-            lg=3, md=3, sm=12, xs=12, className="mb-2 mb-lg-0", # Adjusted sm for new layout
-            id='track-status-column' #
+        dbc.Col( 
+            dbc.Card( 
+                dbc.CardBody( 
+                    html.Div([ 
+                        html.Strong("Track Status: ", style={'marginRight':'5px'}), 
+                        html.Span(id='prominent-track-status-text', children=config.TEXT_TRACK_STATUS_DEFAULT_LABEL, 
+                                  style={'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px'}) 
+                    ]), 
+                    className="p-2 text-center", 
+                    style={'minHeight':'55px', 'display':'flex', 'alignItems':'center', 'justifyContent':'center'} 
+                ), 
+                id='prominent-track-status-card', 
+                color="secondary", 
+                inverse=True 
+            ), 
+            lg=3, md=3, sm=12, xs=12, className="mb-2 mb-lg-0", 
+            id='track-status-column' 
         ),
-        dbc.Col( # Prominent Weather
-            dbc.Card( #
-                dbc.CardBody( #
-                    html.Div([ #
-                        html.Span(id='weather-main-icon', className="me-2", style={'fontSize': '1.5rem'}), #
-                        html.Div(id='prominent-weather-display', children=config.TEXT_WEATHER_AWAITING, #
-                                 style={'fontSize':'0.8rem', 'lineHeight':'1.2'}) #
-                    ], style={'display': 'flex', 'alignItems': 'center'}), #
-                    className="p-2" #
-                ), #
-                id='prominent-weather-card', #
-                color="light", #
-                style={'minHeight':'55px'} #
-            ), #
-            lg=5, md=4, sm=12, xs=12, # Adjusted lg/md to make space
-            id='weather-column' #
+        dbc.Col( 
+            dbc.Card( 
+                dbc.CardBody( 
+                    html.Div([ 
+                        html.Span(id='weather-main-icon', className="me-2", style={'fontSize': '1.5rem'}), 
+                        html.Div(id='prominent-weather-display', children=config.TEXT_WEATHER_AWAITING, 
+                                 style={'fontSize':'0.8rem', 'lineHeight':'1.2'}) 
+                    ], style={'display': 'flex', 'alignItems': 'center'}), 
+                    className="p-2" 
+                ), 
+                id='prominent-weather-card', 
+                color="light", 
+                style={'minHeight':'55px'} 
+            ), 
+            lg=5, md=4, sm=12, xs=12, 
+            id='weather-column' 
         )
-    ], className="mb-3", id='status-weather-bar', align="center") #
+    ], className="mb-3", id='status-weather-bar', align="center") 
 
     main_data_zone = dbc.Row([
         dbc.Col([
             html.H4("Live Timing"),
             html.P(id='timing-data-timestamp', children=config.TEXT_WAITING_FOR_DATA, style={'fontSize':'0.8rem', 'color':'grey', 'marginBottom':'2px'}), # Use constant
             dash_table.DataTable(
-                id='timing-data-actual-table', 
-                # columns prop will be set by a callback,
+                id='timing-data-actual-table',
                 fixed_rows={'headers': True},
                 style_table={'height': '750px', 'minHeight': '650px', 'overflowY': 'auto', 'overflowX': 'auto'},
-                style_cell={ # General cell styling
-                    'minWidth': '30px', 'width': 'auto', # Let width be auto by default
-                    'overflow': 'hidden', 'textOverflow': 'ellipsis', # Standard for handling overflow
+                style_cell={
+                    'minWidth': '30px', 'width': 'auto', 
+                    'overflow': 'hidden', 'textOverflow': 'ellipsis', 
                     'textAlign': 'left', 'padding': '1px 5px', 'fontSize':'0.70rem',
                     'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white',
-                    'whiteSpace': 'normal', # Allow wrapping if necessary
+                    'whiteSpace': 'normal', 
                     'height': 'auto',
                     'lineHeight': '1.2'
                 },
                 css=[
                         {
-                            # Targets <p> elements inside a div with class 'cell-markdown',
-                            # which itself is inside a <td>.
-                            # This is specific to paragraphs generated by the Markdown renderer in your cells.
                             'selector': 'td div.cell-markdown > p',
                             'rule': '''
                                 margin-top: 0 !important;
                                 margin-bottom: 0 !important;
-                                padding-top: 0.1em !important; 
+                                padding-top: 0.1em !important;
                                 padding-bottom: 0.1em !important;
-                                line-height: 1.1 !important; 
+                                line-height: 1.1 !important;
                             '''
-                            # Adjust values:
-                            # - 'margin-top' and 'margin-bottom': Try '0', '0.1em', or '1px' to minimize paragraph spacing.
-                            # - 'line-height': Try values like '1.1', '1.2', 'normal'. This controls the height of each text line.
-                            # - '!important' might be needed to override other conflicting styles.
                         },
                 ],
-                style_header={ # Make header consistent or even tighter if possible
+                style_header={
                     'backgroundColor': 'rgb(30, 30, 30)', 'fontWeight': 'bold',
                     'border': '1px solid #444',
-                    'padding': 'qpx 5px', # Slightly more padding for header often looks good, or match data cells
-                    'fontSize': '0.75rem', # Header font can be slightly larger or same as cell
+                    'padding': '2px 5px', 
+                    'fontSize': '0.75rem', 
                     'textAlign': 'center',
                     'whiteSpace': 'normal',
                     'height': 'auto',
                     'lineHeight': '1.3'
                 },
-                style_data={ # Ensure data cells also have minimal effective padding if not inheriting perfectly
+                style_data={ 
                     'borderBottom': '1px solid grey',
-                    'padding': '1px 5px', # Explicitly set here too if needed
+                    'padding': '1px 5px', 
                     'lineHeight': '1.2'
                 },
                 style_data_conditional=[
                     {'if': {'row_index': 'odd'},
                         'backgroundColor': 'rgb(60, 60, 60)'},
-
-                    # General 'Tyre' column width.
                     {'if': {'column_id': 'Tyre'},
                         'width': '50px',
                         'minWidth': '45px',
                         'maxWidth': '60px'
                      },
-
-                    # Tyre Compound Styles - will now use the modified tyre_style_base (no explicit border)
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "S " || {Tyre} = "S"'},
                         'backgroundColor': '#D90000', 'color': 'white', **tyre_style_base},
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "M " || {Tyre} = "M"'},
@@ -254,25 +237,18 @@ def create_layout():
                         'backgroundColor': '#00A300', 'color': 'white', **tyre_style_base},
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "W " || {Tyre} = "W"'},
                         'backgroundColor': '#0077FF', 'color': 'white', **tyre_style_base},
-
-                    # Special case for no tyre data ("-") - MODIFIED to not set its own border
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} = "-"'},
-                        'backgroundColor': 'inherit',  # Inherits from default cell background
+                        'backgroundColor': 'inherit', 
                         'color': 'grey',
-                        # Apply relevant parts from the new tyre_style_base or define explicitly
                         'textAlign': 'center',
-                        'fontWeight': 'bold'  # If you want the hyphen to be bold
-                        # No 'border' here, will inherit from style_data and style_cell
+                        'fontWeight': 'bold' 
                      },
-
-                    # Column Specific Alignments/Widths (Pits, Pos, No., Car, IntervalGap as before)
                     {'if': {'column_id': 'Pos'}, 'textAlign': 'center', 'fontWeight': 'bold',
                         'width': '35px', 'minWidth': '35px', 'maxWidth': '40px'},
                     {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '35px',
                         'minWidth': '35px', 'maxWidth': '40px', 'paddingRight': '2px'},
                     {'if': {'column_id': 'Car'}, 'textAlign': 'left',
                         'width': '45px', 'minWidth': '45px', 'maxWidth': '55px'},
-
                     {'if': {'column_id': 'Pits'},
                      'width': '80px',
                      'minWidth': '70px',
@@ -280,7 +256,6 @@ def create_layout():
                      'textAlign': 'center',
                      'whiteSpace': 'nowrap'
                      },
-
                     {'if': {'column_id': 'IntervalGap'},
                         'width': '75px',
                         'minWidth': '70px',
@@ -288,49 +263,29 @@ def create_layout():
                         'textAlign': 'right',
                         'paddingRight': '5px'
                      },
-
-                    # --- Purple Highlighting ---
-                    # For "Best Lap" column (Driver's PB is the Session Overall Best - This logic is correct and should remain)
                     {'if': {'column_id': 'Best Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Best Lap} != "-"'}, **OVERALL_BEST_STYLE},
-                    
-                    # For "Last Lap" column (This specific last lap was the Session Overall Best Event)
                     {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapEventOverallBest_Str} = "TRUE" && {Last Lap} != "-"'}, **OVERALL_BEST_STYLE},
-                    # For "S1" column (This specific S1 was the Session Overall Best Event)
                     {'if': {'column_id': 'S1', 'filter_query': '{IsS1EventOverallBest_Str} = "TRUE" && {S1} != "-"'}, **OVERALL_BEST_STYLE},
-                    # For "S2" column (This specific S2 was the Session Overall Best Event)
                     {'if': {'column_id': 'S2', 'filter_query': '{IsS2EventOverallBest_Str} = "TRUE" && {S2} != "-"'}, **OVERALL_BEST_STYLE},
-                    # For "S3" column (This specific S3 was the Session Overall Best Event)
                     {'if': {'column_id': 'S3', 'filter_query': '{IsS3EventOverallBest_Str} = "TRUE" && {S3} != "-"'}, **OVERALL_BEST_STYLE},
-                    
-                    # --- Green Highlighting (Personal Best Event, but NOT an Overall Best Event) ---
                     {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "TRUE" && {IsLastLapEventOverallBest_Str} = "FALSE" && {Last Lap} != "-"'}, **PERSONAL_BEST_STYLE},
                     {'if': {'column_id': 'S1', 'filter_query': '{IsPersonalBestS1_Str} = "TRUE" && {IsS1EventOverallBest_Str} = "FALSE" && {S1} != "-"'}, **PERSONAL_BEST_STYLE},
                     {'if': {'column_id': 'S2', 'filter_query': '{IsPersonalBestS2_Str} = "TRUE" && {IsS2EventOverallBest_Str} = "FALSE" && {S2} != "-"'}, **PERSONAL_BEST_STYLE},
                     {'if': {'column_id': 'S3', 'filter_query': '{IsPersonalBestS3_Str} = "TRUE" && {IsS3EventOverallBest_Str} = "FALSE" && {S3} != "-"'}, **PERSONAL_BEST_STYLE},
-                    
-                    # --- Yellow Highlighting (Regular Lap/Sector - Not PB Event, Not OB Event) ---
                     {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapPersonalBest_Str} = "FALSE" && {IsLastLapEventOverallBest_Str} = "FALSE" && {Last Lap} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
                     {'if': {'column_id': 'S1', 'filter_query': '{IsPersonalBestS1_Str} = "FALSE" && {IsS1EventOverallBest_Str} = "FALSE" && {S1} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
                     {'if': {'column_id': 'S2', 'filter_query': '{IsPersonalBestS2_Str} = "FALSE" && {IsS2EventOverallBest_Str} = "FALSE" && {S2} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
                     {'if': {'column_id': 'S3', 'filter_query': '{IsPersonalBestS3_Str} = "FALSE" && {IsS3EventOverallBest_Str} = "FALSE" && {S3} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
-
-
-                    # Conditional styling for Pits column colors
                     {'if': {'column_id': 'Pits',
                             'filter_query': '{PitDisplayState_Str} = "IN_PIT_LIVE"'}, **IN_PIT_STYLE},
                     {'if': {'column_id': 'Pits',
                             'filter_query': '{PitDisplayState_Str} = "SHOW_COMPLETED_DURATION"'}, **PIT_DURATION_STYLE},
-
-                    # You can choose to apply it to other cells or attempt a whole-row style if needed.
-                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'IntervalGap', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
+                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'IntervalGap', 'Pits', 'Status'], 
                             'filter_query': '{QualiHighlight_Str} = "RED_DANGER"'},
                      **config.QUALIFYING_DANGER_RED_STYLE},
-
-                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'Tyre', 'Last Lap', 'IntervalGap', 'Best Lap', 'S1', 'S2', 'S3', 'Pits', 'Status'],  # Or ['Pos', 'Car', 'Last Lap']
+                    {'if': {'column_id': ['Pos', 'No.', 'Car', 'Tyre', 'Last Lap', 'IntervalGap', 'Best Lap', 'S1', 'S2', 'S3', 'Pits', 'Status'], 
                             'filter_query': '{QualiHighlight_Str} = "GREY_ELIMINATED"'},
                      **config.QUALIFYING_ELIMINATED_STYLE},
-
-                    # Default styling for lap and sector times (width, alignment)
                     {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px',
                         'maxWidth': '85px', 'textAlign': 'right', 'paddingRight': '5px'},
                     {'if': {'column_id': 'Best Lap'}, 'width': '70px', 'minWidth': '70px',
@@ -348,31 +303,31 @@ def create_layout():
             ),
             dbc.Accordion([
                 dbc.AccordionItem(
-                    children=[dcc.Textarea(id='race-control-log-display', value=config.TEXT_RC_WAITING, 
+                    children=[dcc.Textarea(id='race-control-log-display', value=config.TEXT_RC_WAITING,
                                  style={'width': '100%', 'height': '140px',
                                         'backgroundColor': '#2B2B2B', 'color': '#E0E0E0',
                                         'border': '1px solid #444', 'fontFamily': 'monospace',
                                         'fontSize':'0.75rem'}, readOnly=True)],
                     title="Race Control Messages", item_id="rcm-accordion"
                 ),
-                dbc.AccordionItem( # <<< START OF NEW ACCORDION ITEM FOR TEAM RADIO
+                dbc.AccordionItem( 
                     children=[
                         html.Div(
                             id='team-radio-display',
                             style={
-                                'maxHeight': '200px', # Adjust height as needed
+                                'maxHeight': '200px', 
                                 'overflowY': 'auto',
-                                'border': '1px solid #444', 
+                                'border': '1px solid #444',
                                 'padding': '8px',
-                                'fontSize': '0.75rem', 
+                                'fontSize': '0.75rem',
                                 'backgroundColor': '#2B2B2B',
-                                'color': '#E0E0E0' # Added text color for better visibility
+                                'color': '#E0E0E0' 
                             }
                         )
                     ],
-                    title="Team Radio", # Title for the new panel
-                    item_id="team-radio-accordion" 
-                ), # <<< END OF NEW ACCORDION ITEM FOR TEAM RADIO
+                    title="Team Radio", 
+                    item_id="team-radio-accordion"
+                ), 
                 dbc.AccordionItem(
                     children=[html.Div(id='other-data-display',
                                        style={'maxHeight': '140px', 'overflowY': 'auto',
@@ -380,7 +335,7 @@ def create_layout():
                                               'fontSize': '0.7rem', 'backgroundColor': '#2B2B2B'})],
                     title="Other Data Streams (Debug)",
                     item_id="other-data-accordion",
-                    id="debug-data-accordion-item" # This ID was on the item itself in your code
+                    id="debug-data-accordion-item" 
                 )
             ], start_collapsed=True, flush=True, className="mt-3", active_item="rcm-accordion")
         ], lg=7, md=12, id='main-timing-col', className="mb-3 mb-lg-0"),
@@ -390,34 +345,33 @@ def create_layout():
                 dbc.CardBody([
                     html.H5("Track Map", className="card-title mb-2"),
                     html.Div(
-                        # Use constant for height
-                        style={'height': f'{config.TRACK_MAP_WRAPPER_HEIGHT}px', 'width': '100%'}, #
+                        style={'height': f'{config.TRACK_MAP_WRAPPER_HEIGHT}px', 'width': '100%'}, 
                         children=[
                             dcc.Graph(
                                 id='track-map-graph',
                                 style={'height': '100%', 'width': '100%'},
-                                figure=go.Figure(layout={ 
+                                figure=go.Figure(layout={
                                     'template': 'plotly_dark',
-                                    'uirevision': config.INITIAL_TRACK_MAP_UIREVISION, #
-                                    'xaxis': {'visible': False, 'range': [0,1], 'fixedrange': True}, 
-                                    'yaxis': {'visible': False, 'range': [0,1], 'scaleanchor':'x', 'scaleratio':1, 'fixedrange': True}, 
-                                    'margin': config.TRACK_MAP_MARGINS, #
+                                    'uirevision': config.INITIAL_TRACK_MAP_UIREVISION, 
+                                    'xaxis': {'visible': False, 'range': [0,1], 'fixedrange': True},
+                                    'yaxis': {'visible': False, 'range': [0,1], 'scaleanchor':'x', 'scaleratio':1, 'fixedrange': True},
+                                    'margin': config.TRACK_MAP_MARGINS, 
                                     'plot_bgcolor': 'rgb(30,30,30)',
                                     'paper_bgcolor': 'rgba(0,0,0,0)',
-                                    'dragmode': False  
+                                    'dragmode': False
                                 }),
-                                config={ 
+                                config={
                                     'displayModeBar': False,
-                                    'scrollZoom': False, 
-                                    'autosizable': True, 
-                                    'responsive': True   
+                                    'scrollZoom': False,
+                                    'autosizable': True,
+                                    'responsive': True
                                 }
                             )
                         ]
                     )
                 ]), className="mb-2"
             ),
-
+            # MODIFIED: Driver Focus Card
             dbc.Card(
                 dbc.CardBody([
                     html.H5("Driver Focus", className="card-title mb-2"),
@@ -425,46 +379,81 @@ def create_layout():
                         id='driver-select-dropdown', options=[], placeholder=config.TEXT_DRIVER_SELECT, # Use constant
                         style={'color': '#333', 'marginBottom':'10px', 'fontSize': '0.9rem'}
                     ),
-                    dbc.Row([
-                         dbc.Col(html.Label("Lap:", style={'fontSize':'0.85rem'}), width="auto",
-                                 className="pe-0 align-self-center"),
-                         dbc.Col(dcc.Dropdown(
-                                     id='lap-selector-dropdown', options=[], placeholder="Lap", 
-                                     style={'minWidth': '70px', 'color': '#333', 'fontSize':'0.85rem'},
-                                     clearable=False, searchable=False, disabled=True
-                                 ), className="ps-1", width=True)
-                    ], className="mb-2 align-items-center g-1"),
-                    html.Div(
-                        # Use constant for height
-                        style={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px'}, #
+                    html.Div(id='driver-details-output', # Basic driver name/team will go here
+                             style={'marginBottom':'10px', 'fontSize': '0.8rem', 'minHeight': '40px'}),
+                    dbc.Tabs(
+                        id="driver-focus-tabs",
+                        active_tab="tab-telemetry", # Default active tab
                         children=[
-                            dcc.Graph(
-                                id='telemetry-graph',
-                                style={'height': '100%', 'width': '100%'},
-                                figure=go.Figure(layout={
-                                    'template': 'plotly_dark',
-                                    'uirevision': config.INITIAL_TELEMETRY_UIREVISION, # Use constant
-                                    'annotations': [{'text': config.TEXT_DRIVER_SELECT_LAP, 'xref': 'paper', # Use constant
-                                                     'yref': 'paper', 'showarrow': False, 'font': {'size': 10}}],
-                                    'xaxis': {'visible': False, 'range': [0,1]},
-                                    'yaxis': {'visible': False, 'range': [0,1]},
-                                    'margin': config.TELEMETRY_MARGINS_EMPTY # Use constant
-                                })
-                            )
-                        ]
-                    ),
-                    html.Div(
-                        id='driver-details-output',
-                        # Use constant for height
-                        style={
-                            'height': f'{config.DRIVER_DETAILS_HEIGHT}px', #
-                            'overflowY': 'auto', 'border': '1px solid #444',
-                            'padding': '5px', 'fontSize': '0.8rem', 'marginTop':'10px',
-                            'backgroundColor': '#2B2B2B'
-                        }
-                    ),
-                ])
-            )
+                            dbc.Tab(label="Telemetry", tab_id="tab-telemetry", children=[
+                                dbc.Row([
+                                     dbc.Col(html.Label("Lap:", style={'fontSize':'0.85rem'}), width="auto",
+                                             className="pe-0 align-self-center"),
+                                     dbc.Col(dcc.Dropdown(
+                                                 id='lap-selector-dropdown', options=[], placeholder="Lap",
+                                                 style={'minWidth': '70px', 'color': '#333', 'fontSize':'0.85rem'},
+                                                 clearable=False, searchable=False, disabled=True
+                                             ), className="ps-1", width=True)
+                                ], className="mb-2 align-items-center g-1"),
+                                html.Div(
+                                    style={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px'}, 
+                                    children=[
+                                        dcc.Graph(
+                                            id='telemetry-graph',
+                                            style={'height': '100%', 'width': '100%'},
+                                            figure=go.Figure(layout={
+                                                'template': 'plotly_dark',
+                                                'uirevision': config.INITIAL_TELEMETRY_UIREVISION, 
+                                                'annotations': [{'text': config.TEXT_DRIVER_SELECT_LAP, 'xref': 'paper', 
+                                                                 'yref': 'paper', 'showarrow': False, 'font': {'size': 10}}],
+                                                'xaxis': {'visible': False, 'range': [0,1]},
+                                                'yaxis': {'visible': False, 'range': [0,1]},
+                                                'margin': config.TELEMETRY_MARGINS_EMPTY 
+                                            })
+                                        )
+                                    ]
+                                )
+                            ]), # End Telemetry Tab
+                            dbc.Tab(label="Stint History", tab_id="tab-stint-history", children=[
+                                html.Div( # Container for the stint history table
+                                    dash_table.DataTable(
+                                        id='stint-history-table',
+                                        columns=[ # Define columns for stint history
+                                            {'name': 'Stint', 'id': 'stint_number'},
+                                            {'name': 'Lap In', 'id': 'start_lap'},
+                                            {'name': 'Compound', 'id': 'compound'},
+                                            {'name': 'New', 'id': 'is_new_tyre_display'}, # For 'Y'/'N' display
+                                            {'name': 'Age (Start)', 'id': 'tyre_age_at_stint_start'},
+                                            {'name': 'Lap Out', 'id': 'end_lap'},
+                                            {'name': 'Stint Laps', 'id': 'total_laps_on_tyre_in_stint'},
+                                            {'name': 'Total Tyre Age', 'id': 'tyre_total_laps_at_stint_end'},
+                                        ],
+                                        style_table={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px', 'overflowY': 'auto', 'marginTop': '10px'}, # Match telemetry height for now
+                                        style_cell={
+                                            'textAlign': 'center', 'padding': '3px', 'fontSize':'0.75rem',
+                                            'backgroundColor': 'rgb(60, 60, 60)', 'color': 'white',
+                                            'border': '1px solid rgb(80,80,80)'
+                                        },
+                                        style_header={
+                                            'backgroundColor': 'rgb(40, 40, 40)',
+                                            'fontWeight': 'bold',
+                                            'textAlign': 'center',
+                                            'padding': '5px'
+                                        },
+                                        style_data_conditional=[
+                                            {'if': {'row_index': 'odd'},
+                                             'backgroundColor': 'rgb(50, 50, 50)'},
+                                            # Conditional styling for tyre compounds can be added here later
+                                        ]
+                                    ),
+                                    # Use a similar height as the telemetry graph for now
+                                    style={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px', 'marginTop': '5px'}
+                                )
+                            ]) # End Stint History Tab
+                        ] # End Tabs children
+                    ) # End dbc.Tabs
+                ]) # End CardBody
+            ) # End Driver Focus Card
         ], lg=5, md=12, id='contextual-info-col',
            style={'display': 'flex', 'flexDirection': 'column'}
         ),
@@ -480,7 +469,6 @@ def create_layout():
                     style={'marginBottom': '10px', 'color': '#333'}
                 ),
                 html.Div(
-                    # Use constant for height
                     style={'height': f'{config.LAP_PROG_WRAPPER_HEIGHT}px'}, #
                     children=[
                         dcc.Graph(
@@ -505,13 +493,13 @@ def create_layout():
 
     app_footer = html.Footer(
         dbc.Row([
-            dbc.Col(html.Small("F1 Dashboard", className="text-muted"), 
+            dbc.Col(html.Small("F1 Dashboard", className="text-muted"),
                     width="auto", className="me-auto align-self-center"),
             dbc.Col(
                 dbc.Switch(
                     id="debug-mode-switch",
                     label="Debug Streams",
-                    value=False, 
+                    value=False,
                     className="form-check-inline"
                 ), width="auto", className="align-self-center"
             )
@@ -526,7 +514,7 @@ def create_layout():
         main_data_zone,
         analysis_zone,
         app_footer
-    ], fluid=True, className="dbc dbc-slate p-2") 
+    ], fluid=True, className="dbc dbc-slate p-2")
 
     logger.info("Layout created.") #
     return app_layout
