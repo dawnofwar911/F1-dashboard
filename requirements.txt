@@ -3,6 +3,7 @@
 # For the web application framework and UI components
 dash
 dash_bootstrap_components
+pytz
 
 # For data manipulation and analysis
 numpy
