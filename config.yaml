@@ -3,6 +3,11 @@ description: "My first F1-Dashboard!"
 version: "0.2.1"
 slug: "f1_dashboard"
 init: false
+webui: http://[HOST]:[PORT:8050]
+ports:
+  8050/tcp: 8050
+ports_description:
+  8050/tcp: F1-App
 arch:
   - aarch64
   - amd64
