@@ -26,6 +26,35 @@ replay_thread = None
 logger = logging.getLogger("F1App.Replay")
 
 # --- File Handling Helpers ---
+
+def generate_live_filename():
+    """
+    Generates a filename for live recording based on current session details in app_state.
+    Format: {year}-{circuit}-{session}.data.txt
+    Example: 2025-Monaco-Practice1.data.txt
+    """
+    with app_state.app_state_lock:
+        year = app_state.session_details.get('Year')
+        circuit_name = app_state.session_details.get('CircuitName') # Or 'CircuitKey' if preferred
+        session_name = app_state.session_details.get('SessionName') # e.g., "Practice 1", "Qualifying", "Race"
+
+    if not all([year, circuit_name, session_name]):
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        fallback_name = f"{config.LIVE_DATA_FILENAME_FALLBACK_PREFIX}_{timestamp}.data.txt"
+        logger.warning(
+            f"Missing details for structured filename (Year: {year}, Circuit: {circuit_name}, Session: {session_name}). "
+            f"Using fallback: {fallback_name}"
+        )
+        return fallback_name
+
+    # Sanitize parts to be filename-friendly
+    s_year = str(year)
+    s_circuit = utils.sanitize_filename(circuit_name)
+    s_session = utils.sanitize_filename(session_name)
+
+    return f"{s_year}-{s_circuit}-{s_session}.data.txt"
+
+
 def ensure_replay_dir_exists():
     """Creates the replay directory and target save directory if they don't exist."""
     replay_dir_path = Path(config.REPLAY_DIR)
@@ -59,119 +88,80 @@ def get_replay_files(directory):
     return files
 
 def init_live_file():
-    """
-    Prepares for saving live data. Names file based on session info.
-    Returns True if successful, False otherwise.
-    """
-    if not config.TARGET_SAVE_DIRECTORY:
-        logger.error("TARGET_SAVE_DIRECTORY is not configured. Cannot save live data.")
+    """Initializes the live data recording file."""
+    if not app_state.record_live_data:
+        logger.info("Live recording is disabled. No file will be created.")
+        if app_state.live_data_file and not app_state.live_data_file.closed:
+            try:
+                app_state.live_data_file.close()
+            except Exception as e:
+                logger.error(f"Error closing pre-existing live data file: {e}")
+        app_state.live_data_file = None
+        app_state.is_saving_active = False
+        app_state.current_recording_filename = None
         return False
 
     ensure_replay_dir_exists()
-    logger.info("Attempting to get session info via FastF1 for filename...")
-    try:
-         event_name, session_name_from_f1 = get_current_or_next_session_info()
-    except Exception as f1_err:
-         logger.error(f"Error calling get_current_or_next_session_info: {f1_err}", exc_info=True)
-         event_name, session_name_from_f1 = None, None
-
-    filename_prefix = None
-    if event_name and session_name_from_f1:
-         event_part = sanitize_filename(event_name)
-         session_part = sanitize_filename(session_name_from_f1)
-         filename_prefix = f"{event_part}_{session_part}"
-         logger.debug(f"Using filename prefix from FastF1: {filename_prefix}")
-    else:
-         logger.warning(f"Could not get session info from FastF1, using fallback filename prefix '{config.LIVE_DATA_FILENAME_FALLBACK_PREFIX}'.")
-         filename_prefix = config.LIVE_DATA_FILENAME_FALLBACK_PREFIX # Use constant
-
-    # Use constant for timestamp format
-    timestamp = datetime.datetime.now(timezone.utc).strftime(config.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
-    filename = f"{filename_prefix}_{timestamp}.data.txt"
-    filepath = Path(config.TARGET_SAVE_DIRECTORY) / filename
-    temp_file_handle = None
+    filename = generate_live_filename() # Use the new function
+    filepath = config.TARGET_SAVE_DIRECTORY / filename
 
     try:
-        temp_file_handle = open(filepath, 'a', encoding='utf-8')
-        logger.info(f"Successfully opened live data file for appending: {filepath}")
+        # Close any existing open file first
+        if app_state.live_data_file and not app_state.live_data_file.closed:
+            logger.warning(f"Closing previously open live data file: {app_state.current_recording_filename}")
+            app_state.live_data_file.close()
 
+        app_state.live_data_file = open(filepath, 'a', encoding='utf-8') # Open in append mode
+        app_state.is_saving_active = True
+        app_state.current_recording_filename = filepath.name # Store only the filename part
+        
+        # Write a header to the file
+        start_time_str = datetime.datetime.now().strftime(config.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
+        header_msg = f"{config.LOG_REPLAY_FILE_START_MSG_PREFIX}{start_time_str}\n"
+        
+        # Add session info from app_state to header
         with app_state.app_state_lock:
-            if app_state.live_data_file and not app_state.live_data_file.closed:
-                logger.warning("Closing previously open live data file in init_live_file.")
-                try: app_state.live_data_file.close()
-                except Exception as close_err: logger.error(f"Error closing previous live file: {close_err}")
-            app_state.current_recording_filename = str(filepath)
-            app_state.live_data_file = temp_file_handle
-            app_state.is_saving_active = True
-            logger.info(f"Live data recording state initialized and file opened. Saving enabled.")
+            s_details_for_header = {
+                'Year': app_state.session_details.get('Year'),
+                'CircuitName': app_state.session_details.get('CircuitName'),
+                'EventName': app_state.session_details.get('EventName'),
+                'SessionName': app_state.session_details.get('SessionName'),
+                'SessionType': app_state.session_details.get('Type'),
+                'SessionStartTimeUTC': app_state.session_details.get('SessionStartTimeUTC')
+            }
+        header_msg += f"# Recording for: {s_details_for_header}\n"
+        app_state.live_data_file.write(header_msg)
+        app_state.live_data_file.flush() # Ensure header is written immediately
 
-        # Use constants for log messages
-        header = config.LOG_REPLAY_FILE_START_MSG_PREFIX + datetime.datetime.now(timezone.utc).isoformat() + "Z\n"
-        header += config.LOG_REPLAY_FILE_SESSION_INFO_PREFIX + f"Event='{event_name}', Session='{session_name_from_f1}'\n"
-        temp_file_handle.write(header)
-        temp_file_handle.flush()
+        logger.info(f"Live data recording started. Saving to: {filepath.name}")
         return True
-
     except Exception as e:
-       logger.error(f"Failed to initialize live recording state or open file {filepath}: {e}", exc_info=True)
-       if temp_file_handle:
-           try: temp_file_handle.close()
-           except: pass
-       with app_state.app_state_lock:
-           app_state.is_saving_active = False
-           app_state.current_recording_filename = None
-           app_state.live_data_file = None
-       return False
-
-def close_live_file(acquire_lock=True):
-    """Closes the live data file handle and clears recording flags."""
-    logger.debug(f"close_live_file called (acquire_lock={acquire_lock})")
-    lock_acquired = False
-    file_handle_to_close = None
-    current_filename_for_log = "Unknown Filename"
-
-    try:
-        if acquire_lock:
-             lock_acquired = app_state.app_state_lock.acquire(timeout=2.0)
-             if not lock_acquired:
-                 logger.error("Failed to acquire app_state_lock in close_live_file! Cannot close file or clear state.")
-                 return
-
-        current_filename_for_log = app_state.current_recording_filename or current_filename_for_log
-        if app_state.live_data_file:
-             file_handle_to_close = app_state.live_data_file
-             logger.info(f"Preparing to close recording file: {current_filename_for_log}")
-
+        logger.error(f"Failed to initialize live recording file '{filepath.name}': {e}", exc_info=True)
+        app_state.live_data_file = None
         app_state.is_saving_active = False
         app_state.current_recording_filename = None
-        app_state.live_data_file = None
+        return False
 
-        if file_handle_to_close:
-            logger.info("Live recording state cleared.")
-        elif current_filename_for_log != "Unknown Filename":
-            logger.warning(f"Recording filename '{current_filename_for_log}' was set, but no file handle found in app_state.")
-        else:
-            logger.debug("No active recording file or handle found during close_live_file.")
-
-    except Exception as e:
-         logger.error(f"Error clearing recording state in close_live_file: {e}", exc_info=True)
-    finally:
-        if lock_acquired:
-            try: app_state.app_state_lock.release()
-            except threading.ThreadError: logger.warning("Attempted to release lock in close_live_file when not held.")
-
-        if file_handle_to_close:
-            try:
-                logger.info(f"Closing file handle for: {current_filename_for_log}")
-                # Use constant for log message
-                footer = config.LOG_REPLAY_FILE_STOP_MSG_PREFIX + datetime.datetime.now(timezone.utc).isoformat() + "Z\n"
-                file_handle_to_close.write(footer)
-                file_handle_to_close.flush()
-                file_handle_to_close.close()
-                logger.info("File handle closed successfully.")
-            except Exception as close_err:
-                logger.error(f"Error closing live data file handle: {close_err}", exc_info=True)
-        logger.debug("close_live_file finished.")
+def close_live_file():
+    """Closes the live data recording file if it's open."""
+    if app_state.live_data_file and not app_state.live_data_file.closed:
+        logger.info(f"Closing live data file: {app_state.current_recording_filename}")
+        try:
+            # Add a closing message
+            stop_time_str = datetime.datetime.now().strftime(config.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
+            footer_msg = f"{config.LOG_REPLAY_FILE_STOP_MSG_PREFIX}{stop_time_str}\n"
+            app_state.live_data_file.write(footer_msg)
+            app_state.live_data_file.close()
+        except Exception as e:
+            logger.error(f"Error writing footer or closing live data file: {e}")
+        finally:
+            app_state.live_data_file = None # Ensure it's None after attempting to close
+            app_state.is_saving_active = False
+            # app_state.current_recording_filename = None # Keep filename for status display until next recording
+    else:
+        logger.debug("close_live_file called, but no active file to close.")
+    # Reset saving state even if file wasn't open, to be safe
+    app_state.is_saving_active = False
 
 
 def _queue_message_from_replay(message_data):
@@ -338,9 +328,14 @@ def _replay_thread_target(filename, initial_speed=1.0):
 
             final_conn_msg = playback_status # Use the playback_status string directly for connection message
 
-            if app_state.app_status["state"] in ["Replaying", "Initializing", "Stopping"]:
-                 app_state.app_status.update({"state": final_state, "connection": final_conn_msg})
-            app_state.app_status['current_replay_file'] = None
+            is_current_replay_thread_finishing = app_state.app_status.get("current_replay_file") == Path(filename).name
+
+            if app_state.app_status["state"] in ["Replaying", "Initializing", "Stopping"] or \
+               (is_current_replay_thread_finishing and app_state.app_status["state"] != "Idle"): # If this was the active replay
+                app_state.app_status.update({"state": final_state, "connection": final_conn_msg})
+            # Always clear the current_replay_file if this thread was responsible for it and is now done
+            if is_current_replay_thread_finishing:
+                app_state.app_status['current_replay_file'] = None
         if threading.current_thread() is globals().get('replay_thread'):
              globals()['replay_thread'] = None
 
@@ -403,30 +398,54 @@ def replay_from_file(data_file_path, replay_speed=1.0):
 
 def stop_replay():
     global replay_thread
-    local_thread = replay_thread
+    local_thread = replay_thread # Capture the global
+    thread_was_active_or_recently_finished = bool(local_thread) # Check if a thread object existed
+
     if not local_thread or not local_thread.is_alive():
-        logger.info("Stop replay called, but no active replay thread found.")
+        logger.info(f"Stop replay called. Replay thread reference: {'Exists' if local_thread else 'None'}. Thread alive: {local_thread.is_alive() if local_thread else 'N/A'}.")
         with app_state.app_state_lock:
-             if app_state.app_status["state"] == "Replaying":
-                 app_state.app_status.update({"state": "Stopped", "connection": config.REPLAY_STATUS_CONNECTION_REPLAY_ENDED}) # Use constant
-             app_state.app_status["current_replay_file"] = None
-        if replay_thread is local_thread: replay_thread = None
+            # Handle if the state is Replaying OR Playback Complete
+            if app_state.app_status["state"] in ["Replaying", "Playback Complete", "Stopping"]:
+                logger.info(f"Replay thread not active/alive or finishing up. Current state: {app_state.app_status['state']}. Setting to 'Stopped'.")
+                app_state.app_status.update({"state": "Stopped", "connection": config.REPLAY_STATUS_CONNECTION_REPLAY_ENDED})
+            # Always clear current_replay_file if we are stopping a replay process
+            if app_state.app_status.get("current_replay_file"):
+                logger.info(f"Clearing current_replay_file: {app_state.app_status.get('current_replay_file')}")
+                app_state.app_status["current_replay_file"] = None
+        
+        # Ensure the global replay_thread is cleared if it matches the local_thread we've processed
+        if replay_thread is local_thread:
+            replay_thread = None
         return
 
-    logger.info("Stopping replay...")
+    # --- This part is for an ACTIVE running thread ---
+    logger.info("Stopping active replay thread...")
     with app_state.app_state_lock:
+        # It's good to set to "Stopping" first if it's "Replaying"
         if app_state.app_status["state"] == "Replaying":
-            app_state.app_status.update({"state": "Stopping", "connection": "Stopping Replay..."}) # Could be constant
+            app_state.app_status.update({"state": "Stopping", "connection": "Stopping Replay..."})
+    
     app_state.stop_event.set()
     logger.info("Waiting for replay thread to join...")
-    local_thread.join(timeout=5) # Consider making timeout a config const
-    if local_thread.is_alive(): logger.warning("Replay thread did not stop cleanly.")
-    else: logger.info("Replay thread joined successfully.")
+    local_thread.join(timeout=5) 
+    
+    if local_thread.is_alive():
+        logger.warning("Replay thread did not stop cleanly after join timeout.")
+    else:
+        logger.info("Replay thread joined successfully.")
 
     with app_state.app_state_lock:
-        app_state.app_status.update({"state": "Stopped", "connection": config.REPLAY_STATUS_CONNECTION_REPLAY_STOPPED}) # Use constant
-        app_state.app_status["current_replay_file"] = None
-    if replay_thread is local_thread: replay_thread = None
+        # After attempting to stop, definitively set to "Stopped"
+        # and clear the current replay file.
+        logger.info(f"Finalizing stop_replay. Current state before update: {app_state.app_status['state']}. Setting to 'Stopped'.")
+        app_state.app_status.update({"state": "Stopped", "connection": config.REPLAY_STATUS_CONNECTION_REPLAY_STOPPED})
+        if app_state.app_status.get("current_replay_file"):
+             logger.info(f"Clearing current_replay_file: {app_state.app_status.get('current_replay_file')} in active thread stop part.")
+             app_state.app_status["current_replay_file"] = None
+    
+    # Clear the global reference if it's the thread we just stopped
+    if replay_thread is local_thread:
+        replay_thread = None
     logger.info("Stop replay sequence complete.")
 
 

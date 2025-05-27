@@ -3,14 +3,97 @@ import logging
 import dash_bootstrap_components as dbc
 from dash import dcc, html, dash_table
 import plotly.graph_objects as go
+import time
+
+import dash_bootstrap_components as dbc
+from dash import html, dcc, Input, Output, State # Add Input, Output, State
+from app_instance import app # Import app for the new callback
 
 # Import config for constants and replay for file listing
 import config # <<< UPDATED: For constants
 import replay # For get_replay_files
+import utils # Make sure utils is imported if create_empty_figure_with_message is used
 
-def create_layout():
+# --- Sidebar Definition ---
+SIDEBAR_STYLE_VISIBLE = { # Style when sidebar is visible
+    "position": "fixed", "top": 0, "left": 0, "bottom": 0,
+    "width": "18rem", "padding": "1rem 1rem", "backgroundColor": "#2c3e50",
+    "color": "#ecf0f1", "overflowY": "auto", "zIndex": 1031,
+    "transition": "margin-left .3s, width .3s" # Smooth transition
+}
+SIDEBAR_STYLE_HIDDEN = { # Style when sidebar is hidden
+    "position": "fixed", "top": 0, "left": 0, "bottom": 0,
+    "width": "18rem", "padding": "1rem 1rem", "backgroundColor": "#2c3e50",
+    "color": "#ecf0f1", "overflowY": "auto", "zIndex": 1031,
+    "transition": "margin-left .3s, width .3s",
+    "marginLeft": "-18rem" # Hide it off-screen
+}
+
+sidebar_header = dbc.Row(
+    [dbc.Col(html.H4(config.APP_TITLE, className="app-title"), className="text-center")],
+    className="my-3", # Adjusted margin
+)
+
+sidebar = html.Div([ # No changes to direct children here
+    sidebar_header,
+    html.Hr(style={'borderColor': '#34495e'}),
+    dbc.Nav([
+        dbc.NavLink(
+            [html.I(className="fas fa-tachometer-alt me-2"), "Live Dashboard"],
+            href="/", active="exact", className="nav-link-custom mb-1"
+        ),
+        dbc.NavLink(
+            [html.I(className="fas fa-calendar-alt me-2"), "Race Schedule"],
+            href="/schedule", active="exact", className="nav-link-custom mb-1"
+        ),
+    ], vertical=True, pills=True, className="flex-grow-1"),
+    html.Div([
+        html.Small("F1 Dashboard v0.2.1", className="text-muted") # Increment version if you like
+    ], className="text-center mt-auto p-2", style={'position':'absolute', 'bottom':'0', 'left':'0', 'right':'0'})
+], style=SIDEBAR_STYLE_VISIBLE, id="sidebar") # Start with visible style
+
+# --- Content Area Definition ---
+CONTENT_STYLE_FULL_WIDTH = { # When sidebar is hidden
+    "marginLeft": "1rem", # Small margin
+    "padding": "1rem 1.5rem", 
+    "minHeight": "100vh", "backgroundColor": "#1c1c1c",
+    "transition": "margin-left .3s" # Smooth transition
+}
+CONTENT_STYLE_WITH_SIDEBAR = { # When sidebar is visible
+    "marginLeft": "19rem", # 18rem (sidebar) + 1rem (gap)
+    "padding": "1rem 1.5rem",
+    "minHeight": "100vh", "backgroundColor": "#1c1c1c",
+    "transition": "margin-left .3s"
+}
+
+# --- Sidebar Toggle Button ---
+sidebar_toggle_button = dbc.Button(
+    html.I(className="fas fa-bars"), # Hamburger icon
+    id="sidebar-toggle",
+    n_clicks=0,
+    className="position-fixed top-0 start-0 m-2 p-2", # Positioned at top-left
+    style={"zIndex": 1032, "fontSize": "1.2rem", "border": "none", "background": "rgba(0,0,0,0.3)"},
+    color="light",
+    outline=True
+)
+
+content_area = html.Div(id="page-content", style=CONTENT_STYLE_WITH_SIDEBAR) # Start with style for visible sidebar
+
+
+main_app_layout = html.Div([
+    dcc.Location(id="url", refresh=False),
+    dcc.Store(id='user-timezone-store-data'),
+    dcc.Store(id='sidebar-state-store', data={'is_open': False}),
+    dcc.Store(id='sidebar-toggle-signal', data=None),
+    sidebar_toggle_button, # Add the toggle button
+    sidebar,
+    content_area,
+])
+
+
+def define_dashboard_layout():
     logger = logging.getLogger("F1App.Layout")
-    logger.info("Creating application layout...")
+    # logger.info("Creating application layout...")
 
     try:
         replay.ensure_replay_dir_exists() #
@@ -506,7 +589,7 @@ def create_layout():
         ], className="text-center py-2 mt-3 border-top", justify="between")
     )
 
-    app_layout = dbc.Container([
+    dashboard_page_content = dbc.Container([
         stores_and_intervals,
         header_zone,
         control_zone,
@@ -516,5 +599,36 @@ def create_layout():
         app_footer
     ], fluid=True, className="dbc dbc-slate p-2")
 
-    logger.info("Layout created.") #
-    return app_layout
+    # logger.info("Layout created.") #
+    return dashboard_page_content
+    
+dashboard_content_layout = define_dashboard_layout()
+
+# --- Callback for Sidebar Toggle ---
+@app.callback(
+    [Output("sidebar", "style"),
+     Output("page-content", "style"),
+     Output("sidebar-state-store", "data"),
+     Output("sidebar-toggle-signal", "data")], # <<< ADDED OUTPUT
+    [Input("sidebar-toggle", "n_clicks")],
+    [State("sidebar-state-store", "data")]
+)
+def toggle_sidebar(n_clicks, sidebar_state_data):
+    is_open_currently = sidebar_state_data.get('is_open', False) if sidebar_state_data else False
+
+    if n_clicks is None or n_clicks == 0: 
+        new_is_open_state = is_open_currently 
+    else: 
+        new_is_open_state = not is_open_currently
+
+    if new_is_open_state:
+        sidebar_style_to_apply = SIDEBAR_STYLE_VISIBLE
+        content_style_to_apply = CONTENT_STYLE_WITH_SIDEBAR
+    else:
+        sidebar_style_to_apply = SIDEBAR_STYLE_HIDDEN
+        content_style_to_apply = CONTENT_STYLE_FULL_WIDTH
+
+    current_store_val = {'is_open': new_is_open_state}
+
+    # Update the sidebar-toggle-signal store with the current time
+    return sidebar_style_to_apply, content_style_to_apply, current_store_val, time.time() # <<< ADDED time.time()

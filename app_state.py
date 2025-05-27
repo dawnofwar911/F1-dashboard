@@ -15,6 +15,7 @@ INITIAL_APP_STATUS = {
     "subscribed_streams": [],
     "last_heartbeat": None,
     "current_replay_file": None,
+    "auto_connect_attempted_for_session": None, # New: To prevent multiple auto-connect attempts for the same session
 }
 
 app_status = INITIAL_APP_STATUS.copy() # Initialize with a copy
@@ -40,6 +41,15 @@ track_status_data = INITIAL_TRACK_STATUS_DATA.copy()
 INITIAL_SESSION_DETAILS = {
     'ScheduledDurationSeconds': None,
     'PreviousSessionStatus': None,
+    'Year': None,                  # New: To store current session's year
+    'CircuitKey': None,            # Existing: Useful for circuit info
+    'CircuitName': None,           # New: To store current session's circuit name
+    'EventName': None,             # Existing: but ensure it's populated for recordings
+    'SessionName': None,           # New: To store current session's name (e.g., "Practice 1")
+    'SessionKey': None,            # Existing: Official F1 session key
+    'Path': None,                  # Existing: For team radio
+    'Type': None,                  # Existing: e.g. "Race", "Qualifying"
+    'SessionStartTimeUTC': None,   # New: Store the precise start time of the session we are connecting to/recording
 }
 session_details = INITIAL_SESSION_DETAILS.copy()
 
@@ -237,5 +247,16 @@ def reset_to_default_state():
         current_recording_filename = None
 
         logger.info("Application state has been reset to defaults.")
+        
+def update_target_session_details(year=None, circuit_key=None, circuit_name=None, event_name=None, session_name=None, session_start_time_utc=None, session_type=None):
+    logger.info(f"Updating target session details: Year={year}, Circuit={circuit_name}, Event={event_name}, Session={session_name}, StartUTC={session_start_time_utc}, Type={session_type}")
+    with app_state_lock:
+        if year: session_details['Year'] = year
+        if circuit_key: session_details['CircuitKey'] = circuit_key
+        if circuit_name: session_details['CircuitName'] = circuit_name
+        if event_name: session_details['EventName'] = event_name # Usually the GP name
+        if session_name: session_details['SessionName'] = session_name # e.g., Practice 1
+        if session_start_time_utc: session_details['SessionStartTimeUTC'] = session_start_time_utc
+        if session_type: session_details['Type'] = session_type
 
 print("DEBUG: app_state module loaded")

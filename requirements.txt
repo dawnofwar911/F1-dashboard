@@ -1,0 +1,25 @@
+# requirements.txt
+
+# For the web application framework and UI components
+dash
+dash_bootstrap_components
+pytz
+
+# For data manipulation and analysis
+numpy
+pandas
+
+# For creating plots and charts
+plotly
+
+# For making HTTP requests (used by SignalR client and utils for API calls)
+requests
+
+# For the SignalR client to connect to the F1 data feed
+git+https://github.com/dawnofwar911/signalrcore_f1
+
+# For fetching F1 session/schedule information and potentially more detailed lap data
+fastf1
+
+# For geometric operations (used in utils.py for track data)
+Shapely
