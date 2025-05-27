@@ -338,9 +338,14 @@ def _replay_thread_target(filename, initial_speed=1.0):
 
             final_conn_msg = playback_status # Use the playback_status string directly for connection message
 
-            if app_state.app_status["state"] in ["Replaying", "Initializing", "Stopping"]:
-                 app_state.app_status.update({"state": final_state, "connection": final_conn_msg})
-            app_state.app_status['current_replay_file'] = None
+            is_current_replay_thread_finishing = app_state.app_status.get("current_replay_file") == Path(filename).name
+
+            if app_state.app_status["state"] in ["Replaying", "Initializing", "Stopping"] or \
+               (is_current_replay_thread_finishing and app_state.app_status["state"] != "Idle"): # If this was the active replay
+                app_state.app_status.update({"state": final_state, "connection": final_conn_msg})
+            # Always clear the current_replay_file if this thread was responsible for it and is now done
+            if is_current_replay_thread_finishing:
+                app_state.app_status['current_replay_file'] = None
         if threading.current_thread() is globals().get('replay_thread'):
              globals()['replay_thread'] = None
 
@@ -403,30 +408,54 @@ def replay_from_file(data_file_path, replay_speed=1.0):
 
 def stop_replay():
     global replay_thread
-    local_thread = replay_thread
+    local_thread = replay_thread # Capture the global
+    thread_was_active_or_recently_finished = bool(local_thread) # Check if a thread object existed
+
     if not local_thread or not local_thread.is_alive():
-        logger.info("Stop replay called, but no active replay thread found.")
+        logger.info(f"Stop replay called. Replay thread reference: {'Exists' if local_thread else 'None'}. Thread alive: {local_thread.is_alive() if local_thread else 'N/A'}.")
         with app_state.app_state_lock:
-             if app_state.app_status["state"] == "Replaying":
-                 app_state.app_status.update({"state": "Stopped", "connection": config.REPLAY_STATUS_CONNECTION_REPLAY_ENDED}) # Use constant
-             app_state.app_status["current_replay_file"] = None
-        if replay_thread is local_thread: replay_thread = None
+            # Handle if the state is Replaying OR Playback Complete
+            if app_state.app_status["state"] in ["Replaying", "Playback Complete", "Stopping"]:
+                logger.info(f"Replay thread not active/alive or finishing up. Current state: {app_state.app_status['state']}. Setting to 'Stopped'.")
+                app_state.app_status.update({"state": "Stopped", "connection": config.REPLAY_STATUS_CONNECTION_REPLAY_ENDED})
+            # Always clear current_replay_file if we are stopping a replay process
+            if app_state.app_status.get("current_replay_file"):
+                logger.info(f"Clearing current_replay_file: {app_state.app_status.get('current_replay_file')}")
+                app_state.app_status["current_replay_file"] = None
+        
+        # Ensure the global replay_thread is cleared if it matches the local_thread we've processed
+        if replay_thread is local_thread:
+            replay_thread = None
         return
 
-    logger.info("Stopping replay...")
+    # --- This part is for an ACTIVE running thread ---
+    logger.info("Stopping active replay thread...")
     with app_state.app_state_lock:
+        # It's good to set to "Stopping" first if it's "Replaying"
         if app_state.app_status["state"] == "Replaying":
-            app_state.app_status.update({"state": "Stopping", "connection": "Stopping Replay..."}) # Could be constant
+            app_state.app_status.update({"state": "Stopping", "connection": "Stopping Replay..."})
+    
     app_state.stop_event.set()
     logger.info("Waiting for replay thread to join...")
-    local_thread.join(timeout=5) # Consider making timeout a config const
-    if local_thread.is_alive(): logger.warning("Replay thread did not stop cleanly.")
-    else: logger.info("Replay thread joined successfully.")
+    local_thread.join(timeout=5) 
+    
+    if local_thread.is_alive():
+        logger.warning("Replay thread did not stop cleanly after join timeout.")
+    else:
+        logger.info("Replay thread joined successfully.")
 
     with app_state.app_state_lock:
-        app_state.app_status.update({"state": "Stopped", "connection": config.REPLAY_STATUS_CONNECTION_REPLAY_STOPPED}) # Use constant
-        app_state.app_status["current_replay_file"] = None
-    if replay_thread is local_thread: replay_thread = None
+        # After attempting to stop, definitively set to "Stopped"
+        # and clear the current replay file.
+        logger.info(f"Finalizing stop_replay. Current state before update: {app_state.app_status['state']}. Setting to 'Stopped'.")
+        app_state.app_status.update({"state": "Stopped", "connection": config.REPLAY_STATUS_CONNECTION_REPLAY_STOPPED})
+        if app_state.app_status.get("current_replay_file"):
+             logger.info(f"Clearing current_replay_file: {app_state.app_status.get('current_replay_file')} in active thread stop part.")
+             app_state.app_status["current_replay_file"] = None
+    
+    # Clear the global reference if it's the thread we just stopped
+    if replay_thread is local_thread:
+        replay_thread = None
     logger.info("Stop replay sequence complete.")
 
 

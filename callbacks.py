@@ -1214,16 +1214,29 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
 
         logger.info("Stop & Reset: Finalizing stop_event and app status...")
         with app_state.app_state_lock:
-            current_status = app_state.app_status.get("state")
-            logger.info(f"Stop & Reset: State before final stop_event clear: '{current_status}'. Actions failed: {any_action_failed}")
-            if app_state.stop_event.is_set(): logger.info("Stop & Reset: Global stop_event is SET. Clearing now."); app_state.stop_event.clear()
-            else: logger.info("Stop & Reset: Global stop_event was already clear.")
-            if any_action_failed and current_status != "Error":
-                logger.warning("Stop & Reset: Forcing app status to 'Error' due to failures.")
-                app_state.app_status["state"] = "Error"; app_state.app_status["connection"] = "Reset failed"
-            elif not any_action_failed and current_status != "Idle":
-                 logger.info(f"Stop & Reset: Actions succeeded. Current state '{current_status}' (expected Idle). Ensuring Idle.")
-                 app_state.app_status["state"] = "Idle"; app_state.app_status["connection"] = config.TEXT_SIGNALR_DISCONNECTED_STATUS # Use constant
+            current_status_after_actions = app_state.app_status.get("state") # Get state *after* stop calls and reset
+            logger.info(f"Stop & Reset: State after reset_to_default_state() and before final adjustment: '{current_status_after_actions}'. Actions failed: {any_action_failed}")
+            
+            if app_state.stop_event.is_set(): 
+                logger.info("Stop & Reset: Global stop_event is SET. Clearing now.")
+                app_state.stop_event.clear()
+            else: 
+                logger.info("Stop & Reset: Global stop_event was already clear.")
+
+            if any_action_failed: # If any action (stop_connection, stop_replay, reset_state) failed
+                logger.warning("Stop & Reset: At least one action failed. Forcing app status to 'Error'.")
+                app_state.app_status["state"] = "Error"
+                app_state.app_status["connection"] = "Reset failed"
+            else: # All actions succeeded
+                # reset_to_default_state() should have already set it to "Idle"
+                if current_status_after_actions == "Idle":
+                    logger.info(f"Stop & Reset: Actions succeeded. State is '{current_status_after_actions}'. Connection: '{config.TEXT_SIGNALR_DISCONNECTED_STATUS}'.")
+                    app_state.app_status["connection"] = config.TEXT_SIGNALR_DISCONNECTED_STATUS # Ensure connection message is default
+                else:
+                    # This case should ideally not be hit if reset_to_default_state() works
+                    logger.warning(f"Stop & Reset: Actions succeeded, but state is '{current_status_after_actions}' instead of 'Idle'. Forcing to 'Idle'.")
+                    app_state.app_status["state"] = "Idle"
+                    app_state.app_status["connection"] = config.TEXT_SIGNALR_DISCONNECTED_STATUS
         logger.info("Stop & Reset Session processing finished.")
 
     else:
