@@ -4,26 +4,30 @@ Defines the central Dash app instance.
 """
 import dash
 import dash_bootstrap_components as dbc
-import config # <<< ADDED: For APP_TITLE
+import config # For APP_TITLE
+
+# --- Define External Stylesheets ---
+# Add Font Awesome if not already present or ensure it's there
+FA = "https://use.fontawesome.com/releases/v5.15.4/css/all.css"
+external_stylesheets = [
+    dbc.themes.SLATE, # Your existing theme
+    FA,                # Font Awesome for icons
+    '/assets/custom.css'
+]
 
 # Define the app instance here
 app = dash.Dash(__name__,
-                external_stylesheets=[dbc.themes.SLATE],
-                suppress_callback_exceptions=True) # Keep suppression True for now
+                external_stylesheets=external_stylesheets, # Use the list
+                suppress_callback_exceptions=True) 
 
-# Optional: Set the title using constant from config
-app.title = config.APP_TITLE # <<< UPDATED
-
-# Expose server for potential deployment
+app.title = config.APP_TITLE 
 server = app.server
 
-# Eruda debug console (optional, can be removed for "production")
-# Consider making the Eruda script inclusion conditional based on DASH_DEBUG_MODE
 eruda_script = ""
-if config.DASH_DEBUG_MODE: # Conditionally include Eruda
+if config.DASH_DEBUG_MODE:
     eruda_script = """
-            <script src="//cdn.jsdelivr.net/npm/eruda"></script>
-            <script>eruda.init();</script>"""
+                <script src="//cdn.jsdelivr.net/npm/eruda"></script>
+                <script>eruda.init();</script>"""
 
 app.index_string = f"""<!DOCTYPE html>
 <html>
@@ -44,4 +48,4 @@ app.index_string = f"""<!DOCTYPE html>
     </body>
 </html>"""
 
-print("DEBUG: Dash app instance created in app_instance.py")
+print("DEBUG: Dash app instance updated in app_instance.py (FontAwesome added if new)")
