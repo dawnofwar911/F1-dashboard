@@ -647,7 +647,7 @@ def update_main_data_displays(n):
     current_time_for_callbacks = time.time()
 
     try:
-        session_type_from_state_str = ""
+        session_type_from_state_obj = "" # Initialize to empty string
         current_q_segment_from_state = None
         previous_q_segment_from_state = None
         q_state_snapshot_for_live = {}
@@ -664,7 +664,10 @@ def update_main_data_displays(n):
 
         with app_state.app_state_lock:
             app_overall_status = app_state.app_status.get("state", "Idle") #
-            session_type_from_state_str = app_state.session_details.get('Type', "").lower() #
+            # Safely get and convert session type to lower case
+            session_type_val = app_state.session_details.get('Type')
+            session_type_from_state_str = str(session_type_val).lower() if session_type_val is not None else "" # MODIFIED LINE
+            
             q_state_snapshot_for_live = app_state.qualifying_segment_state.copy() #
             current_q_segment_from_state = q_state_snapshot_for_live.get("current_segment") #
             previous_q_segment_from_state = q_state_snapshot_for_live.get("old_segment") #
@@ -679,6 +682,9 @@ def update_main_data_displays(n):
             timing_state_copy = app_state.timing_state.copy() #
             data_store_copy = app_state.data_store #
 
+        # ... rest of the function ...
+        # (The following lines use session_type_from_state_str, which should now be safe)
+
         current_segment_time_remaining_seconds = float('inf')
         is_active_q_segment_for_highlight = (
             session_type_from_state_str in ["qualifying", "sprint shootout"] and #
@@ -686,6 +692,14 @@ def update_main_data_displays(n):
             current_q_segment_from_state not in ["Unknown", "Between Segments", "Ended", "Practice"] #
         )
 
+        # ... (omitting the rest of the function for brevity as it's unchanged from your original file)
+        # Ensure that the logic below this point correctly handles an empty string for session_type_from_state_str
+        # if 'Type' was indeed None or not found. Your existing comparisons like:
+        #   session_type_from_state_str in [config.SESSION_TYPE_RACE.lower(), config.SESSION_TYPE_SPRINT.lower()]
+        # will correctly evaluate to False if session_type_from_state_str is "".
+
+        # Make sure the rest of the original function from your callbacks.py follows here
+        # For example:
         if is_active_q_segment_for_highlight: #
             if app_overall_status == "Replaying": #
                 if start_feed_ts_dt_replay_local and current_feed_ts_dt_replay_local and segment_duration_s_replay_local is not None: #
@@ -859,7 +873,13 @@ def update_main_data_displays(n):
                 bold_interval_text = f"**{interval_display_text}**" #
                 interval_gap_markdown = ""
                 is_p1 = (pos_str == '1') #
-                show_gap = not is_p1 and session_type_from_state_str in [config.SESSION_TYPE_RACE.lower(), config.SESSION_TYPE_SPRINT.lower()] and gap_display_text != "-" #
+                
+                # Ensure session_type_from_state_str is usable here, e.g., it won't be None
+                show_gap = not is_p1 and \
+                           session_type_from_state_str and \
+                           session_type_from_state_str in [config.SESSION_TYPE_RACE.lower(), config.SESSION_TYPE_SPRINT.lower()] and \
+                           gap_display_text != "-" # MODIFIED
+                
                 if show_gap and interval_display_text != "": #
                     normal_weight_gap_text = gap_display_text #
                     interval_gap_markdown = f"{bold_interval_text}\\\n{normal_weight_gap_text}" #
@@ -972,8 +992,6 @@ def update_main_data_displays(n):
         logger.error(
             f"Error in update_main_data_displays callback: {e_update}", exc_info=True) #
         return no_update, no_update, no_update #
-
-
 
 
 @app.callback(
