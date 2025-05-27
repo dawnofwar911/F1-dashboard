@@ -49,16 +49,6 @@ def setup_logging():
     f1_app_logger.setLevel(logging.INFO) 
     f1_app_logger.propagate = True 
     # f1_app_logger.info("F1App application logger level set. Will use root handler.") # DEBUG
-    
-    auto_connect_specific_logger = logging.getLogger("F1App.AutoConnect")
-    auto_connect_specific_logger.setLevel(logging.DEBUG)
-    auto_connect_specific_logger.propagate = True # Explicitly ensure it propagates
-    # auto_connect_specific_logger.info("F1App.AutoConnect logger set to DEBUG level.") # Optional: confirm it's set
-
-    schedule_page_specific_logger = logging.getLogger("F1App.SchedulePage")
-    schedule_page_specific_logger.setLevel(logging.DEBUG)
-    schedule_page_specific_logger.propagate = True # Explicitly ensure it propagates
-    # schedule_page_specific_logger.info("F1App.SchedulePage logger set to DEBUG level.") # Optional
 
     logging.getLogger("SignalRCoreClient").setLevel(logging.WARNING)
     logging.getLogger("signalrcore").setLevel(logging.WARNING)
