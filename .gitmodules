@@ -1,0 +1,3 @@
+[submodule "signalrcore_f1"]
+	path = signalrcore_f1
+	url = git@github.com:dawnofwar911/signalrcore_f1.git
