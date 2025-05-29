@@ -23,3 +23,6 @@ fastf1
 
 # For geometric operations (used in utils.py for track data)
 Shapely
+
+# For Development Server
+waitress

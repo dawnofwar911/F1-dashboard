@@ -7,6 +7,7 @@ import time
 import faulthandler # Already in your file
 import datetime # Add this
 import pytz     # Add this
+import atexit
 
 import dash
 from dash import Input, Output, html, dcc # dcc needed for Location
@@ -277,78 +278,136 @@ def auto_connect_monitor():
     logger_auto_connect.info("Auto-connect monitor thread stopped.")
 
 
-# --- Main Execution Logic (adapted from your existing main.py) ---
-if __name__ == '__main__':
-    faulthandler.enable()
-    setup_logging()
-    logger = logging.getLogger("F1App.Main")
-    logger.info("Application starting...")
+# --- Global variables for threads (moved from if __name__ == '__main__') ---
+processing_thread = None
+auto_connect_thread = None
 
-    logger.info("Checking/Creating replay directory...")
-    replay.ensure_replay_dir_exists()
 
-    logger.info("Dash layout structure assigned.")
+def start_background_tasks():
+    global processing_thread, auto_connect_thread
+    # Logger for this specific part
+    logger = logging.getLogger("F1App.Main.BackgroundTasks")
 
-    processing_thread = None
-    auto_connect_thread = None # New thread variable
-    app_state.stop_event.clear()
-
-    try:
+    if processing_thread is None or not processing_thread.is_alive():
         logger.info("Starting background data processing thread...")
+        app_state.stop_event.clear()  # Ensure stop_event is clear before starting
         processing_thread = threading.Thread(
             target=data_processing.data_processing_loop,
             name="DataProcessingThread", daemon=True)
         processing_thread.start()
         logger.info("Data processing thread started.")
+    else:
+        logger.info("Data processing thread already running.")
 
-        # Start the new auto-connect monitor thread
+    if auto_connect_thread is None or not auto_connect_thread.is_alive():
         logger.info("Starting auto-connect monitor thread...")
+        # stop_event should already be cleared by data_processing_loop start, or ensure it here too if needed
         auto_connect_thread = threading.Thread(
+            # auto_connect_monitor should be defined before this point
             target=auto_connect_monitor,
             name="AutoConnectMonitorThread", daemon=True
         )
         auto_connect_thread.start()
         logger.info("Auto-connect monitor thread started.")
+    else:
+        logger.info("Auto-connect monitor thread already running.")
 
 
-        logger.info(f"Dash server starting on http://{config.DASH_HOST}:{config.DASH_PORT}")
+def shutdown_application():
+    logger = logging.getLogger("F1App.Main.Shutdown")
+    logger.info("Initiating application shutdown sequence via atexit...")
+    if not app_state.stop_event.is_set():
+        logger.info("Setting global stop event.")
+        app_state.stop_event.set()
+
+    # This logic is similar to your original finally block
+    with app_state.app_state_lock:
+        current_app_mode = app_state.app_status.get("state", "Unknown").lower()
+
+    if "live" in current_app_mode or "connecting" in current_app_mode or "initializing" in current_app_mode:
+        logger.info("Shutdown: Stopping SignalR connection...")
+        signalr_client.stop_connection()  # Ensure this is thread-safe and idempotent
+
+    logger.info("Shutdown: Stopping Replay (if running)...")
+    replay.stop_replay()  # Ensure this is thread-safe and idempotent
+
+    global processing_thread, auto_connect_thread  # Refer to global thread variables
+
+    if processing_thread and processing_thread.is_alive():
+        logger.info("Shutdown: Waiting for Data Processing thread to join...")
+        processing_thread.join(timeout=5.0)
+        if processing_thread.is_alive():
+            logger.warning("Data Processing thread did not exit cleanly.")
+        else:
+            logger.info("Data Processing thread joined successfully.")
+
+    if auto_connect_thread and auto_connect_thread.is_alive():
+        logger.info(
+            "Shutdown: Waiting for Auto-Connect Monitor thread to join...")
+        # Give auto_connect_monitor time to exit its loop
+        auto_connect_thread.join(timeout=5.0)
+        if auto_connect_thread.is_alive():
+            logger.warning("Auto-Connect Monitor thread did not exit cleanly.")
+        else:
+            logger.info("Auto-Connect Monitor thread joined successfully.")
+
+    logger.info("Shutdown sequence via atexit complete.")
+
+
+# --- MODULE LEVEL EXECUTION (This will run when Gunicorn imports main.py) ---
+faulthandler.enable()
+setup_logging()  # Setup logging first
+logger_main_module = logging.getLogger("F1App.Main.ModuleLevel")
+
+logger_main_module.info("main.py module loaded. Performing initial setups.")
+logger_main_module.info("Checking/Creating replay directory...")
+replay.ensure_replay_dir_exists()  # (assuming this function exists)
+
+# Assign layout after app object is created and imported
+app.layout = main_app_layout
+logger_main_module.info("Dash layout structure assigned.")
+
+# Start background tasks when the module is loaded
+start_background_tasks()
+
+# Register the shutdown function to be called on exit
+atexit.register(shutdown_application)
+logger_main_module.info(
+    "Shutdown handler registered. Background tasks initiated.")
+logger_main_module.info(
+    f"Gunicorn should target this 'server' object: {server}")
+
+
+# --- Main Execution Logic (for direct `python main.py` run) ---
+if __name__ == '__main__':
+    # The module-level code above will have already run.
+    # setup_logging(), replay.ensure_replay_dir_exists(), start_background_tasks(), atexit.register()
+    # are already done.
+
+    logger_main_module.info(
+        f"Running Dash development server on http://{config.DASH_HOST}:{config.DASH_PORT}")
+    logger_main_module.warning(
+        "REMINDER: Background threads are already started at module level.")
+    logger_main_module.warning(
+        "This mode is for development. For production, use Gunicorn pointing to main:server.")
+
+    # Keep app.run for development convenience, but background tasks are now started at module level.
+    # The `atexit` handler will manage shutdown for this mode too.
+    try:
         app.run(
             host=config.DASH_HOST,
             port=config.DASH_PORT,
             debug=config.DASH_DEBUG_MODE,
-            use_reloader=False
+            use_reloader=False  # MUST be False if threads are started at module level
         )
-
     except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt detected, initiating shutdown.")
+        logger_main_module.info(
+            "KeyboardInterrupt detected in development server run. Shutdown will be handled by atexit.")
     except Exception as main_err:
-        logger.error(f"Critical error in main execution or server run: {main_err}", exc_info=True)
-    finally:
-        logger.info("Initiating application shutdown sequence...")
-        if not app_state.stop_event.is_set():
-            logger.info("Setting global stop event.")
-            app_state.stop_event.set()
-
-        with app_state.app_state_lock:
-            current_app_mode = app_state.app_status.get("state", "Unknown").lower()
-
-        if "live" in current_app_mode or "connecting" in current_app_mode:
-            logger.info("Cleanup: Stopping SignalR connection...")
-            signalr_client.stop_connection()
-
-        logger.info("Cleanup: Stopping Replay (if running)...")
-        replay.stop_replay()
-
-        if processing_thread and processing_thread.is_alive():
-            logger.info("Cleanup: Waiting for Data Processing thread to join...")
-            processing_thread.join(timeout=5.0)
-            if processing_thread.is_alive(): logger.warning("Data Processing thread did not exit cleanly.")
-            else: logger.info("Data Processing thread joined successfully.")
-        
-        if auto_connect_thread and auto_connect_thread.is_alive(): # Join new thread
-            logger.info("Cleanup: Waiting for Auto-Connect Monitor thread to join...")
-            auto_connect_thread.join(timeout=5.0)
-            if auto_connect_thread.is_alive(): logger.warning("Auto-Connect Monitor thread did not exit cleanly.")
-            else: logger.info("Auto-Connect Monitor thread joined successfully.")
-
-        logger.info("Shutdown complete. --- App Exited ---")
+        logger_main_module.error(
+            f"Critical error in development server run: {main_err}", exc_info=True)
+    # The atexit handler will take care of the cleanup defined in shutdown_application()
+    # No need for the extensive finally block here anymore if atexit handles it.
+    logger_main_module.info(
+        "Development server finished. --- App Exited (dev mode) ---")
+    
