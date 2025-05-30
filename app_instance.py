@@ -18,7 +18,8 @@ external_stylesheets = [
 # Define the app instance here
 app = dash.Dash(__name__,
                 external_stylesheets=external_stylesheets, # Use the list
-                suppress_callback_exceptions=True) 
+                suppress_callback_exceptions=True,
+                update_title=None)
 
 app.title = config.APP_TITLE 
 server = app.server

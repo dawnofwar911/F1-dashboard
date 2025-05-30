@@ -99,3 +99,8 @@
 .accordion-title-badge {
     /* Using Bootstrap float-end on the badge itself is better */
 }
+
+/* Hide the default Dash loading callback indicator */
+._dash-loading-callback {
+    display: none !important;
+}
