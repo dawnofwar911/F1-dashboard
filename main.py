@@ -375,7 +375,7 @@ atexit.register(shutdown_application)
 logger_main_module.info(
     "Shutdown handler registered. Background tasks initiated.")
 logger_main_module.info(
-    f"Gunicorn should target this 'server' object: {server}")
+    f"Waitress should target this 'server' object: {server}")
 
 
 # --- Main Execution Logic (for direct `python main.py` run) ---

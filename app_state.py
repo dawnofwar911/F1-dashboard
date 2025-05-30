@@ -41,15 +41,24 @@ track_status_data = INITIAL_TRACK_STATUS_DATA.copy()
 INITIAL_SESSION_DETAILS = {
     'ScheduledDurationSeconds': None,
     'PreviousSessionStatus': None,
-    'Year': None,                  # New: To store current session's year
-    'CircuitKey': None,            # Existing: Useful for circuit info
-    'CircuitName': None,           # New: To store current session's circuit name
-    'EventName': None,             # Existing: but ensure it's populated for recordings
-    'SessionName': None,           # New: To store current session's name (e.g., "Practice 1")
-    'SessionKey': None,            # Existing: Official F1 session key
-    'Path': None,                  # Existing: For team radio
-    'Type': None,                  # Existing: e.g. "Race", "Qualifying"
-    'SessionStartTimeUTC': None,   # New: Store the precise start time of the session we are connecting to/recording
+    'Year': None,
+    'CircuitKey': None,
+    'CircuitName': "",  # Default to empty string
+    'EventName': "",   # Default to empty string
+    'SessionName': "",  # Default to empty string
+    'SessionKey': None,
+    'Path': "",        # Default to empty string for consistency, or None if "" is problematic for URL construction elsewhere
+    'Type': "",        # Default to empty string
+    'SessionStartTimeUTC': None,
+    'SessionStatus': 'Unknown',
+    # Add other known keys from SessionInfo with sensible defaults (None, "", 0, etc.)
+    'Meeting': {},
+    'ArchiveStatus': {},
+    'Key': None,
+    'Number': None,
+    'Name': "",      # For the top-level "Name" in the SessionInfo snippet
+    'GmtOffset': None,
+    'Location': ""
 }
 session_details = INITIAL_SESSION_DETAILS.copy()
 

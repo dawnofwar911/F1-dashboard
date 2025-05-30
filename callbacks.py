@@ -823,8 +823,7 @@ def update_main_data_displays(n):
             f"ApplyDanger='{apply_danger_zone_highlight}', ApplyQ1Elim='{apply_q1_elimination_highlight}', ApplyQ2Elim='{apply_q2_elimination_highlight}'"
         )
 
-        excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
-                            'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'Heartbeat'] #
+        excluded_streams = [] #
         sorted_streams = sorted(
             [s for s in data_store_copy.keys() if s not in excluded_streams]) #
         for stream in sorted_streams: #
