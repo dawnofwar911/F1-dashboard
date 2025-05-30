@@ -1,0 +1,23 @@
+# f1_dashboard_addon/.dockerignore
+__pycache__/
+app/ff1_cache
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv
+# If you have a venv inside your app/ directory for local testing:
+app/venv/
+app/env/
+app/.env
+# General Python cache/build files if they end up in app/
+app/ff1_cache
+app/.pytest_cache/
+app/.mypy_cache/
+app/build/
+app/dist/
+app/*.egg-info/
+# OS-specific files
+app/.DS_Store
+# Editor-specific files
+app/.vscode/

@@ -1,0 +1,4 @@
+# Recording Started: 2025-05-16T07:28:27.634604+00:00Z
+# Session Info (from FastF1 at start): Event='Emilia Romagna Grand Prix', Session='Practice 1'
+
+# Recording Stopped: 2025-05-16T07:28:54.457895+00:00Z

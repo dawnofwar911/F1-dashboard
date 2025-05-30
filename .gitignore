@@ -1,3 +1,4 @@
 replays/
 __pycache__/
 ff1_cache/
+.venv
