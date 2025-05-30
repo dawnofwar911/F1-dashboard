@@ -27,7 +27,7 @@ RUN mkdir -p /app/replays
 EXPOSE 8050
 
 # Define environment variable
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONUNBUFFERED=1
 
 # Run main.py when the container launches
 CMD ["waitress-serve", "--host", "0.0.0.0", "--port", "8050", "main:server"]
