@@ -12,13 +12,13 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the container at /app
-COPY requirements.txt .
+COPY app/requirements.txt .
 
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application's code into the container at /app
-COPY . .
+COPY app/ .
 
 # Ensure the 'replays' directory exists
 RUN mkdir -p /app/replays 
@@ -27,7 +27,7 @@ RUN mkdir -p /app/replays
 EXPOSE 8050
 
 # Define environment variable
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONUNBUFFERED=1
 
 # Run main.py when the container launches
-CMD ["python", "main.py"]
+CMD ["waitress-serve", "--host", "0.0.0.0", "--port", "8050", "main:server"]
