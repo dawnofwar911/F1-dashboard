@@ -30,4 +30,4 @@ EXPOSE 8050
 ENV PYTHONUNBUFFERED 1
 
 # Run main.py when the container launches
-CMD ["python", "main.py"]
+CMD ["waitress-serve", "--host", "0.0.0.0", "--port", "8050", "main:server"]
