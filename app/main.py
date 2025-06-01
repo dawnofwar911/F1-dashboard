@@ -49,6 +49,8 @@ def setup_logging():
     f1_app_logger = logging.getLogger("F1App")
     f1_app_logger.setLevel(logging.INFO) 
     f1_app_logger.propagate = True 
+    
+    logging.getLogger("F1App.AutoConnect").setLevel(logging.DEBUG)
     # f1_app_logger.info("F1App application logger level set. Will use root handler.") # DEBUG
 
     logging.getLogger("SignalRCoreClient").setLevel(logging.WARNING)
