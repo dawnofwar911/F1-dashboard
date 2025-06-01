@@ -26,10 +26,249 @@ except ImportError:
     pd = None
 
 # Import config for constants
-import config 
+import config
+import app_state
 
 logger = logging.getLogger("F1App.Utils")
 main_logger = logging.getLogger("F1App.Utils") # Consider consolidating loggers if they serve the same purpose
+
+def prepare_position_data_updates(actual_data_payload, current_position_data_snapshot):
+    """
+    Parses Position data payload and prepares updates for PositionData and PreviousPositionData.
+    Does NOT modify app_state directly.
+    Args:
+        actual_data_payload (dict): The raw 'Position' stream data.
+        current_position_data_snapshot (dict): Snapshot of {car_num_str: current_pos_dict} from app_state.
+    Returns:
+        dict: position_updates = {car_num_str: {'PreviousPositionData': {...}, 'PositionData': {...}}}
+    """
+    logger_prep = logging.getLogger("F1App.DataPrep.PositionData") # Or use existing logger
+    position_updates = {}
+
+    if not isinstance(actual_data_payload, dict) or 'Position' not in actual_data_payload:
+        logger_prep.warning(f"prepare_position_data_updates: Unexpected format: {type(actual_data_payload)}")
+        return position_updates
+
+    position_entries_list = actual_data_payload.get('Position', [])
+    if not isinstance(position_entries_list, list):
+        logger_prep.warning(f"prepare_position_data_updates: 'Position' data is not a list.")
+        return position_updates
+
+    for entry_group in position_entries_list:
+        if not isinstance(entry_group, dict): continue
+        timestamp_str = entry_group.get('Timestamp')
+        if not timestamp_str: continue
+
+        entries_dict_payload = entry_group.get('Entries', {})
+        if not isinstance(entries_dict_payload, dict): continue
+
+        for car_num_str, new_pos_info_payload in entries_dict_payload.items():
+            # We only prepare updates for drivers we are already tracking (from DriverList)
+            # This snapshot check ensures we don't add new drivers here.
+            if car_num_str not in current_position_data_snapshot: 
+                # logger_prep.debug(f"prepare_position_data_updates: Driver {car_num_str} not in snapshot, skipping PositionData.")
+                continue
+
+            if isinstance(new_pos_info_payload, dict):
+                current_pos_data_for_driver = current_position_data_snapshot.get(car_num_str, {})
+                
+                new_position_data_for_state = {
+                    'X': new_pos_info_payload.get('X'), 
+                    'Y': new_pos_info_payload.get('Y'),
+                    'Status': new_pos_info_payload.get('Status'), 
+                    'Timestamp': timestamp_str
+                }
+                
+                position_updates[car_num_str] = {
+                    'PreviousPositionData': current_pos_data_for_driver.copy(), # The old current becomes the new previous
+                    'PositionData': new_position_data_for_state
+                }
+    return position_updates
+
+def prepare_car_data_updates(actual_data_payload, timing_state_snapshot_for_laps):
+    """
+    Parses CarData payload and prepares updates for car data and telemetry.
+    Does NOT modify app_state directly.
+    Args:
+        actual_data_payload (dict): The raw 'CarData' stream data.
+        timing_state_snapshot_for_laps (dict): A snapshot of app_state.timing_state 
+                                              (or just relevant parts like {'RacingNumber': {'NumberOfLaps': X}}).
+    Returns:
+        tuple: (car_specific_updates, telemetry_specific_updates)
+               car_specific_updates = {car_num_str: {'CarData': {...}}}
+               telemetry_specific_updates = {(car_num_str, lap_num): {'Timestamps': [...], 'Speed': [...], ...}}
+    """
+    logger_prep = logging.getLogger("F1App.DataPrep.CarData") # Or use existing logger
+    car_specific_updates = {}
+    telemetry_specific_updates = {}
+
+    if not isinstance(actual_data_payload, dict) or 'Entries' not in actual_data_payload:
+        logger_prep.warning(f"prepare_car_data_updates: Unexpected format: {actual_data_payload}")
+        return car_specific_updates, telemetry_specific_updates
+
+    entries = actual_data_payload.get('Entries', [])
+    if not isinstance(entries, list):
+        logger_prep.warning(f"prepare_car_data_updates: 'Entries' is not a list.")
+        return car_specific_updates, telemetry_specific_updates
+
+    for entry in entries:
+        if not isinstance(entry, dict): continue
+        utc_time = entry.get('Utc')
+        cars_data_from_payload = entry.get('Cars', {})
+        if not isinstance(cars_data_from_payload, dict): continue
+
+        for car_number, car_details_payload in cars_data_from_payload.items():
+            car_num_str = str(car_number)
+            # We need NumberOfLaps to determine current_lap_num for telemetry.
+            # This comes from the timing_state_snapshot.
+            driver_timing_info = timing_state_snapshot_for_laps.get(car_num_str, {})
+            
+            if not driver_timing_info: # Skip if driver not in our timing_state snapshot
+                # logger_prep.debug(f"prepare_car_data_updates: Driver {car_num_str} not in timing_state_snapshot, skipping CarData.")
+                continue
+                
+            if not isinstance(car_details_payload, dict): continue
+            channels_payload = car_details_payload.get('Channels', {})
+            if not isinstance(channels_payload, dict): continue
+
+            # Prepare CarData update for app_state.timing_state
+            current_car_data_update = {}
+            for channel_num_str_cfg, data_key_cfg in config.CHANNEL_MAP.items():
+                if channel_num_str_cfg in channels_payload:
+                    current_car_data_update[data_key_cfg] = channels_payload[channel_num_str_cfg]
+            current_car_data_update['Utc'] = utc_time
+            
+            if car_num_str not in car_specific_updates:
+                car_specific_updates[car_num_str] = {}
+            car_specific_updates[car_num_str]['CarData'] = current_car_data_update
+
+            # Prepare Telemetry update for app_state.telemetry_data
+            completed_laps = driver_timing_info.get('NumberOfLaps', -1)
+            current_lap_num = -1
+            try:
+                current_lap_num = int(completed_laps) + 1
+                if current_lap_num <= 0: current_lap_num = 1
+            except (ValueError, TypeError):
+                logger_prep.warning(f"prepare_car_data_updates: Cannot determine lap for Drv {car_num_str}, LapInfo='{completed_laps}'. Skipping telemetry history for this entry.")
+                continue # Skip telemetry for this car if lap number is invalid
+
+            telemetry_key = (car_num_str, current_lap_num)
+            if telemetry_key not in telemetry_specific_updates:
+                telemetry_specific_updates[telemetry_key] = {'Timestamps': [], **{key: [] for key in config.CHANNEL_MAP.values()}}
+            
+            lap_telemetry_update_ref = telemetry_specific_updates[telemetry_key]
+            lap_telemetry_update_ref['Timestamps'].append(utc_time)
+            for channel_num_str_cfg, data_key_cfg in config.CHANNEL_MAP.items():
+                value = channels_payload.get(channel_num_str_cfg)
+                if data_key_cfg in ['RPM', 'Speed', 'Gear', 'Throttle', 'Brake', 'DRS']:
+                    try: value = int(value) if value is not None else None
+                    except (ValueError, TypeError): value = None
+                lap_telemetry_update_ref[data_key_cfg].append(value)
+                
+    return car_specific_updates, telemetry_specific_updates
+
+
+def prepare_session_info_data(raw_session_info_data, 
+                               current_app_state_session_type_lower, 
+                               current_app_state_session_key, 
+                               current_app_state_cached_track_key):
+    """
+    Parses raw SessionInfo data, determines changes, and prepares data for app_state update.
+    Returns:
+        - details_for_app_state (dict): Data to update in app_state.session_details.
+        - reset_flags (dict): Flags indicating if certain app_state fields need resetting.
+        - fetch_info (dict or None): Info needed to start a fetch thread, or None.
+    """
+    logger_util = logging.getLogger("F1App.Utils.SessionInfoParser") # Or use existing logger
+
+    if not isinstance(raw_session_info_data, dict):
+        logger_util.warning(f"prepare_session_info_data: raw_session_info_data is not a dict: {raw_session_info_data}")
+        return {}, {"reset_q_and_practice": False}, None
+
+    # --- Start parsing raw_session_info_data ---
+    parsed_details = {}
+    meeting_info = raw_session_info_data.get('Meeting', {})
+    circuit_info = meeting_info.get('Circuit', {})
+    country_info = raw_session_info_data.get('Country', {})
+
+    # Ensure sub-dictionaries are dicts
+    if not isinstance(circuit_info, dict): circuit_info = {}
+    if not isinstance(meeting_info, dict): meeting_info = {}
+    if not isinstance(country_info, dict): country_info = {}
+
+    parsed_details['Type'] = raw_session_info_data.get('Type')
+    parsed_details['Name'] = raw_session_info_data.get('Name')
+    parsed_details['Meeting'] = meeting_info
+    parsed_details['Circuit'] = circuit_info
+    parsed_details['Country'] = country_info
+    parsed_details['StartDate'] = raw_session_info_data.get('StartDate')
+    parsed_details['EndDate'] = raw_session_info_data.get('EndDate')
+    parsed_details['Path'] = raw_session_info_data.get('Path')
+    # Add any other fields from SessionInfo you store in app_state.session_details
+
+    year_str = None
+    start_date_str_val = raw_session_info_data.get('StartDate')
+    if start_date_str_val and isinstance(start_date_str_val, str) and len(start_date_str_val) >= 4:
+        try:
+            year_str = start_date_str_val[:4]
+            int(year_str) # Validate it's a number
+        except ValueError:
+            logger_util.warning(f"Invalid year in StartDate: {start_date_str_val}")
+            year_str = None # Invalidate if not a number
+    parsed_details['Year'] = year_str
+
+    circuit_key_from_data = circuit_info.get('Key')
+    parsed_details['CircuitKey'] = circuit_key_from_data
+    
+    new_session_key = None
+    if year_str and circuit_key_from_data is not None and str(circuit_key_from_data).strip():
+        new_session_key = f"{year_str}_{circuit_key_from_data}"
+    parsed_details['SessionKey'] = new_session_key
+
+    # Calculate ScheduledDurationSeconds
+    scheduled_duration_seconds = None
+    s_date_str = parsed_details.get('StartDate')
+    e_date_str = parsed_details.get('EndDate')
+    if s_date_str and e_date_str:
+        start_dt_obj = parse_iso_timestamp_safe(s_date_str) # Ensure this util exists and works
+        end_dt_obj = parse_iso_timestamp_safe(e_date_str)
+        if start_dt_obj and end_dt_obj and end_dt_obj > start_dt_obj:
+            duration_td = end_dt_obj - start_dt_obj
+            scheduled_duration_seconds = duration_td.total_seconds()
+    parsed_details['ScheduledDurationSeconds'] = scheduled_duration_seconds
+    # --- End parsing raw_session_info_data ---
+
+    reset_flags = {"reset_q_and_practice": False}
+    new_session_type_lower = str(parsed_details.get("Type", "")).lower()
+
+    if new_session_type_lower != current_app_state_session_type_lower:
+        logger_util.debug(f"Session type will change from '{current_app_state_session_type_lower}' to '{new_session_type_lower}'. Flagging for reset.")
+        reset_flags["reset_q_and_practice"] = True
+    
+    # Determine if track fetch is needed
+    needs_fetch = False
+    fetch_info = None
+    if new_session_key:
+        if current_app_state_session_key != new_session_key or current_app_state_cached_track_key != new_session_key:
+            logger_util.debug(f"Track fetch will be needed for {new_session_key} (Old AppState Key: {current_app_state_session_key}, Cached Track Key: {current_app_state_cached_track_key})")
+            needs_fetch = True
+    else:
+        logger_util.warning("Could not construct valid new SessionKey from SessionInfo. No fetch will occur.")
+        reset_flags["clear_track_cache"] = True # Flag to clear track cache if SessionKey becomes invalid
+
+    if needs_fetch:
+        fetch_info = {
+            "target": _background_track_fetch_and_update, # Keep utils. if defined in utils
+            "args": (new_session_key, year_str, circuit_key_from_data, app_state) # app_state passed for thread to use
+        }
+        
+    # Info for updating practice_session_scheduled_duration_seconds
+    practice_duration_update = None
+    if new_session_type_lower.startswith("practice") and scheduled_duration_seconds is not None:
+        practice_duration_update = scheduled_duration_seconds
+
+    return parsed_details, reset_flags, practice_duration_update, fetch_info
+
 
 def format_seconds_to_time_str(total_seconds):
     if total_seconds < 0:

@@ -9,6 +9,8 @@ import pytz # Not strictly used in this version, but often useful with F1 data
 import logging
 import json
 import time
+import inspect
+import copy
 # from datetime import timezone # Already imported in app_state & utils if needed there
 import threading
 from pathlib import Path
@@ -55,6 +57,9 @@ def update_timing_table_columns(n_intervals):
     Dynamically sets the columns for the timing table based on the session type.
     The 'Pits' column is only shown for Race or Sprint sessions.
     """
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     with app_state.app_state_lock:
         session_type = app_state.session_details.get('Type', None)
 
@@ -87,6 +92,9 @@ def update_timing_table_columns(n_intervals):
     Input('interval-component-medium', 'n_intervals') # Update periodically
 )
 def update_team_radio_display(n_intervals):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     try:
         with app_state.app_state_lock:
             # Make a copy of the deque for safe iteration
@@ -168,7 +176,8 @@ def update_team_radio_display(n_intervals):
 
         if not display_elements: # If after filtering, nothing is left
              return html.Em(config.TEXT_TEAM_RADIO_AWAITING, style={'color': 'grey'})
-
+        
+        logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
         return html.Div(display_elements) # Wrap all messages in a parent Div
 
     except Exception as e:
@@ -185,6 +194,9 @@ def update_team_radio_display(n_intervals):
     [Input('interval-component-fast', 'n_intervals')]
 )
 def update_lap_and_session_info(n_intervals):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     # Default values
     lap_value_str = "--/--" #
     lap_counter_div_style = {'display': 'none'} #
@@ -193,7 +205,11 @@ def update_lap_and_session_info(n_intervals):
     session_timer_div_style = {'display': 'none'} #
 
     try:
+        lock_acquisition_start_time = time.monotonic()
         with app_state.app_state_lock: #
+            lock_acquired_time = time.monotonic()
+            logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
+            critical_section_start_time = time.monotonic()
             current_app_overall_status = app_state.app_status.get("state", "Idle") #
 
             if current_app_overall_status not in ["Live", "Replaying"]: #
@@ -230,6 +246,7 @@ def update_lap_and_session_info(n_intervals):
 
             session_name_from_details = app_state.session_details.get('Name', '') #
             extrapolated_clock_remaining = app_state.extrapolated_clock_info.get("Remaining") if hasattr(app_state, 'extrapolated_clock_info') else None #
+            logger.debug(f"Lock in '{func_name}' - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
 
         # --- Logic for displaying session type specific info ---
 
@@ -354,7 +371,7 @@ def update_lap_and_session_info(n_intervals):
     except Exception as e:
         logger.error(f"Error in update_lap_and_session_info: {e}", exc_info=True) #
         return "--/--", {'display': 'none'}, "", "", {'display': 'none'} # Fallback #
-
+    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return lap_value_str, lap_counter_div_style, session_timer_label_text, session_time_str, session_timer_div_style #
 
 
@@ -365,6 +382,9 @@ def update_lap_and_session_info(n_intervals):
 )
 def update_connection_status(n):
     """Updates the connection status indicator."""
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     status_text = config.TEXT_CONN_STATUS_DEFAULT # Use constant
     status_style = {'color': 'grey', 'fontWeight': 'bold'}
 
@@ -400,7 +420,8 @@ def update_connection_status(n):
         logger.error(f"Error in update_connection_status: {e}", exc_info=True)
         status_text = config.TEXT_CONN_STATUS_ERROR_UPDATE # Use constant
         status_style = {'color': 'red', 'fontWeight': 'bold'}
-
+    
+    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return status_text, status_style
 
 @app.callback(
@@ -412,6 +433,9 @@ def update_connection_status(n):
     Input('interval-component-slow', 'n_intervals')
 )
 def update_session_and_weather_info(n):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     session_info_str = config.TEXT_SESSION_INFO_AWAITING
     weather_details_spans = []
 
@@ -605,7 +629,8 @@ def update_session_and_weather_info(n):
              final_weather_display_children = [html.Em(config.TEXT_WEATHER_CONDITION_GENERIC.format(condition=overall_condition.replace("_"," ").title()))]
         else:
             final_weather_display_children = weather_details_spans
-
+        
+        logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
         return session_info_str, html.Div(children=final_weather_display_children), current_main_weather_icon, weather_card_color, weather_card_inverse
 
     except Exception as e:
@@ -623,6 +648,9 @@ def update_session_and_weather_info(n):
     Input('interval-component-medium', 'n_intervals')
 )
 def update_prominent_track_status(n):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     with app_state.app_state_lock:
         track_status_code = str(app_state.track_status_data.get('Status', '0'))
 
@@ -631,7 +659,8 @@ def update_prominent_track_status(n):
 
     label_to_display = status_info["label"]
     text_style = {'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px', 'color': status_info["text_color"]}
-
+    
+    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return label_to_display, status_info["card_color"], text_style
 
 
@@ -645,6 +674,9 @@ def update_prominent_track_status(n):
 )
 # MODIFICATION: Added debug_mode_enabled
 def update_main_data_displays(n, debug_mode_enabled):
+    overall_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     other_elements = []
     table_data = []
     timestamp_text = config.TEXT_WAITING_FOR_DATA
@@ -667,8 +699,13 @@ def update_main_data_displays(n, debug_mode_enabled):
             "type": "NONE", "lower_pos": 0, "upper_pos": 0}
         q2_eliminated_highlight_rule = {
             "type": "NONE", "lower_pos": 0, "upper_pos": 0}
-
+        
+        initial_state_copy_start_time = time.monotonic()
+        lock_acquisition_start_time = time.monotonic()
         with app_state.app_state_lock:
+            lock_acquired_time = time.monotonic()
+            logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
+            critical_section_start_time = time.monotonic()
             app_overall_status = app_state.app_status.get("state", "Idle")
             # Robustly get session type
             session_type_from_state_str = (
@@ -694,10 +731,13 @@ def update_main_data_displays(n, debug_mode_enabled):
             timing_state_copy = app_state.timing_state.copy()
             # MODIFICATION: Conditionally get data_store_copy only if debug mode is enabled
             data_store_copy = app_state.data_store.copy() if debug_mode_enabled else {}
+            logger.debug(f"Lock in '{func_name}' - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
+        logger.debug(f"'{func_name}' - Initial lock & state copy: {time.monotonic() - initial_state_copy_start_time:.4f}s")
 
         # MODIFICATION: Conditionally prepare other_elements
         if debug_mode_enabled:
             # MODIFIED: Changed to debug
+            other_elements_prep_start_time = time.monotonic()
             logger.debug("Debug mode is ON, preparing other_elements.")
             excluded_streams = ['TimingData', 'DriverList', 'Position.z', 'CarData.z', 'Position',
                                 'TrackStatus', 'SessionData', 'SessionInfo', 'WeatherData', 'Heartbeat']
@@ -719,6 +759,7 @@ def update_main_data_displays(n, debug_mode_enabled):
                     html.Pre(data_str, style={
                              'marginLeft': '15px', 'maxHeight': '200px', 'overflowY': 'auto'})
                 ], open=(stream == "LapCount")))
+                logger.debug(f"'{func_name}' - Other_elements prep (debug): {time.monotonic() - other_elements_prep_start_time:.4f}s")
         else:
             # MODIFIED: Changed to debug
             logger.debug(
@@ -842,6 +883,7 @@ def update_main_data_displays(n, debug_mode_enabled):
                 'TimingData', {}) if not debug_mode_enabled else data_store_copy.get('TimingData', {})
 
         timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else config.TEXT_WAITING_FOR_DATA
+        table_data_prep_start_time = time.monotonic()
         if timing_state_copy:
             processed_table_data = []
             for car_num, driver_state in timing_state_copy.items():
@@ -1016,12 +1058,13 @@ def update_main_data_displays(n, debug_mode_enabled):
             table_data = processed_table_data
         else:
             timestamp_text = config.TEXT_WAITING_FOR_DATA
+        logger.debug(f"'{func_name}' - Table data prep (loop & sort): {time.monotonic() - table_data_prep_start_time:.4f}s")
 
         callback_duration = time.perf_counter() - callback_start_time
         if callback_duration > 0.1:  # Log if callback takes more than 100ms
             logger.warning(
                 f"update_main_data_displays callback took {callback_duration:.3f} seconds. Debug mode: {debug_mode_enabled}")
-
+        logger.debug(f"Callback '{func_name}' END. Total time: {time.monotonic() - overall_start_time:.4f}s")
         return other_elements, table_data, timestamp_text
 
     except Exception as e_update:
@@ -1036,6 +1079,9 @@ def update_main_data_displays(n, debug_mode_enabled):
     prevent_initial_call=True
 )
 def update_replay_speed_state(new_speed_value): # Removed session_info_children_trigger, get from app_state
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     if new_speed_value is None:
         return no_update
 
@@ -1134,7 +1180,8 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
         # Finally, update the global replay speed
         app_state.replay_speed = new_speed #
         logger.debug(f"Replay speed updated in app_state to: {app_state.replay_speed}") #
-
+    
+    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return no_update
 
 @app.callback(
@@ -1152,8 +1199,11 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
 def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
                           selected_replay_file, replay_speed,
                           record_checkbox_value):
+    overall_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
     ctx = dash.callback_context
     button_id = ctx.triggered_id if ctx.triggered else None
+    logger.debug(f"Callback '{func_name}' START, Button: {button_id}")
 
     dummy_output = no_update
     track_map_figure_output = no_update
@@ -1178,6 +1228,7 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
         return fig
 
     if button_id == 'connect-button':
+        action_start_time = time.monotonic()
         with app_state.app_state_lock:
             current_app_s = app_state.app_status["state"]
             if current_app_s in ["Replaying", "Playback Complete", "Stopped", "Error"]:
@@ -1200,7 +1251,9 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
         websocket_url, ws_headers = None, None
         try:
             with app_state.app_state_lock: app_state.app_status.update({"state": "Initializing", "connection": config.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS}) # Use constant
+            neg_start_time = time.monotonic()
             websocket_url, ws_headers = signalr_client.build_connection_url(config.NEGOTIATE_URL_BASE, config.HUB_NAME) #
+            logger.debug(f"'{func_name}' (connect) - build_connection_url took: {time.monotonic() - neg_start_time:.4f}s")
             if not websocket_url or not ws_headers: raise ConnectionError("Negotiation failed.")
         except Exception as e:
             logger.error(f"Negotiation error: {e}", exc_info=True)
@@ -1208,14 +1261,18 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
             return dummy_output, track_map_figure_output, car_positions_store_output
         if websocket_url and ws_headers:
             if should_record_live:
+                init_file_start_time = time.monotonic()
                 if not replay.init_live_file(): logger.error("Failed to init recording.") #
+                logger.debug(f"'{func_name}' (connect) - init_live_file took: {time.monotonic() - init_file_start_time:.4f}s")
             else: replay.close_live_file() #
             thread_obj = threading.Thread(target=signalr_client.run_connection_manual_neg, args=(websocket_url, ws_headers), name="SignalRConnectionThread", daemon=True) #
             signalr_client.connection_thread = thread_obj; thread_obj.start() #
             logger.info("SignalR connection thread initiated.")
+            logger.debug(f"'{func_name}' (connect) - Action took: {time.monotonic() - action_start_time:.4f}s")
 
 
     elif button_id == 'replay-button':
+        action_start_time = time.monotonic()
         if selected_replay_file:
             active_live_session = False
             with app_state.app_state_lock:
@@ -1234,26 +1291,41 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
             try:
                 speed_float = float(replay_speed); speed_float = max(0.1, speed_float)
                 full_replay_path = Path(config.REPLAY_DIR) / selected_replay_file #
-                if replay.replay_from_file(full_replay_path, speed_float): logger.info(f"Replay initiated for {full_replay_path.name}.") #
+                replay_start_call_time = time.monotonic()
+                if replay.replay_from_file(full_replay_path, speed_float): 
+                    logger.info(f"Replay initiated for {full_replay_path.name}.") #
+                    logger.debug(f"'{func_name}' (replay) - replay_from_file call took: {time.monotonic() - replay_start_call_time:.4f}s")
                 else: logger.error(f"Failed to start replay for {full_replay_path.name}.")
             except Exception as e_replay_start:
                  logger.error(f"Error starting replay: {e_replay_start}", exc_info=True)
                  with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": config.TEXT_REPLAY_ERROR_THREAD_START_FAILED_STATUS}) # Use constant
         else: logger.warning(f"Start Replay: {config.TEXT_REPLAY_SELECT_FILE}") # Use constant
+        logger.debug(f"'{func_name}' (replay) - Action took: {time.monotonic() - action_start_time:.4f}s")
 
 
     elif button_id == 'stop-reset-button':
         logger.info("Stop & Reset Session button clicked.")
+        action_start_time = time.monotonic()
         any_action_failed = False
 
         logger.info("Stop & Reset: Attempting to stop SignalR connection (if any)...")
-        try: signalr_client.stop_connection(); logger.info("Stop & Reset: signalr_client.stop_connection() completed.") #
+        try: 
+            sc_start = time.monotonic();
+            signalr_client.stop_connection();
+            logger.info("Stop & Reset: signalr_client.stop_connection() completed.") #
+            logger.debug(f"'{func_name}' (stop) - stop_connection took: {time.monotonic() - sc_start:.4f}s")
         except Exception as e: logger.error(f"Stop & Reset: Error during signalr_client.stop_connection(): {e}", exc_info=True); any_action_failed = True
 
         logger.info("Stop & Reset: Attempting to stop replay (if any)...")
-        try: replay.stop_replay(); logger.info("Stop & Reset: replay.stop_replay() completed.") #
+        try: 
+            sr_start = time.monotonic();
+            replay.stop_replay();
+            logger.debug(f"'{func_name}' (stop) - stop_replay took: {time.monotonic() - sr_start:.4f}s")
+            logger.info("Stop & Reset: replay.stop_replay() completed.") #
         except Exception as e: logger.error(f"Stop & Reset: Error during replay.stop_replay(): {e}", exc_info=True); any_action_failed = True
-
+        
+        
+        reset_start = time.monotonic();
         logger.debug("Stop & Reset: Pausing (0.3s) for stop signals...")
         time.sleep(0.3)
 
@@ -1292,10 +1364,12 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
                     app_state.app_status["state"] = "Idle"
                     app_state.app_status["connection"] = config.TEXT_SIGNALR_DISCONNECTED_STATUS
         logger.info("Stop & Reset Session processing finished.")
+        logger.debug(f"'{func_name}' (stop) - reset_to_default_state took: {time.monotonic() - reset_start:.4f}s")
 
     else:
         logger.warning(f"Button ID '{button_id}' not handled by handle_control_clicks.")
-
+    
+    logger.debug(f"Callback '{func_name}' END. Total time: {time.monotonic() - overall_start_time:.4f}s")
     return dummy_output, track_map_figure_output, car_positions_store_output
 
 
@@ -1305,10 +1379,14 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
     prevent_initial_call=True
 )
 def record_checkbox_callback(checked_value):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     if checked_value is None: return 'record-data-checkbox' # Return existing ID string
     new_state = bool(checked_value)
     logger.debug(f"Record Live Data checkbox set to: {new_state}")
     with app_state.app_state_lock: app_state.record_live_data = new_state
+    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return 'record-data-checkbox' # Return existing ID string
 
 
@@ -1348,18 +1426,19 @@ def toggle_controls_collapse(n, is_open):
 def update_driver_focus_content(selected_driver_number, active_tab_id, 
                                 selected_lap_for_telemetry, 
                                 current_telemetry_figure, current_stint_table_columns):
+    overall_callback_start_time = time.monotonic() # For overall timing
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START_OVERALL") # Overall start
+    
     ctx = dash.callback_context
-    triggered_id = ctx.triggered_id if ctx.triggered else 'N/A'
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered and ctx.triggered[0] else 'N/A'
     
     logger.debug(
-        f"Driver Focus Update: Trigger='{triggered_id}', Driver='{selected_driver_number}', "
+        f"'{func_name}': Trigger='{triggered_id}', Driver='{selected_driver_number}', "
         f"ActiveTab='{active_tab_id}', SelectedLap='{selected_lap_for_telemetry}'"
     )
 
-    # --- Initial/Default Outputs ---
     driver_basic_details_children = [html.P(config.TEXT_DRIVER_SELECT, style={'fontSize':'0.8rem', 'padding':'5px'})]
-    
-    # Telemetry defaults
     telemetry_lap_options = config.DROPDOWN_NO_LAPS_OPTIONS
     telemetry_lap_value = None
     telemetry_lap_disabled = True
@@ -1367,195 +1446,197 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
         config.TELEMETRY_WRAPPER_HEIGHT, config.INITIAL_TELEMETRY_UIREVISION,
         config.TEXT_DRIVER_SELECT_LAP, config.TELEMETRY_MARGINS_EMPTY
     )
-
-    # Stint History defaults
     stint_history_data = []
-    # Stint history columns are defined in layout, but can be overridden here if needed.
-    # For now, we assume they are static from layout, so we can pass no_update for columns.
     stint_history_columns_output = no_update 
-    # If columns were dynamic:
-    # stint_history_columns_output = [{"name": i, "id": i} for i in ["Stint", "Lap In", "Compound", "Laps"]] # Example
 
-
-    # --- Handle No Selected Driver ---
     if not selected_driver_number:
-        # If telemetry figure is already the initial one, don't update it
+        # logger.info(f"Callback '{func_name}' END_OVERALL. No driver. Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
+        # fig_telemetry is already set to the initial empty one. Return it if it wasn't already the initial.
         if current_telemetry_figure and \
            current_telemetry_figure.get('layout', {}).get('uirevision') == config.INITIAL_TELEMETRY_UIREVISION:
-            fig_telemetry = no_update
+            fig_telemetry_output = no_update
+        else:
+            fig_telemetry_output = fig_telemetry # Return the newly created empty figure
         
-        return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry,
+        logger.debug(f"Callback '{func_name}' END_OVERALL (No Driver). Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
+        return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry_output,
                 stint_history_data, stint_history_columns_output)
 
     driver_num_str = str(selected_driver_number)
+    driver_info_state = {}
+    all_stints_for_driver = []
+    available_telemetry_laps = []
 
-    # --- Get Driver Basic Info (always displayed) ---
+    # --- Initial Data Fetch (Locking for app_state access) ---
+    lock_acquisition_start_time = time.monotonic()
     with app_state.app_state_lock:
+        lock_acquired_time = time.monotonic()
+        logger.debug(f"Lock in '{func_name}' (Initial Fetch) - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
+        critical_section_start_time = time.monotonic()
+        
         driver_info_state = app_state.timing_state.get(driver_num_str, {}).copy()
-        # For Stint History Tab
-        all_stints_for_driver = app_state.driver_stint_data.get(driver_num_str, [])
-        # For Telemetry Tab
-        available_telemetry_laps = sorted(app_state.telemetry_data.get(driver_num_str, {}).keys())
+        all_stints_for_driver = copy.deepcopy(app_state.driver_stint_data.get(driver_num_str, [])) # Deepcopy if modified later, or if sub-elements are complex
+        available_telemetry_laps = sorted(list(app_state.telemetry_data.get(driver_num_str, {}).keys())) # Get keys (lap numbers)
+        
+        logger.debug(f"Lock in '{func_name}' (Initial Fetch) - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
 
-
+    # --- Driver Basic Details ---
     if driver_info_state:
         tla = driver_info_state.get('Tla', '?')
-        num = driver_info_state.get('RacingNumber', driver_num_str)
-        name = driver_info_state.get('FullName', 'Unknown')
-        team = driver_info_state.get('TeamName', '?')
-        # Basic details like name/team shown above tabs
+        # ... (rest of your driver_basic_details_children setup) ...
         driver_basic_details_children = [
-            html.H6(f"#{num} {tla} - {name}", style={'marginTop': '0px', 'marginBottom':'2px', 'fontSize':'0.9rem'}),
-            html.P(f"Team: {team}", style={'fontSize':'0.75rem', 'marginBottom':'0px', 'color': 'lightgrey'})
+            html.H6(f"#{driver_info_state.get('RacingNumber', driver_num_str)} {tla} - {driver_info_state.get('FullName', 'Unknown')}", 
+                    style={'marginTop': '0px', 'marginBottom':'2px', 'fontSize':'0.9rem'}),
+            html.P(f"Team: {driver_info_state.get('TeamName', '?')}", 
+                   style={'fontSize':'0.75rem', 'marginBottom':'0px', 'color': 'lightgrey'})
         ]
-    else: # Should not happen if driver_num_str is valid, but as a fallback
+    else:
         driver_basic_details_children = [html.P(f"Details for driver {driver_num_str} not found.", style={'color':'orange'})]
+        tla = driver_num_str # Fallback for uirevision
 
-
-    # --- Handle Active Tab Content ---
+    # --- Tab Specific Logic ---
     if active_tab_id == "tab-telemetry":
-        driver_selected_uirevision_telemetry = f"telemetry_{driver_num_str}_pendinglap"
+        driver_selected_uirevision_telemetry = f"telemetry_driver_{driver_num_str}_pendinglap" # For "no laps" or "select lap" states
         
         if available_telemetry_laps:
             telemetry_lap_options = [{'label': f'Lap {l}', 'value': l} for l in available_telemetry_laps]
             telemetry_lap_disabled = False
+            
+            # Determine the lap to plot
             if triggered_id == 'driver-select-dropdown' or \
                triggered_id == 'driver-focus-tabs' or \
                not selected_lap_for_telemetry or \
                selected_lap_for_telemetry not in available_telemetry_laps:
-                telemetry_lap_value = available_telemetry_laps[-1] # Default to last available lap
+                telemetry_lap_value = available_telemetry_laps[-1] 
             else:
                 telemetry_lap_value = selected_lap_for_telemetry
-        else: # No telemetry laps available for this driver
-            no_laps_message = config.TEXT_DRIVER_NO_LAP_DATA_PREFIX + tla + "."
-            if current_telemetry_figure and \
-               current_telemetry_figure.get('layout', {}).get('uirevision') == driver_selected_uirevision_telemetry and \
-               current_telemetry_figure.get('layout',{}).get('annotations',[{}])[0].get('text','') == no_laps_message:
-                fig_telemetry = no_update # Already showing "no laps"
-            else:
+        
+            # If telemetry_lap_value is now set (meaning we have a lap to plot)
+            if telemetry_lap_value:
+                data_plot_uirevision_telemetry = f"telemetry_data_{driver_num_str}_{telemetry_lap_value}" # uirevision for specific data
+
+                # Check if we really need to update the figure
+                # (e.g., if only active_tab_id changed to telemetry but figure for this driver/lap already shown)
+                if current_telemetry_figure and \
+                   current_telemetry_figure.get('layout',{}).get('uirevision') == data_plot_uirevision_telemetry and \
+                   triggered_id == 'driver-focus-tabs': # Only no_update if it was just a tab switch to an already rendered exact figure
+                    logger.debug(f"'{func_name}': Telemetry figure for {driver_num_str} Lap {telemetry_lap_value} already rendered, no_update on tab switch.")
+                    fig_telemetry = no_update
+                else:
+                    # Fetch specific lap_data for plotting
+                    lap_data_fetch_start_time = time.monotonic()
+                    lap_data = {}
+                    with app_state.app_state_lock: # Second, brief lock for specific lap data
+                        lap_data_lock_acquired_time = time.monotonic()
+                        logger.debug(f"Lock2 in '{func_name}' (Telemetry-LapData) - ACQUIRED. Wait: {lap_data_lock_acquired_time - lap_data_fetch_start_time:.4f}s")
+                        lap_data_critical_start_time = time.monotonic()
+                        lap_data = copy.deepcopy(app_state.telemetry_data.get(driver_num_str, {}).get(telemetry_lap_value, {}))
+                        logger.debug(f"Lock2 in '{func_name}' (Telemetry-LapData) - HELD for lap_data: {time.monotonic() - lap_data_critical_start_time:.4f}s")
+                    
+                    logger.debug(f"'{func_name}' (Telemetry Tab) - Specific lap_data fetch for {driver_num_str} Lap {telemetry_lap_value} took: {time.monotonic() - lap_data_fetch_start_time:.4f}s (incl. wait & hold)")
+
+                    # Plotting logic
+                    if lap_data:
+                        logger.debug(f"'{func_name}' (Telemetry Tab) - Starting Plotly figure generation for driver {driver_num_str}, lap {telemetry_lap_value}.")
+                        plotly_render_actual_start_time = time.monotonic()
+                        
+                        timestamps_str = lap_data.get('Timestamps', [])
+                        timestamps_dt = [utils.parse_iso_timestamp_safe(ts) for ts in timestamps_str]
+                        valid_indices = [i for i, dt_obj in enumerate(timestamps_dt) if dt_obj is not None]
+
+                        if valid_indices:
+                            timestamps_plot = [timestamps_dt[i] for i in valid_indices]
+                            channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
+                            fig_telemetry = make_subplots(rows=len(channels), cols=1, shared_xaxes=True,
+                                                          subplot_titles=[c[:10] for c in channels], vertical_spacing=0.06)
+                            for i, channel in enumerate(channels):
+                                y_data_raw = lap_data.get(channel, [])
+                                y_data_plot = [(y_data_raw[idx] if idx < len(y_data_raw) else None) for idx in valid_indices]
+                                if channel == 'DRS':
+                                    drs_plot = [1 if val in [10, 12, 14] else 0 for val in y_data_plot]
+                                    fig_telemetry.add_trace(go.Scattergl(x=timestamps_plot, y=drs_plot, mode='lines', name=channel, line_shape='hv', connectgaps=False), row=i+1, col=1)
+                                    fig_telemetry.update_yaxes(fixedrange=True, tickvals=[0,1], ticktext=['Off','On'], range=[-0.1,1.1], row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
+                                else:
+                                    fig_telemetry.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel, connectgaps=False), row=i+1, col=1)
+                                    fig_telemetry.update_yaxes(fixedrange=True, row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
+                            
+                            fig_telemetry.update_layout(
+                                template='plotly_dark', height=config.TELEMETRY_WRAPPER_HEIGHT,
+                                hovermode="x unified", showlegend=False, margin=config.TELEMETRY_MARGINS_DATA,
+                                title_text=f"<b>{tla} - Lap {telemetry_lap_value} Telemetry</b>",
+                                title_x=0.5, title_y=0.98, title_font_size=12,
+                                uirevision=data_plot_uirevision_telemetry, # CRITICAL for performance
+                                annotations=[] 
+                            )
+                            # ... (your axes updates) ...
+                        else: # No valid plot data for this lap
+                            fig_telemetry = utils.create_empty_figure_with_message(
+                                config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
+                                config.TEXT_TELEMETRY_NO_PLOT_DATA_FOR_LAP_PREFIX + str(telemetry_lap_value) + ".",
+                                config.TELEMETRY_MARGINS_EMPTY
+                            )
+                        logger.debug(f"'{func_name}' (Telemetry Tab) - Plotly Figure Generation actual took: {time.monotonic() - plotly_render_actual_start_time:.4f}s")
+                    else: # lap_data was empty
+                        fig_telemetry = utils.create_empty_figure_with_message(
+                            config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
+                            config.TEXT_TELEMETRY_NO_DATA_FOR_LAP_PREFIX + str(telemetry_lap_value) + ".",
+                            config.TELEMETRY_MARGINS_EMPTY
+                        )
+            else: # No available_telemetry_laps or telemetry_lap_value could not be set
+                no_laps_message = config.TEXT_DRIVER_NO_LAP_DATA_PREFIX + tla + "."
                 fig_telemetry = utils.create_empty_figure_with_message(
                     config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision_telemetry, 
                     no_laps_message, config.TELEMETRY_MARGINS_EMPTY
                 )
-            # Keep other telemetry outputs at their defaults (no options, disabled, etc.)
-            return (driver_basic_details_children, telemetry_lap_options, None, True, fig_telemetry,
-                    stint_history_data, stint_history_columns_output)
-
-        if not telemetry_lap_value: # Should be set if laps were available, but as a safeguard
-            select_lap_message = config.TEXT_DRIVER_SELECT_A_LAP_PREFIX + tla + "."
-            if current_telemetry_figure and \
-               current_telemetry_figure.get('layout', {}).get('uirevision') == driver_selected_uirevision_telemetry and \
-               current_telemetry_figure.get('layout',{}).get('annotations',[{}])[0].get('text','') == select_lap_message:
-                fig_telemetry = no_update
-            else:
-                fig_telemetry = utils.create_empty_figure_with_message(
-                    config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision_telemetry, 
-                    select_lap_message, config.TELEMETRY_MARGINS_EMPTY
-                )
-            return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry,
-                    stint_history_data, stint_history_columns_output)
-
-        # If we have a driver and a lap for telemetry, proceed to plot
-        data_plot_uirevision_telemetry = f"telemetry_data_{driver_num_str}_{telemetry_lap_value}"
-        # Check if figure needs update (e.g. if user just switched tabs but data is same)
-        if current_telemetry_figure and \
-           current_telemetry_figure.get('layout',{}).get('uirevision') == data_plot_uirevision_telemetry and \
-           triggered_id not in ['driver-select-dropdown', 'lap-selector-dropdown', 'driver-focus-tabs']:
-            fig_telemetry = no_update
-        else:
-            try:
-                with app_state.app_state_lock: # Re-fetch specific lap data
-                    lap_data = app_state.telemetry_data.get(driver_num_str, {}).get(telemetry_lap_value, {})
-                
-                timestamps_str = lap_data.get('Timestamps', [])
-                timestamps_dt = [utils.parse_iso_timestamp_safe(ts) for ts in timestamps_str]
-                valid_indices = [i for i, dt_obj in enumerate(timestamps_dt) if dt_obj is not None]
-
-                if valid_indices:
-                    timestamps_plot = [timestamps_dt[i] for i in valid_indices]
-                    channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
-                    fig_telemetry = make_subplots(rows=len(channels), cols=1, shared_xaxes=True,
-                                                  subplot_titles=[c[:10] for c in channels], vertical_spacing=0.06)
-                    for i, channel in enumerate(channels):
-                        y_data_raw = lap_data.get(channel, [])
-                        y_data_plot = [(y_data_raw[idx] if idx < len(y_data_raw) else None) for idx in valid_indices]
-                        if channel == 'DRS':
-                            drs_plot = [1 if val in [10, 12, 14] else 0 for val in y_data_plot]
-                            fig_telemetry.add_trace(go.Scattergl(x=timestamps_plot, y=drs_plot, mode='lines', name=channel, line_shape='hv', connectgaps=False), row=i+1, col=1)
-                            fig_telemetry.update_yaxes(fixedrange=True, tickvals=[0,1], ticktext=['Off','On'], range=[-0.1,1.1], row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
-                        else:
-                            fig_telemetry.add_trace(go.Scattergl(x=timestamps_plot, y=y_data_plot, mode='lines', name=channel, connectgaps=False), row=i+1, col=1)
-                            fig_telemetry.update_yaxes(fixedrange=True, row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
-
-                    fig_telemetry.update_layout(
-                        template='plotly_dark', height=config.TELEMETRY_WRAPPER_HEIGHT,
-                        hovermode="x unified", showlegend=False, margin=config.TELEMETRY_MARGINS_DATA,
-                        title_text=f"<b>{tla} - Lap {telemetry_lap_value} Telemetry</b>",
-                        title_x=0.5, title_y=0.98, title_font_size=12,
-                        uirevision=data_plot_uirevision_telemetry, annotations=[]
-                    )
-                    for i, annot in enumerate(fig_telemetry.layout.annotations):
-                        annot.font.size = 9; annot.yanchor = 'bottom'; annot.y = annot.y
-                    for i_ax in range(len(channels)):
-                        fig_telemetry.update_xaxes(
-                            showline=(i_ax == len(channels)-1), zeroline=False,
-                            showticklabels=(i_ax == len(channels)-1), row=i_ax+1, col=1,
-                            tickfont_size=8
-                        )
-                else: # No valid plot data for this lap
-                    fig_telemetry = utils.create_empty_figure_with_message(
-                        config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
-                        config.TEXT_TELEMETRY_NO_PLOT_DATA_FOR_LAP_PREFIX + str(telemetry_lap_value) + ".",
-                        config.TELEMETRY_MARGINS_EMPTY
-                    )
-            except Exception as plot_err:
-                logger.error(f"Error in telemetry plot: {plot_err}", exc_info=True)
-                fig_telemetry = utils.create_empty_figure_with_message(
-                    config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
-                    config.TEXT_TELEMETRY_ERROR, config.TELEMETRY_MARGINS_EMPTY
-                )
-        # Stint history data remains empty for telemetry tab
-        stint_history_data = []
-
+        else: # No available_telemetry_laps
+             no_laps_message = config.TEXT_DRIVER_NO_LAP_DATA_PREFIX + tla + "."
+             fig_telemetry = utils.create_empty_figure_with_message(
+                config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision_telemetry, 
+                no_laps_message, config.TELEMETRY_MARGINS_EMPTY
+            )
+        stint_history_data = no_update # Stint history not visible on this tab
 
     elif active_tab_id == "tab-stint-history":
+        # ... (your existing stint history logic - ensure it's efficient if it becomes an issue) ...
+        # For now, assuming it's okay.
+        # The fig_telemetry should be an empty placeholder for this tab.
+        fig_telemetry = utils.create_empty_figure_with_message(
+            config.TELEMETRY_WRAPPER_HEIGHT, config.INITIAL_TELEMETRY_UIREVISION, # Use initial uirevision
+            "Select Telemetry tab to view lap data.", config.TELEMETRY_MARGINS_EMPTY
+        )
+        telemetry_lap_options = config.DROPDOWN_NO_LAPS_OPTIONS # Reset telemetry dropdown
+        telemetry_lap_value = None
+        telemetry_lap_disabled = True
+        
+        # Process stint data (from your code, seems reasonable)
         if all_stints_for_driver:
-            # Process stint data for the table
+            stint_history_data = [] # Clear previous before reprocessing
             for stint_entry in all_stints_for_driver:
-                # Create a display version for 'is_new_tyre'
-                processed_entry = stint_entry.copy() # Avoid modifying original app_state data
+                processed_entry = stint_entry.copy()
                 processed_entry['is_new_tyre_display'] = 'Y' if stint_entry.get('is_new_tyre') else 'N'
                 stint_history_data.append(processed_entry)
         else:
-            # Add a placeholder row if no stint data, or could be handled by DataTable's `empty_यर` prop
-            stint_history_data = [{"stint_number": "No stint data available for this driver."}] 
-            # If you use placeholder, ensure all column IDs exist in this placeholder or DataTable might error.
-            # For simplicity, let's make sure all expected keys are there, even if None.
-            stint_history_data = [{
-                'stint_number': "No stint data", 'start_lap': '-', 'compound': '-', 
+            stint_history_data = [{ # Placeholder for no data
+                'stint_number': "No stint data available.", 'start_lap': '-', 'compound': '-', 
                 'is_new_tyre_display': '-', 'tyre_age_at_stint_start': '-', 
                 'end_lap': '-', 'total_laps_on_tyre_in_stint': '-', 
                 'tyre_total_laps_at_stint_end': '-'
             }]
 
-
-        # Telemetry figure remains empty/initial for stint history tab
+    else: # Unknown tab
+        logger.warning(f"'{func_name}': Unknown active tab ID: {active_tab_id}")
+        # Return all defaults, including the initial empty telemetry figure
         fig_telemetry = utils.create_empty_figure_with_message(
             config.TELEMETRY_WRAPPER_HEIGHT, config.INITIAL_TELEMETRY_UIREVISION,
-            config.TEXT_DRIVER_SELECT_LAP, config.TELEMETRY_MARGINS_EMPTY # Or a different message like "Switch to Telemetry tab"
+            config.TEXT_DRIVER_SELECT_LAP, config.TELEMETRY_MARGINS_EMPTY
         )
-        telemetry_lap_options = config.DROPDOWN_NO_LAPS_OPTIONS
-        telemetry_lap_value = None
-        telemetry_lap_disabled = True
+        # telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled already default
+        # stint_history_data, stint_history_columns_output already default/no_update
 
-    else: # Unknown tab or no tab selected
-        logger.warning(f"Unknown or no active tab ID: {active_tab_id}")
-        # Return defaults for all outputs
-        return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry,
-                stint_history_data, stint_history_columns_output)
-
+    logger.debug(f"Callback '{func_name}' END_OVERALL. Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
     return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry,
             stint_history_data, stint_history_columns_output)
+
 
 @app.callback(
     Output('current-track-layout-cache-key-store', 'data'),
@@ -1563,6 +1644,9 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
     State('current-track-layout-cache-key-store', 'data')
 )
 def update_current_session_id_for_map(n_intervals, existing_session_id_in_store):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     with app_state.app_state_lock:
         year = app_state.session_details.get('Year')
         circuit_key = app_state.session_details.get('CircuitKey')
@@ -1585,6 +1669,7 @@ def update_current_session_id_for_map(n_intervals, existing_session_id_in_store)
             f"Updating current-track-layout-cache-key-store to: {current_session_id}. Clearing selected driver.")
         with app_state.app_state_lock: # Clear selected driver on session change
             app_state.selected_driver_for_map_and_lap_chart = None
+        logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
         return current_session_id
 
     return dash.no_update
@@ -1649,14 +1734,23 @@ def toggle_clientside_interval(connect_clicks, replay_clicks,
     Input('clientside-update-interval', 'n_intervals'),
 )
 def update_car_data_for_clientside(n_intervals):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     if n_intervals == 0: # Or check if None
         return dash.no_update
-
+    
+    lock_acquisition_start_time = time.monotonic()
     with app_state.app_state_lock:
+        lock_acquired_time = time.monotonic()
+        logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
+    
+        critical_section_start_time = time.monotonic()
         current_app_status = app_state.app_status.get("state", "Idle")
         timing_state_snapshot = app_state.timing_state.copy()
         # Get the currently selected driver for highlighting
         selected_driver_rno = app_state.selected_driver_for_map_and_lap_chart
+        logger.debug(f"Lock in '{func_name}' - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
 
     if current_app_status not in ["Live", "Replaying"] or not timing_state_snapshot:
         # Ensure to include selected_driver even if inactive, so JS can clear highlight
@@ -1701,6 +1795,7 @@ def update_car_data_for_clientside(n_intervals):
         'selected_driver': selected_driver_rno, # Pass the selected driver's racing number
         'cars': processed_car_data
     }
+    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return output_data
 
 @app.callback(
@@ -1710,6 +1805,9 @@ def update_car_data_for_clientside(n_intervals):
     prevent_initial_call=True
 )
 def update_clientside_interval_speed(replay_speed, interval_disabled):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     if interval_disabled or replay_speed is None:
         return dash.no_update
 
@@ -1723,6 +1821,7 @@ def update_clientside_interval_speed(replay_speed, interval_disabled):
     new_interval_ms = max(350, int(base_interval_ms / speed)) # Ensure it doesn't go too fast
 
     logger.debug(f"Adjusting clientside-update-interval to {new_interval_ms}ms for replay speed {speed}x")
+    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return new_interval_ms
 
 @app.callback(
@@ -1741,17 +1840,25 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
                          current_track_map_figure_state,
                          current_figure_version_in_store_state,
                          previous_rendered_yellow_key_from_store):
-
+    overall_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     ctx = dash.callback_context
     triggered_prop_id = ctx.triggered[0]['prop_id'] if ctx.triggered and ctx.triggered[0] else 'Unknown.Trigger' # Defensive access
     triggering_input_id = triggered_prop_id.split('.')[0]
 
     logger.debug(f"INIT_TRACK_MAP Trigger: {triggering_input_id}, SID: {expected_session_id}, PrevYellowKey: {previous_rendered_yellow_key_from_store}, SidebarSignal: {sidebar_toggled_signal}")
 
+    lock_acquisition_start_time = time.monotonic()
     with app_state.app_state_lock:
+        lock_acquired_time = time.monotonic()
+        logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
+        
+        critical_section_start_time = time.monotonic()
         cached_data = app_state.track_coordinates_cache.copy()
         driver_list_snapshot = app_state.timing_state.copy() 
         active_yellow_sectors_snapshot = set(app_state.active_yellow_sectors)
+        logger.debug(f"Lock in '{func_name}' - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
 
     if not expected_session_id or not isinstance(expected_session_id, str) or '_' not in expected_session_id:
         fig_empty = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"empty_map_init_{time.time()}", config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS)
@@ -1807,6 +1914,7 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
 
 
     if needs_full_rebuild or (is_sidebar_toggle_trigger and not current_track_map_figure_state):
+        rebuild_start_time = time.monotonic()
         logger.info(f"Performing FULL track map data rebuild. Target Layout uirevision: {final_uirevision_for_output_figure}")
         fig_data = []
         valid_corners = [c for c in (cached_data.get('corners_data') or []) if c.get('x') is not None and c.get('y') is not None]
@@ -1853,8 +1961,9 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
         figure_output = go.Figure(data=fig_data, layout=fig_layout)
         if version_store_output is dash.no_update : 
             version_store_output = f"trackbase_rebuilt_{expected_session_id}_{time.time()}"
-        
+        logger.debug(f"'{func_name}' - FULL track map rebuild: {time.monotonic() - rebuild_start_time:.4f}s")
     else: # Not a full structural rebuild, but update existing figure (e.g., for yellow flags OR sidebar toggle with existing figure)
+        update_existing_start_time = time.monotonic()
         logger.debug(f"Updating existing track map figure. Target uirevision: {final_uirevision_for_output_figure}")
         figure_output = go.Figure(current_track_map_figure_state) 
         
@@ -1884,9 +1993,11 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
             version_store_output = f"track_sidebar_updated_ver_{time.time()}"
         elif version_store_output is dash.no_update:
             version_store_output = current_figure_version_in_store_state
+        logger.debug(f"'{func_name}' - Existing map figure update (pre-yellow): {time.monotonic() - update_existing_start_time:.4f}s")
 
     # --- COMMON YELLOW FLAG UPDATE LOGIC (Applied to figure_output whether rebuilt or existing) ---
     if figure_output is not dash.no_update and cached_data.get('marshal_sector_segments') and cached_data.get('x'):
+        yellow_flag_start_time = time.monotonic()
         track_x_full = cached_data['x']; track_y_full = cached_data['y']
         
         # Determine placeholder_trace_offset based on current figure_output structure
@@ -1931,6 +2042,8 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
                                     figure_output.data[trace_index_to_update].marker = dict(color=getattr(config, 'YELLOW_FLAG_COLOR', 'yellow'), size=getattr(config, 'YELLOW_FLAG_MARKER_SIZE', 8))
     # --- End yellow sector common logic ---
     
+        logger.debug(f"'{func_name}' - Yellow flag processing: {time.monotonic() - yellow_flag_start_time:.4f}s")
+    
     # Final assurance of layout properties before returning
     if figure_output is not dash.no_update:
         if not hasattr(figure_output, 'layout') or not figure_output.layout:
@@ -1965,7 +2078,8 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
 
 
         logger.debug(f"Outputting map figure. Uirevision: {getattr(figure_output.layout, 'uirevision', 'N/A')}")
-
+    
+    logger.debug(f"Callback '{func_name}' END. Total time: {time.monotonic() - overall_start_time:.4f}s")
     return figure_output, version_store_output, yellow_key_store_output
 
 
@@ -1974,6 +2088,9 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
     Input('interval-component-slow', 'n_intervals')
 )
 def update_driver_dropdown_options(n_intervals):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     logger.debug("Attempting to update driver dropdown options...")
     options = config.DROPDOWN_NO_DRIVERS_OPTIONS # Use constant
     try:
@@ -1985,6 +2102,7 @@ def update_driver_dropdown_options(n_intervals):
     except Exception as e:
          logger.error(f"Error generating driver dropdown options: {e}", exc_info=True)
          options = config.DROPDOWN_ERROR_LOADING_DRIVERS_OPTIONS # Use constant
+    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return options
 
 @app.callback(
@@ -2001,59 +2119,82 @@ def update_lap_chart_driver_options(n_intervals):
 
 @app.callback(
     Output('lap-time-progression-graph', 'figure'),
-    Input('lap-time-driver-selector', 'value'), # This is the primary input for data
-    Input('interval-component-medium', 'n_intervals') # Keep to refresh if data changes for selected drivers
+    Input('lap-time-driver-selector', 'value'),
+    Input('interval-component-medium', 'n_intervals'),
+    State('lap-time-progression-graph', 'figure') # Add current figure as State
 )
-def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
-    # Use utils.create_empty_figure_with_message and config constants
-    fig_empty_lap_prog = utils.create_empty_figure_with_message( #
-        config.LAP_PROG_WRAPPER_HEIGHT, config.INITIAL_LAP_PROG_UIREVISION, #
-        config.TEXT_LAP_PROG_SELECT_DRIVERS, config.LAP_PROG_MARGINS_EMPTY #
+def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals, current_figure_state):
+    overall_callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START_OVERALL") # Overall start
+
+    ctx = dash.callback_context
+    triggered_input_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else 'N/A'
+    logger.debug(f"'{func_name}' triggered by: {triggered_input_id}")
+
+    fig_empty_lap_prog = utils.create_empty_figure_with_message(
+        config.LAP_PROG_WRAPPER_HEIGHT, config.INITIAL_LAP_PROG_UIREVISION,
+        config.TEXT_LAP_PROG_SELECT_DRIVERS, config.LAP_PROG_MARGINS_EMPTY
     )
 
     if not selected_drivers_rnos:
+        logger.debug(f"Callback '{func_name}' END_OVERALL (No drivers selected). Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
         return fig_empty_lap_prog
 
-    # Ensure selected_drivers_rnos is a list for consistent processing
     if not isinstance(selected_drivers_rnos, list):
         selected_drivers_rnos = [selected_drivers_rnos]
 
-
-    # Create a uirevision based on sorted list of selected drivers to ensure graph redraws if selection changes
-    # but not if only data for those drivers changes (handled by plotly's internal diffing if figure structure is same)
+    # uirevision based on selected drivers (good for structural identity)
     sorted_selection_key = "_".join(sorted(list(set(str(rno) for rno in selected_drivers_rnos))))
     data_plot_uirevision = f"lap_prog_data_{sorted_selection_key}"
 
-
+    # --- Data Fetching (already timed well in your logs) ---
+    lock_acquisition_start_time = time.monotonic()
     with app_state.app_state_lock:
-        # Deep copy might be safer if complex objects were stored, but lists of dicts of primitives is usually fine
-        lap_history_snapshot = {rno: list(laps) for rno, laps in app_state.lap_time_history.items()}
-        timing_state_snapshot = app_state.timing_state.copy()
+        lock_acquired_time = time.monotonic()
+        logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
+        critical_section_start_time = time.monotonic()
+        
+        # Make deep copies if you plan to modify/filter these snapshots extensively
+        # For read-only iteration, shallow copies or direct iteration (carefully) might be okay
+        lap_history_snapshot = {rno: list(app_state.lap_time_history.get(rno, [])) for rno in selected_drivers_rnos}
+        timing_state_snapshot = {rno: app_state.timing_state.get(rno, {}).copy() for rno in selected_drivers_rnos}
+        
+        logger.debug(f"Lock in '{func_name}' - HELD for data snapshot: {time.monotonic() - critical_section_start_time:.4f}s")
+
+    # --- Python Data Preparation & Plotly Figure Building ---
+    # This combined block was timed by 'figure_building_start_time' in your previous code.
+    # Let's keep that, but be mindful of what it includes.
+    python_and_plotly_prep_start_time = time.monotonic()
 
     fig_with_data = go.Figure(layout={
-        'template': 'plotly_dark', 'uirevision': data_plot_uirevision, # Use selection-based uirevision
-        'height': config.LAP_PROG_WRAPPER_HEIGHT, # Use constant
-        'margin': config.LAP_PROG_MARGINS_DATA, # Use constant
+        'template': 'plotly_dark', 'uirevision': data_plot_uirevision,
+        'height': config.LAP_PROG_WRAPPER_HEIGHT,
+        'margin': config.LAP_PROG_MARGINS_DATA,
         'xaxis_title': 'Lap Number', 'yaxis_title': 'Lap Time (s)',
         'hovermode': 'x unified', 'title_text': 'Lap Time Progression', 'title_x':0.5, 'title_font_size':14,
         'showlegend':True, 'legend_title_text':'Drivers', 'legend_font_size':10,
-        'annotations': [] # Clear any "select drivers" message
+        'annotations': []
     })
 
     data_actually_plotted = False
     min_time_overall, max_time_overall, max_laps_overall = float('inf'), float('-inf'), 0
+    
+    # --- Python Loop for preparing trace data ---
+    # This part can be significant if many drivers or many laps per driver
+    traces_to_add = [] # Prepare all trace data first
 
-    for driver_rno_str in selected_drivers_rnos: # driver_rno from dropdown is usually string
-        # Ensure we use the string version for lookups if lap_history_snapshot keys are strings
-        driver_laps = lap_history_snapshot.get(str(driver_rno_str), [])
+    for driver_rno_str_loop_key in selected_drivers_rnos: # Ensure this key matches snapshot keys
+        driver_rno_str = str(driver_rno_str_loop_key) # Ensure string key
+        
+        driver_laps = lap_history_snapshot.get(driver_rno_str, [])
         if not driver_laps: continue
 
-        driver_info = timing_state_snapshot.get(str(driver_rno_str), {})
-        tla = driver_info.get('Tla', str(driver_rno_str))
+        driver_info = timing_state_snapshot.get(driver_rno_str, {})
+        tla = driver_info.get('Tla', driver_rno_str)
         team_color_hex = driver_info.get('TeamColour', 'FFFFFF')
         if not team_color_hex.startswith('#'): team_color_hex = '#' + team_color_hex
 
-        # Filter for valid laps as per your existing logic in data_processing for lap_history
         valid_laps = [lap for lap in driver_laps if lap.get('is_valid', True)]
         if not valid_laps: continue
 
@@ -2063,40 +2204,54 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
 
         if lap_numbers: max_laps_overall = max(max_laps_overall, max(lap_numbers))
         if lap_times_sec:
-            min_time_overall = min(min_time_overall, min(lap_times_sec))
-            max_time_overall = max(max_time_overall, max(lap_times_sec))
-
-        hover_texts = []
+            min_time_current_driver = min(lap_times_sec)
+            max_time_current_driver = max(lap_times_sec)
+            min_time_overall = min(min_time_overall, min_time_current_driver)
+            max_time_overall = max(max_time_overall, max_time_current_driver)
+        
+        # Optimized hover text generation (pre-join list of strings)
+        hover_texts_parts = []
         for lap in valid_laps:
             total_seconds = lap['lap_time_seconds']
             minutes = int(total_seconds // 60)
             seconds_part = total_seconds % 60
             time_formatted = f"{minutes}:{seconds_part:06.3f}" if minutes > 0 else f"{seconds_part:.3f}"
-            hover_texts.append(f"<b>{tla}</b><br>Lap: {lap['lap_number']}<br>Time: {time_formatted}<br>Tyre: {lap['compound']}<extra></extra>")
-
-        fig_with_data.add_trace(go.Scatter(
+            hover_texts_parts.append(f"<b>{tla}</b><br>Lap: {lap['lap_number']}<br>Time: {time_formatted}<br>Tyre: {lap['compound']}<extra></extra>")
+        
+        traces_to_add.append(go.Scatter(
             x=lap_numbers, y=lap_times_sec, mode='lines+markers', name=tla,
             marker=dict(color=team_color_hex, size=5), line=dict(color=team_color_hex, width=1.5),
-            hovertext=hover_texts, hoverinfo='text'
+            hovertext=hover_texts_parts, hoverinfo='text' # Assign pre-built list
         ))
+    
+    # Add all traces at once
+    if traces_to_add:
+        for trace in traces_to_add:
+            fig_with_data.add_trace(trace)
+
+    logger.debug(f"'{func_name}' - Python Data Prep & Plotly Traces Added took: {time.monotonic() - python_and_plotly_prep_start_time:.4f}s")
 
     if not data_actually_plotted:
-        fig_empty_lap_prog.layout.annotations[0].text = config.TEXT_LAP_PROG_NO_DATA # Use constant
-        fig_empty_lap_prog.layout.uirevision = data_plot_uirevision # Match uirevision to avoid broken updates
+        fig_empty_lap_prog.layout.annotations[0].text = config.TEXT_LAP_PROG_NO_DATA
+        fig_empty_lap_prog.layout.uirevision = data_plot_uirevision 
+        logger.debug(f"Callback '{func_name}' END_OVERALL (No data plotted). Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
         return fig_empty_lap_prog
 
+    # --- Update Axes (Relatively fast Plotly operations) ---
+    axes_update_start_time = time.monotonic()
     if min_time_overall != float('inf') and max_time_overall != float('-inf'):
         padding = (max_time_overall - min_time_overall) * 0.05 if max_time_overall > min_time_overall else 0.5
         fig_with_data.update_yaxes(visible=True, range=[min_time_overall - padding, max_time_overall + padding], autorange=False)
     else:
-        fig_with_data.update_yaxes(visible=True, autorange=True) # Fallback if only one point or no data
+        fig_with_data.update_yaxes(visible=True, autorange=True)
 
     if max_laps_overall > 0:
         fig_with_data.update_xaxes(visible=True, range=[0.5, max_laps_overall + 0.5], autorange=False)
     else:
         fig_with_data.update_xaxes(visible=True, autorange=True)
-
-
+    logger.debug(f"'{func_name}' - Plotly Axes Update took: {time.monotonic() - axes_update_start_time:.4f}s")
+    
+    logger.debug(f"Callback '{func_name}' END_OVERALL. Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
     return fig_with_data
 
 @app.callback(
@@ -2104,6 +2259,9 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals):
     Input('interval-component-medium', 'n_intervals') # Update periodically
 )
 def update_race_control_display(n_intervals):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     try:
         with app_state.app_state_lock:
             # The deque stores messages with newest first due to appendleft
@@ -2118,7 +2276,7 @@ def update_race_control_display(n_intervals):
         display_text = "\n".join(log_messages)
         # If you prefer oldest messages at the top (more traditional log):
         # display_text = "\n".join(reversed(log_messages))
-
+        logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
         return display_text
     except Exception as e:
         logger.error(f"Error updating race control display: {e}", exc_info=True)
@@ -2129,11 +2287,15 @@ def update_race_control_display(n_intervals):
     Input("debug-mode-switch", "value"),
 )
 def toggle_debug_data_visibility(debug_mode_enabled):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     if debug_mode_enabled:
         logger.info("Debug mode enabled: Showing 'Other Data Streams'.")
         return "mt-1" # Bootstrap margin top class
     else:
         logger.info("Debug mode disabled: Hiding 'Other Data Streams'.")
+        logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
         return "d-none" # Bootstrap display none class
 
 @app.callback(
@@ -2143,6 +2305,9 @@ def toggle_debug_data_visibility(debug_mode_enabled):
     prevent_initial_call=True
 )
 def update_dropdown_from_map_click(click_data_json_str, dropdown_options): # Renamed arg
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     if click_data_json_str is None:
         return dash.no_update
 
@@ -2170,6 +2335,7 @@ def update_dropdown_from_map_click(click_data_json_str, dropdown_options): # Ren
             valid_driver_numbers = [opt['value'] for opt in dropdown_options if 'value' in opt]
             if clicked_driver_number_str in valid_driver_numbers:
                 logger.info(f"Map click: Setting driver-select-dropdown (telemetry) to: {clicked_driver_number_str}")
+                logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
                 return clicked_driver_number_str
             else:
                 logger.warning(f"Map click: Driver number {clicked_driver_number_str} not found in telemetry dropdown options: {valid_driver_numbers}")
@@ -2193,6 +2359,9 @@ def update_dropdown_from_map_click(click_data_json_str, dropdown_options): # Ren
     prevent_initial_call=True
 )
 def update_lap_chart_driver_selection_from_map_click(click_data_json_str, lap_chart_options, current_lap_chart_selection):
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
     if click_data_json_str is None:
         return dash.no_update
 
@@ -2217,6 +2386,7 @@ def update_lap_chart_driver_selection_from_map_click(click_data_json_str, lap_ch
                 #     current_selection.append(clicked_driver_number_str)
                 # return current_selection
                 logger.info(f"Map click: Setting lap-time-driver-selector to: [{clicked_driver_number_str}]")
+                logger.info(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
                 return [clicked_driver_number_str] # Lap chart dropdown expects a list for its 'value'
             else:
                 logger.warning(f"Map click: Driver {clicked_driver_number_str} not in lap chart options. Lap chart selection unchanged.")
