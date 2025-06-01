@@ -886,6 +886,8 @@ def update_main_data_displays(n, debug_mode_enabled):
         table_data_prep_start_time = time.monotonic()
         if timing_state_copy:
             processed_table_data = []
+            TERMINAL_RACING_STATUSES = [
+                "retired", "crashed", "disqualified", "out of race", "out", "accident"]
             for car_num, driver_state in timing_state_copy.items():
                 racing_no = driver_state.get("RacingNumber", car_num)
                 tla = driver_state.get("Tla", "N/A")
@@ -954,36 +956,56 @@ def update_main_data_displays(n, debug_mode_enabled):
                     driver_state, 'Sectors', '2', 'Value', default='-')
                 if s3_val is None or s3_val == "":
                     s3_val = "-"
-                is_in_pit_flag = driver_state.get('InPit', False)
-                entry_wall_time = driver_state.get(
-                    'current_pit_entry_system_time')
-                speed_at_entry = driver_state.get(
-                    'pit_entry_replay_speed', 1.0)
-                if not isinstance(speed_at_entry, (float, int)) or speed_at_entry <= 0:
-                    speed_at_entry = 1.0
-                final_live_pit_text = driver_state.get(
-                    'final_live_pit_time_text')
-                final_live_pit_text_ts = driver_state.get(
-                    'final_live_pit_time_display_timestamp')
+                
+                 # --- Pit Stop Display Logic ---
                 reliable_stops = driver_state.get('ReliablePitStops', 0)
                 timing_data_stops = driver_state.get('NumberOfPitStops', 0)
-                pits_text_to_display = '0'
+
+                pits_count_display = '0'
                 if reliable_stops > 0:
-                    pits_text_to_display = str(reliable_stops)
+                    pits_count_display = str(reliable_stops)
                 elif timing_data_stops > 0:
-                    pits_text_to_display = str(timing_data_stops)
+                    pits_count_display = str(timing_data_stops)
+
+                pits_text_to_display = pits_count_display
                 pit_display_state_for_style = "SHOW_COUNT"
-                if is_in_pit_flag:
-                    pit_display_state_for_style = "IN_PIT_LIVE"
-                    if entry_wall_time:
-                        current_wall_time_elapsed = current_time_for_callbacks - entry_wall_time
-                        live_game_time_elapsed = current_wall_time_elapsed * speed_at_entry
-                        pits_text_to_display = f"In Pit: {live_game_time_elapsed:.1f}s"
-                    else:
-                        pits_text_to_display = "In Pit"
-                elif final_live_pit_text and final_live_pit_text_ts and (current_time_for_callbacks - final_live_pit_text_ts < 15):
-                    pits_text_to_display = final_live_pit_text
-                    pit_display_state_for_style = "SHOW_COMPLETED_DURATION"
+
+                driver_status_raw = driver_state.get('Status', 'N/A')
+                driver_status_lower = driver_status_raw.lower()
+
+                if driver_status_lower in TERMINAL_RACING_STATUSES:
+                    # If driver is terminally out, ensure pit count is shown.
+                    # Default of pits_text_to_display = pits_count_display is already correct.
+                    pass
+                else:
+                    # Driver is not in a terminal status, apply normal live pit logic
+                    is_in_pit_flag = driver_state.get('InPit', False)
+                    entry_wall_time = driver_state.get(
+                        'current_pit_entry_system_time')
+                    speed_at_entry = driver_state.get(
+                        'pit_entry_replay_speed', 1.0)
+                    if not isinstance(speed_at_entry, (float, int)) or speed_at_entry <= 0:
+                        speed_at_entry = 1.0
+
+                    final_live_pit_text = driver_state.get(
+                        'final_live_pit_time_text')
+                    final_live_pit_text_ts = driver_state.get(
+                        'final_live_pit_time_display_timestamp')
+
+                    if is_in_pit_flag:
+                        pit_display_state_for_style = "IN_PIT_LIVE"
+                        if entry_wall_time:
+                            current_wall_time_elapsed = current_time_for_callbacks - entry_wall_time
+                            live_game_time_elapsed = current_wall_time_elapsed * \
+                                current_replay_speed_snapshot  # Use snapshot for consistency
+                            pits_text_to_display = f"In Pit: {live_game_time_elapsed:.1f}s"
+                        else:
+                            pits_text_to_display = "In Pit"
+                    elif final_live_pit_text and final_live_pit_text_ts and (current_time_for_callbacks - final_live_pit_text_ts < 15):
+                        pits_text_to_display = final_live_pit_text
+                        pit_display_state_for_style = "SHOW_COMPLETED_DURATION"
+                # --- End of Pit Stop Display Logic ---
+
                 car_data = driver_state.get('CarData', {})
                 speed_val = car_data.get('Speed', '-')
                 gear = car_data.get('Gear', '-')
@@ -1037,7 +1059,7 @@ def update_main_data_displays(n, debug_mode_enabled):
                     'id': car_num, 'No.': racing_no, 'Car': tla, 'Pos': pos, 'Tyre': tyre,
                     'IntervalGap': interval_gap_markdown, 'Last Lap': last_lap_val, 'Best Lap': best_lap_val,
                     'S1': s1_val, 'S2': s2_val, 'S3': s3_val, 'Pits': pits_text_to_display,
-                    'Status': driver_state.get('Status', 'N/A'), 'Speed': speed_val, 'Gear': gear, 'RPM': rpm, 'DRS': drs,
+                    'Status': driver_status_raw, 'Speed': speed_val, 'Gear': gear, 'RPM': rpm, 'DRS': drs,
                     'IsOverallBestLap_Str': "TRUE" if is_overall_best_lap_flag else "FALSE",
                     'IsOverallBestS1_Str': "TRUE" if is_overall_best_s1_flag else "FALSE",
                     'IsOverallBestS2_Str': "TRUE" if is_overall_best_s2_flag else "FALSE",
@@ -1579,7 +1601,8 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
                     else: # lap_data was empty
                         fig_telemetry = utils.create_empty_figure_with_message(
                             config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
-                            config.TEXT_TELEMETRY_NO_DATA_FOR_LAP_PREFIX + str(telemetry_lap_value) + ".",
+                            config.TEXT_TELEMETRY_NO_PLOT_DATA_FOR_LAP_PREFIX +
+                            str(telemetry_lap_value) + ".",
                             config.TELEMETRY_MARGINS_EMPTY
                         )
             else: # No available_telemetry_laps or telemetry_lap_value could not be set
