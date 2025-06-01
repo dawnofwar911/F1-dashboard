@@ -9,6 +9,7 @@ import time
 import queue # Needed for queue.Empty exception
 import threading
 from datetime import datetime, timezone
+import inspect
 
 # Import shared state variables and lock
 import app_state
@@ -757,7 +758,7 @@ def _update_driver_stint_data(driver_rno_str, stints_payload_from_app_data, driv
                  logger.debug(f"StintUpdate: Drv {driver_rno_str}, FeedKey {stint_feed_key}: Used compound '{parsed_compound}' from history for partial update.")
         
         if not parsed_compound: # If still no compound, we cannot proceed with this stint_feed_key
-            logger.info(f"StintUpdate: SKIPPING StintFeedKey '{stint_feed_key}' for {driver_rno_str} due to ultimately missing compound. Incoming: {incoming_stint_info}")
+            logger.debug(f"StintUpdate: SKIPPING StintFeedKey '{stint_feed_key}' for {driver_rno_str} due to ultimately missing compound. Incoming: {incoming_stint_info}")
             continue
 
         # Parse other fields, using defaults from existing_stint_entry if this is an update and field is missing in incoming_stint_info
@@ -813,7 +814,7 @@ def _update_driver_stint_data(driver_rno_str, stints_payload_from_app_data, driv
             existing_stint_entry['tyres_not_changed'] = tyres_not_changed_feed
             # existing_stint_entry['start_laps_from_feed_val'] = start_laps_from_feed # Store original feed value if needed for debugging
             
-            logger.info(f"StintUpdate: Updated Stint {existing_stint_entry['stint_number']} for {driver_rno_str} (FeedKey {stint_feed_key}, HistStartLap {existing_stint_entry['start_lap']}): EndLap={current_stint_provisional_end_lap}, LapsInStint={laps_run_in_this_stint}, TotalTyreAge={total_laps_on_tyre_set_feed}, New={is_new_feed}, Cmpd='{parsed_compound}'")
+            logger.debug(f"StintUpdate: Updated Stint {existing_stint_entry['stint_number']} for {driver_rno_str} (FeedKey {stint_feed_key}, HistStartLap {existing_stint_entry['start_lap']}): EndLap={current_stint_provisional_end_lap}, LapsInStint={laps_run_in_this_stint}, TotalTyreAge={total_laps_on_tyre_set_feed}, New={is_new_feed}, Cmpd='{parsed_compound}'")
         
         else: # New stint to add to history
             if driver_stints_history:
@@ -834,7 +835,7 @@ def _update_driver_stint_data(driver_rno_str, stints_payload_from_app_data, driv
                         if previous_stint_in_history.get('tyres_not_changed', False):
                             previous_stint_in_history['tyre_total_laps_at_stint_end'] = previous_stint_in_history.get('tyre_age_at_stint_start', 0) + new_laps_in_prev
                         
-                        logger.info(f"StintUpdate: Finalized PREVIOUS Stint {previous_stint_in_history['stint_number']} for {driver_rno_str} at Lap {final_end_lap_for_previous} (New StintFeedKey {stint_feed_key} starts ActualLap {actual_stint_start_lap}).")
+                        logger.debug(f"StintUpdate: Finalized PREVIOUS Stint {previous_stint_in_history['stint_number']} for {driver_rno_str} at Lap {final_end_lap_for_previous} (New StintFeedKey {stint_feed_key} starts ActualLap {actual_stint_start_lap}).")
 
             stint_number_for_history = len(driver_stints_history) + 1
             
@@ -866,7 +867,7 @@ def _update_driver_stint_data(driver_rno_str, stints_payload_from_app_data, driv
                 "tyres_not_changed": tyres_not_changed_feed
             }
             driver_stints_history.append(new_stint_record)
-            logger.info(f"StintUpdate: Added NEW Stint {stint_number_for_history} for {driver_rno_str} (FeedKey {stint_feed_key}, ActualStartLap {actual_stint_start_lap}): Comp={parsed_compound}, New={is_new_feed}, AgeAtStart={tyre_age_at_start_of_this_stint}, EndLap(prov)={current_stint_provisional_end_lap}, LapsIn(prov)={laps_run_in_this_stint}, TotalTyreAge={total_laps_on_tyre_set_feed}, NotChanged={tyres_not_changed_feed}")
+            logger.debug(f"StintUpdate: Added NEW Stint {stint_number_for_history} for {driver_rno_str} (FeedKey {stint_feed_key}, ActualStartLap {actual_stint_start_lap}): Comp={parsed_compound}, New={is_new_feed}, AgeAtStart={tyre_age_at_start_of_this_stint}, EndLap(prov)={current_stint_provisional_end_lap}, LapsIn(prov)={laps_run_in_this_stint}, TotalTyreAge={total_laps_on_tyre_set_feed}, NotChanged={tyres_not_changed_feed}")
 
     app_state.driver_stint_data[driver_rno_str] = sorted(driver_stints_history, key=lambda x: x['stint_number'])
     
@@ -1278,26 +1279,175 @@ def data_processing_loop():
                     with app_state.app_state_lock: #
                         app_state.current_processed_feed_timestamp_utc_dt = msg_dt #
 
-            with app_state.app_state_lock:
-                app_state.data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
-                try:
-                    if stream_name == "Heartbeat": app_state.app_status["last_heartbeat"] = timestamp
-                    elif stream_name == "DriverList": _process_driver_list(actual_data)
-                    elif stream_name == "TimingData": _process_timing_data(actual_data)
-                    elif stream_name == "SessionInfo": _process_session_info(actual_data) 
-                    elif stream_name == "SessionData": _process_session_data(actual_data)
-                    elif stream_name == "TimingAppData": _process_timing_app_data(actual_data)
-                    elif stream_name == "TrackStatus": _process_track_status(actual_data)
-                    elif stream_name == "CarData": _process_car_data(actual_data)
-                    elif stream_name == "Position": _process_position_data(actual_data)
-                    elif stream_name == "WeatherData": _process_weather_data(actual_data)
-                    elif stream_name == "RaceControlMessages": _process_race_control(actual_data)
-                    elif stream_name == "TeamRadio": _process_team_radio(actual_data)
-                    elif stream_name == "ExtrapolatedClock":
-                        _process_extrapolated_clock(actual_data, timestamp)
-                except Exception as proc_ex:
-                    logger.error(f"ERROR processing stream '{stream_name}': {proc_ex}", exc_info=True)
+            lock_acquisition_start_time = time.monotonic() # Add this
+            if stream_name == "SessionInfo":
+                # --- Refactored SessionInfo Handling ---
+                # 1. Read necessary current state values briefly (if prepare_session_info_data needs them for comparison)
+                #    This lock should be very short.
+                lock_read_old_session_start = time.monotonic()
+                with app_state.app_state_lock:
+                    lock_read_old_acquired = time.monotonic()
+                    # logger.debug(f"Lock in 'data_processing_loop' for SessionInfo PRE-READ - ACQUIRED. Wait: {lock_read_old_acquired - lock_read_old_session_start:.4f}s")
+                    crit_read_old_start = time.monotonic()
+                    
+                    current_session_type_for_comparison = app_state.session_details.get("Type", "").lower()
+                    current_session_key_for_comparison = app_state.session_details.get('SessionKey')
+                    current_cached_track_key_for_comparison = app_state.track_coordinates_cache.get('session_key')
+                    
+                    # logger.debug(f"Lock in 'data_processing_loop' for SessionInfo PRE-READ - HELD: {time.monotonic() - crit_read_old_start:.4f}s")
 
+                # 2. Parse data and get instructions (OUTSIDE the main data_processing_loop lock)
+                parsing_start_time = time.monotonic()
+                details_to_update, reset_flags, practice_duration_val, fetch_trigger_info = \
+                    utils.prepare_session_info_data( # Call the new helper
+                        actual_data, 
+                        current_session_type_for_comparison,
+                        current_session_key_for_comparison,
+                        current_cached_track_key_for_comparison
+                    )
+                logger.debug(f"'SessionInfo' - Parsing & decisions took: {time.monotonic() - parsing_start_time:.4f}s")
+
+                # 3. Acquire lock BRIEFLY to update app_state
+                if details_to_update: # Only lock if there's something to update
+                    lock_update_session_start = time.monotonic()
+                    with app_state.app_state_lock:
+                        lock_update_session_acquired = time.monotonic()
+                        logger.debug(f"Lock in 'data_processing_loop' for SessionInfo STATE UPDATE - ACQUIRED. Wait: {lock_update_session_acquired - lock_update_session_start:.4f}s")
+                        crit_update_session_start = time.monotonic()
+
+                        if reset_flags.get("reset_q_and_practice"):
+                            logger.debug("SessionInfo: Session type changed. Resetting related states in app_state.")
+                            app_state.qualifying_segment_state = app_state.INITIAL_QUALIFYING_SEGMENT_STATE.copy()
+                            app_state.session_start_feed_timestamp_utc_dt = None
+                            app_state.current_segment_scheduled_duration_seconds = None
+                            app_state.practice_session_actual_start_utc = None
+                        
+                        app_state.session_details.update(details_to_update)
+                        app_state.data_store[stream_name] = {"data": actual_data, "timestamp": timestamp} # Store raw data
+
+                        if practice_duration_val is not None and details_to_update.get("Type", "").lower().startswith("practice"):
+                            app_state.practice_session_scheduled_duration_seconds = practice_duration_val
+                            logger.info(f"SessionInfo: Updated practice_session_scheduled_duration_seconds to {practice_duration_val}s")
+                        
+                        if reset_flags.get("clear_track_cache"): # If SessionKey became invalid
+                             app_state.track_coordinates_cache = app_state.INITIAL_TRACK_COORDINATES_CACHE.copy()
+
+                        logger.debug(f"Lock in 'data_processing_loop' for SessionInfo STATE UPDATE - HELD: {time.monotonic() - crit_update_session_start:.4f}s")
+                
+                # 4. Start background thread (if needed) OUTSIDE the lock
+                if fetch_trigger_info:
+                    logger.debug(f"DataProcessing: Background track fetch thread starting for {fetch_trigger_info['args'][0]}.")
+                    fetch_thread = threading.Thread(
+                        target=fetch_trigger_info["target"],
+                        args=fetch_trigger_info["args"],
+                        daemon=True
+                    )
+                    fetch_thread.start()
+                # --- End of Refactored SessionInfo Handling ---
+                
+                
+            elif stream_name == "CarData":
+                # 1. Briefly lock to get necessary parts of timing_state for lap calculation
+                snapshot_timing_for_laps = {}
+                lock_car_read_start = time.monotonic()
+                with app_state.app_state_lock:
+                    lock_car_read_acquired = time.monotonic()
+                    # logger.debug(f"Lock in 'data_processing_loop' for CarData PRE-READ - ACQUIRED. Wait: {lock_car_read_acquired - lock_car_read_start:.4f}s")
+                    crit_car_read_start = time.monotonic()
+                    for car_n, car_s_data in app_state.timing_state.items(): # Iterate over current timing_state
+                        snapshot_timing_for_laps[car_n] = {'NumberOfLaps': car_s_data.get('NumberOfLaps', -1)}
+                    # logger.debug(f"Lock in 'data_processing_loop' for CarData PRE-READ - HELD: {time.monotonic() - crit_car_read_start:.4f}s")
+
+                # 2. Prepare updates OUTSIDE the lock
+                prep_car_start_time = time.monotonic()
+                car_data_batch_updates, telemetry_batch_updates = utils.prepare_car_data_updates(actual_data, snapshot_timing_for_laps)
+                logger.debug(f"'{stream_name}' - Data Prep (outside lock) took: {time.monotonic() - prep_car_start_time:.4f}s")
+
+                # 3. Briefly lock to apply updates
+                if car_data_batch_updates or telemetry_batch_updates:
+                    lock_car_update_start = time.monotonic()
+                    with app_state.app_state_lock:
+                        lock_car_update_acquired = time.monotonic()
+                        logger.debug(f"Lock in 'data_processing_loop' for '{stream_name}' BATCH UPDATE - ACQUIRED. Wait: {lock_car_update_acquired - lock_car_update_start:.4f}s")
+                        crit_car_update_start = time.monotonic()
+                        
+                        app_state.data_store[stream_name] = {"data": actual_data, "timestamp": timestamp} # Store raw data
+                        for car_n_str, updates in car_data_batch_updates.items():
+                            if car_n_str in app_state.timing_state:
+                                if 'CarData' in updates:
+                                    if 'CarData' not in app_state.timing_state[car_n_str]: app_state.timing_state[car_n_str]['CarData'] = {}
+                                    app_state.timing_state[car_n_str]['CarData'].update(updates['CarData'])
+                        
+                        for (car_n_str, lap_n), telem_updates in telemetry_batch_updates.items():
+                            if car_n_str not in app_state.telemetry_data: app_state.telemetry_data[car_n_str] = {}
+                            if lap_n not in app_state.telemetry_data[car_n_str]:
+                                app_state.telemetry_data[car_n_str][lap_n] = {'Timestamps': [], **{key: [] for key in config.CHANNEL_MAP.values()}}
+                            
+                            app_state.telemetry_data[car_n_str][lap_n]['Timestamps'].extend(telem_updates['Timestamps'])
+                            for ch_key in config.CHANNEL_MAP.values():
+                                app_state.telemetry_data[car_n_str][lap_n][ch_key].extend(telem_updates[ch_key])
+                        
+                        logger.debug(f"Lock in 'data_processing_loop' for '{stream_name}' BATCH UPDATE - HELD: {time.monotonic() - crit_car_update_start:.4f}s")
+            
+            # --- Refactored PositionData Handling ---
+            elif stream_name == "Position":
+                # 1. Briefly lock to get current PositionData for all drivers
+                current_pos_data_snapshot = {}
+                lock_pos_read_start = time.monotonic()
+                with app_state.app_state_lock:
+                    lock_pos_read_acquired = time.monotonic()
+                    # logger.debug(f"Lock in 'data_processing_loop' for Position PRE-READ - ACQUIRED. Wait: {lock_pos_read_acquired - lock_pos_read_start:.4f}s")
+                    crit_pos_read_start = time.monotonic()
+                    for car_n, car_s_data in app_state.timing_state.items():
+                        current_pos_data_snapshot[car_n] = car_s_data.get('PositionData', {}).copy()
+                    # logger.debug(f"Lock in 'data_processing_loop' for Position PRE-READ - HELD: {time.monotonic() - crit_pos_read_start:.4f}s")
+
+                # 2. Prepare updates OUTSIDE the lock
+                prep_pos_start_time = time.monotonic()
+                position_batch_updates = utils.prepare_position_data_updates(actual_data, current_pos_data_snapshot)
+                logger.debug(f"'{stream_name}' - Data Prep (outside lock) took: {time.monotonic() - prep_pos_start_time:.4f}s")
+                
+                # 3. Briefly lock to apply updates
+                if position_batch_updates:
+                    lock_pos_update_start = time.monotonic()
+                    with app_state.app_state_lock:
+                        lock_pos_update_acquired = time.monotonic()
+                        logger.debug(f"Lock in 'data_processing_loop' for '{stream_name}' BATCH UPDATE - ACQUIRED. Wait: {lock_pos_update_acquired - lock_pos_update_start:.4f}s")
+                        crit_pos_update_start = time.monotonic()
+
+                        app_state.data_store[stream_name] = {"data": actual_data, "timestamp": timestamp} # Store raw data
+                        for car_n_str, updates in position_batch_updates.items():
+                            if car_n_str in app_state.timing_state:
+                                app_state.timing_state[car_n_str]['PreviousPositionData'] = updates['PreviousPositionData']
+                                app_state.timing_state[car_n_str]['PositionData'] = updates['PositionData']
+                        
+                        logger.debug(f"Lock in 'data_processing_loop' for '{stream_name}' BATCH UPDATE - HELD: {time.monotonic() - crit_pos_update_start:.4f}s")
+
+            else: # Fallback for other streams to use the old single lock pattern (already timed)
+                lock_acquisition_start_time = time.monotonic()
+                with app_state.app_state_lock:
+                    lock_acquired_time = time.monotonic()
+                    logger.debug(f"Lock in 'data_processing_loop' for stream '{stream_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
+                    critical_section_start_time = time.monotonic()
+                    
+                    app_state.data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
+                    try:
+                        if stream_name == "Heartbeat": app_state.app_status["last_heartbeat"] = timestamp
+                        elif stream_name == "DriverList": _process_driver_list(actual_data)
+                        elif stream_name == "TimingData": _process_timing_data(actual_data)
+                        # SessionInfo, CarData, Position are handled above
+                        elif stream_name == "SessionData": _process_session_data(actual_data)
+                        elif stream_name == "TimingAppData": _process_timing_app_data(actual_data)
+                        elif stream_name == "TrackStatus": _process_track_status(actual_data)
+                        elif stream_name == "WeatherData": _process_weather_data(actual_data)
+                        elif stream_name == "RaceControlMessages": _process_race_control(actual_data)
+                        elif stream_name == "TeamRadio": _process_team_radio(actual_data)
+                        elif stream_name == "ExtrapolatedClock": _process_extrapolated_clock(actual_data, timestamp)
+                    except Exception as proc_ex:
+                        logger.error(f"ERROR processing stream '{stream_name}': {proc_ex}", exc_info=True)
+                    
+                    logger.debug(f"Lock in 'data_processing_loop' for stream '{stream_name}' - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
+            
             if hasattr(app_state.data_queue, 'task_done'): app_state.data_queue.task_done()
 
         except queue.Empty:
