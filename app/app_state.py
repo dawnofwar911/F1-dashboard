@@ -15,8 +15,12 @@ INITIAL_APP_STATUS = {
     "subscribed_streams": [],
     "last_heartbeat": None,
     "current_replay_file": None,
-    "auto_connect_attempted_for_session": None, # New: To prevent multiple auto-connect attempts for the same session
+    # New: To prevent multiple auto-connect attempts for the same session
+    "auto_connect_attempted_for_session": None,
+    # ADDED: Timestamp for when an auto-connected session finished
+    "auto_connected_session_end_detected_utc": None,
 }
+
 
 app_status = INITIAL_APP_STATUS.copy() # Initialize with a copy
 app_state_lock = threading.Lock()

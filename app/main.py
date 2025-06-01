@@ -116,81 +116,163 @@ app.clientside_callback(
 
 AUTO_CONNECT_POLL_INTERVAL_SECONDS = 60
 AUTO_CONNECT_LEAD_TIME_MINUTES = 5
-INITIAL_AUTO_CONNECT_DELAY_SECONDS = 5 # Short delay on startup
+INITIAL_AUTO_CONNECT_DELAY_SECONDS = 5  # Short delay on startup
+AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES = 10  # New constant
+
 
 def auto_connect_monitor():
     logger_auto_connect = logging.getLogger("F1App.AutoConnect")
     logger_auto_connect.info("Auto-connect monitor thread started.")
 
-    # Give other parts of the app a moment to initialize on first startup
-    if app_state.stop_event.wait(timeout=INITIAL_AUTO_CONNECT_DELAY_SECONDS): # MODIFIED
-        logger_auto_connect.info("Auto-connect monitor: Stop event received during initial delay. Exiting.")
+    if app_state.stop_event.wait(timeout=INITIAL_AUTO_CONNECT_DELAY_SECONDS):
+        logger_auto_connect.info(
+            "Auto-connect monitor: Stop event received during initial delay. Exiting.")
         return
 
     while not app_state.stop_event.is_set():
         try:
+            current_app_s = "Unknown"
+            auto_connect_attempted_for = None
+            # Renamed to avoid conflict with datetime module
+            auto_session_end_detected_utc_val = None
+            current_live_session_unique_id = None
+
             with app_state.app_state_lock:
                 current_app_s = app_state.app_status["state"]
-                auto_connect_attempted_for = app_state.app_status.get("auto_connect_attempted_for_session")
+                auto_connect_attempted_for = app_state.app_status.get(
+                    "auto_connect_attempted_for_session")
+                auto_session_end_detected_utc_val = app_state.app_status.get(
+                    "auto_connected_session_end_detected_utc")
 
+                if current_app_s == "Live":
+                    live_year = app_state.session_details.get('Year')
+                    live_event_name = app_state.session_details.get(
+                        'EventName')
+                    live_session_name = app_state.session_details.get(
+                        'SessionName')
+                    if live_year and live_event_name and live_session_name:
+                        current_live_session_unique_id = f"{live_year}_{live_event_name}_{live_session_name}"
+                    else:
+                        logger_auto_connect.debug(
+                            "Could not form unique ID for current live session from session_details.")
+
+            # --- Auto-disconnection logic for finished auto-connected sessions ---
+            if current_app_s == "Live" and \
+               auto_connect_attempted_for and \
+               current_live_session_unique_id == auto_connect_attempted_for:
+
+                current_session_feed_status = "Unknown"
+                with app_state.app_state_lock:
+                    current_session_feed_status = app_state.session_details.get(
+                        'SessionStatus', 'Unknown')
+
+                # Consider session statuses that indicate a definitive end or prolonged inactivity
+                ended_statuses = ["Finished", "Ends", "Aborted", "Inactive"]
+                if current_session_feed_status in ended_statuses:
+                    if auto_session_end_detected_utc_val is None:
+                        finished_time = datetime.datetime.now(pytz.utc)
+                        logger_auto_connect.info(
+                            f"Auto-connected session '{auto_connect_attempted_for}' status is '{current_session_feed_status}' at {finished_time}. "
+                            f"Starting {AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES}-min disconnect countdown."
+                        )
+                        with app_state.app_state_lock:
+                            app_state.app_status["auto_connected_session_end_detected_utc"] = finished_time
+                    else:
+                        # auto_session_end_detected_utc_val is already set (it's a datetime object)
+                        if datetime.datetime.now(pytz.utc) >= (auto_session_end_detected_utc_val + datetime.timedelta(minutes=AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES)):
+                            logger_auto_connect.info(
+                                f"{AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES}-minute post-session timer expired for auto-connected session '{auto_connect_attempted_for}'. Disconnecting."
+                            )
+                            signalr_client.stop_connection()  # This will change app state
+                            with app_state.app_state_lock:
+                                app_state.app_status["auto_connect_attempted_for_session"] = None
+                                app_state.app_status["auto_connected_session_end_detected_utc"] = None
+
+                            logger_auto_connect.info(
+                                f"Auto-disconnected session {auto_connect_attempted_for}. Monitor will pause and then re-scan.")
+                            if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS):
+                                break
+                            continue  # Next iteration of the monitor loop
+                else:  # Session is live and running (not in ended_statuses)
+                    if auto_session_end_detected_utc_val is not None:
+                        logger_auto_connect.info(
+                            f"Auto-connected session '{auto_connect_attempted_for}' is active again (status: {current_session_feed_status}). Clearing end timer.")
+                        with app_state.app_state_lock:
+                            app_state.app_status["auto_connected_session_end_detected_utc"] = None
+            # --- End of auto-disconnection logic ---
+
+            # If app is not in a state to scan for new sessions, sleep and continue
             if current_app_s not in ["Idle", "Stopped", "Error", "Playback Complete"]:
-                logger_auto_connect.debug(f"Auto-connect: App state is '{current_app_s}', monitor will sleep.")
-                if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS): # MODIFIED
-                    break # Exit loop if stop event is set during sleep
+                logger_auto_connect.debug(
+                    f"Auto-connect: App state is '{current_app_s}', monitor will sleep.")
+                if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS):
+                    break
                 continue
 
-            logger_auto_connect.debug("Auto-connect: Attempting to fetch schedule...")
-            # get_current_year_schedule_with_sessions() is a blocking call.
-            # It's hard to make this call itself interruptible without modifying FastF1.
-            # If this call takes longer than the shutdown timeout (5s), the thread will still hang.
-            # For now, we accept this limitation, but for very long schedule fetches,
-            # one might consider running it in a short-lived thread with a timeout.
+            logger_auto_connect.debug(
+                "Auto-connect: Attempting to fetch schedule...")
             full_schedule_data = get_current_year_schedule_with_sessions()
 
-            if app_state.stop_event.is_set(): # Check immediately after the blocking call
-                logger_auto_connect.info("Auto-connect: Stop event detected after schedule fetch. Exiting.")
+            if app_state.stop_event.is_set():
+                logger_auto_connect.info(
+                    "Auto-connect: Stop event detected after schedule fetch. Exiting.")
                 break
 
             if not full_schedule_data:
-                logger_auto_connect.info("Auto-connect: No schedule data returned. Will retry.")
-                if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS * 2): # MODIFIED
+                logger_auto_connect.info(
+                    "Auto-connect: No schedule data returned. Will retry.")
+                if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS * 2):
                     break
                 continue
 
             now_utc = datetime.datetime.now(pytz.utc)
             next_session_to_connect = None
-            min_future_start_time = datetime.datetime.max.replace(tzinfo=pytz.utc)
+            min_future_start_time = datetime.datetime.max.replace(
+                tzinfo=pytz.utc)
 
             for event in full_schedule_data:
-                if app_state.stop_event.is_set(): break # Check inside the loop
-                # ... (event processing logic as before - from Response 7) ...
-                event_official_name = event.get('OfficialEventName', event.get('EventName', 'Unknown Event'))
+                if app_state.stop_event.is_set():
+                    break
+                event_official_name = event.get(
+                    'OfficialEventName', event.get('EventName', 'Unknown Event'))
                 event_circuit_name = event.get('Location', 'Unknown Circuit')
                 event_date_str = event.get('EventDate')
                 event_year = now_utc.year
                 if event_date_str:
-                    parsed_event_date = utils.parse_iso_timestamp_safe(event_date_str)
-                    if parsed_event_date: event_year = parsed_event_date.year
-                    else: logger_auto_connect.warning(f"Could not parse EventDate string '{event_date_str}' for event '{event_official_name}' to get year. Using current year {event_year}.")
-                else: logger_auto_connect.debug(f"Event '{event_official_name}' missing 'EventDate'. Using current year {event_year}.")
+                    parsed_event_date = utils.parse_iso_timestamp_safe(
+                        event_date_str)
+                    if parsed_event_date:
+                        event_year = parsed_event_date.year
+                    else:
+                        logger_auto_connect.warning(
+                            f"Could not parse EventDate string '{event_date_str}' for event '{event_official_name}' to get year. Using current year {event_year}.")
+                else:
+                    logger_auto_connect.debug(
+                        f"Event '{event_official_name}' missing 'EventDate'. Using current year {event_year}.")
 
                 for session in event.get('Sessions', []):
-                    if app_state.stop_event.is_set(): break # Check inside the inner loop
+                    if app_state.stop_event.is_set():
+                        break
                     session_name = session.get('SessionName')
                     session_date_utc_str = session.get('SessionDateUTC')
-                    # ... (session processing as before) ...
                     if session_date_utc_str and session_name:
                         try:
-                            session_dt_utc = datetime.datetime.fromisoformat(session_date_utc_str.replace('Z', '+00:00'))
-                            session_dt_utc = session_dt_utc.astimezone(pytz.utc) if session_dt_utc.tzinfo else pytz.utc.localize(session_dt_utc)
+                            session_dt_utc = datetime.datetime.fromisoformat(
+                                session_date_utc_str.replace('Z', '+00:00'))
+                            session_dt_utc = session_dt_utc.astimezone(
+                                pytz.utc) if session_dt_utc.tzinfo else pytz.utc.localize(session_dt_utc)
                             if session_dt_utc > now_utc and session_dt_utc < min_future_start_time:
                                 min_future_start_time = session_dt_utc
                                 session_type_auto = "Unknown"
                                 s_name_lower = session_name.lower()
-                                if "practice" in s_name_lower: session_type_auto = config.SESSION_TYPE_PRACTICE
-                                elif "qualifying" in s_name_lower: session_type_auto = config.SESSION_TYPE_QUALI
-                                elif "sprint" in s_name_lower and "qualifying" not in s_name_lower : session_type_auto = config.SESSION_TYPE_SPRINT
-                                elif "race" in s_name_lower and "pre-race" not in s_name_lower : session_type_auto = config.SESSION_TYPE_RACE
+                                if "practice" in s_name_lower:
+                                    session_type_auto = config.SESSION_TYPE_PRACTICE
+                                elif "qualifying" in s_name_lower:
+                                    session_type_auto = config.SESSION_TYPE_QUALI
+                                elif "sprint" in s_name_lower and "qualifying" not in s_name_lower:
+                                    session_type_auto = config.SESSION_TYPE_SPRINT
+                                elif "race" in s_name_lower and "pre-race" not in s_name_lower:
+                                    session_type_auto = config.SESSION_TYPE_RACE
                                 next_session_to_connect = {
                                     'event_name': event_official_name, 'session_name': session_name,
                                     'start_time_utc': session_dt_utc, 'year': event_year,
@@ -199,11 +281,14 @@ def auto_connect_monitor():
                                     'unique_id': f"{event_year}_{event_official_name}_{session_name}"
                                 }
                         except ValueError as e_parse:
-                            logger_auto_connect.warning(f"Auto-connect: Error parsing session date '{session_date_utc_str}' for '{session_name}' in '{event_official_name}': {e_parse}")
+                            logger_auto_connect.warning(
+                                f"Auto-connect: Error parsing session date '{session_date_utc_str}' for '{session_name}' in '{event_official_name}': {e_parse}")
                             continue
-                if app_state.stop_event.is_set(): break # After inner loop, before next event
-            
-            if app_state.stop_event.is_set(): break # After outer loop
+                if app_state.stop_event.is_set():
+                    break
+
+            if app_state.stop_event.is_set():
+                break
 
             if next_session_to_connect:
                 session_unique_id = next_session_to_connect['unique_id']
@@ -214,71 +299,91 @@ def auto_connect_monitor():
                 )
 
                 if time_to_session.total_seconds() <= (AUTO_CONNECT_LEAD_TIME_MINUTES * 60) and \
-                   time_to_session.total_seconds() > -300:
+                   time_to_session.total_seconds() > -300:  # Session is due or started very recently
                     if auto_connect_attempted_for == session_unique_id:
-                        logger_auto_connect.info(f"Auto-connect already attempted for {session_unique_id}. Skipping.")
+                        logger_auto_connect.info(
+                            f"Auto-connect already handled (attempted or finished) for {session_unique_id}. Skipping.")
                     else:
                         logger_auto_connect.info(
                             f"Auto-connecting for: {next_session_to_connect['event_name']} - {next_session_to_connect['session_name']}"
                         )
-                        # ... (app_state.update_target_session_details and connection logic as before) ...
                         app_state.update_target_session_details(
-                            year=next_session_to_connect['year'], circuit_key=next_session_to_connect.get('circuit_key'),
-                            circuit_name=next_session_to_connect['circuit_name'], event_name=next_session_to_connect['event_name'],
-                            session_name=next_session_to_connect['session_name'], session_start_time_utc=next_session_to_connect['start_time_utc'].isoformat(),
+                            year=next_session_to_connect['year'], circuit_key=next_session_to_connect.get(
+                                'circuit_key'),
+                            circuit_name=next_session_to_connect[
+                                'circuit_name'], event_name=next_session_to_connect['event_name'],
+                            session_name=next_session_to_connect['session_name'], session_start_time_utc=next_session_to_connect['start_time_utc'].isoformat(
+                            ),
                             session_type=next_session_to_connect['session_type']
                         )
+                        should_record_live = False
                         with app_state.app_state_lock:
                             should_record_live = app_state.record_live_data
-                            if app_state.stop_event.is_set(): logger_auto_connect.info("Auto-connect: Clearing pre-existing stop_event prior to connection attempt.") # Log added clarity
-                            app_state.stop_event.clear() # Clear before potentially long connection attempt
+                            if app_state.stop_event.is_set():
+                                logger_auto_connect.info(
+                                    "Auto-connect: Clearing pre-existing stop_event prior to connection attempt.")
+                            app_state.stop_event.clear()
                             app_state.app_status["auto_connect_attempted_for_session"] = session_unique_id
-                        
-                        # Connection attempt itself can be blocking
+                            # Reset for new session
+                            app_state.app_status["auto_connected_session_end_detected_utc"] = None
+
                         websocket_url, ws_headers = None, None
                         try:
-                            with app_state.app_state_lock: app_state.app_status.update({"state": "Initializing", "connection": config.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS})
-                            websocket_url, ws_headers = signalr_client.build_connection_url(config.NEGOTIATE_URL_BASE, config.HUB_NAME)
-                            if not websocket_url or not ws_headers: raise ConnectionError("Negotiation failed for auto-connect.")
+                            with app_state.app_state_lock:
+                                app_state.app_status.update(
+                                    {"state": "Initializing", "connection": config.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS})
+                            websocket_url, ws_headers = signalr_client.build_connection_url(
+                                config.NEGOTIATE_URL_BASE, config.HUB_NAME)
+                            if not websocket_url or not ws_headers:
+                                raise ConnectionError(
+                                    "Negotiation failed for auto-connect.")
                         except Exception as e_neg:
-                            logger_auto_connect.error(f"Auto-connect: Negotiation error: {e_neg}", exc_info=True)
-                            with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": config.TEXT_SIGNALR_NEGOTIATION_ERROR_PREFIX + str(type(e_neg).__name__)})
-                        
-                        if app_state.stop_event.is_set(): # Re-check after negotiation
-                             logger_auto_connect.info("Auto-connect: Stop event detected after negotiation. Aborting connection thread start.")
+                            logger_auto_connect.error(
+                                f"Auto-connect: Negotiation error: {e_neg}", exc_info=True)
+                            with app_state.app_state_lock:
+                                app_state.app_status.update(
+                                    {"state": "Error", "connection": config.TEXT_SIGNALR_NEGOTIATION_ERROR_PREFIX + str(type(e_neg).__name__)})
+
+                        if app_state.stop_event.is_set():
+                            logger_auto_connect.info(
+                                "Auto-connect: Stop event detected after negotiation. Aborting connection thread start.")
                         elif websocket_url and ws_headers:
                             if should_record_live:
-                                if not replay.init_live_file(): logger_auto_connect.error("Auto-connect: Failed to init recording file.")
+                                if not replay.init_live_file():
+                                    logger_auto_connect.error(
+                                        "Auto-connect: Failed to init recording file.")
                             else:
                                 replay.close_live_file()
                             connect_thread = threading.Thread(
-                                target=signalr_client.run_connection_manual_neg, args=(websocket_url, ws_headers),
+                                target=signalr_client.run_connection_manual_neg, args=(
+                                    websocket_url, ws_headers),
                                 name="SignalRAutoConnectionThread", daemon=True
                             )
                             signalr_client.connection_thread = connect_thread
                             connect_thread.start()
-                            logger_auto_connect.info("Auto-connect: SignalR connection thread initiated.")
-                            # After successful initiation, wait longer (interruptibly)
-                            if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS * AUTO_CONNECT_LEAD_TIME_MINUTES): # MODIFIED
+                            logger_auto_connect.info(
+                                "Auto-connect: SignalR connection thread initiated.")
+                            if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS * AUTO_CONNECT_LEAD_TIME_MINUTES):
                                 break
             else:
-                logger_auto_connect.info("Auto-connect: No upcoming sessions identified in the schedule for connection.")
+                logger_auto_connect.info(
+                    "Auto-connect: No upcoming sessions identified in the schedule for connection.")
 
         except Exception as e_monitor:
-            logger_auto_connect.error(f"Error in auto-connect monitor loop: {e_monitor}", exc_info=True)
-            if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS * 5): # MODIFIED
+            logger_auto_connect.error(
+                f"Error in auto-connect monitor loop: {e_monitor}", exc_info=True)
+            if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS * 5):
                 break
-        
+
         if app_state.stop_event.is_set():
-            break 
-        
-        # Regular poll interval at the end of the main try-except block
-        logger_auto_connect.debug(f"Auto-connect: loop finished, sleeping for {AUTO_CONNECT_POLL_INTERVAL_SECONDS}s.")
-        if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS): # MODIFIED
-            break # Exit if stop event set during the final sleep
+            break
+
+        logger_auto_connect.debug(
+            f"Auto-connect: loop finished, sleeping for {AUTO_CONNECT_POLL_INTERVAL_SECONDS}s.")
+        if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS):
+            break
 
     logger_auto_connect.info("Auto-connect monitor thread stopped.")
-
 
 # --- Global variables for threads (moved from if __name__ == '__main__') ---
 processing_thread = None
