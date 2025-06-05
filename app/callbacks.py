@@ -3,17 +3,16 @@
 Contains all the Dash callback functions for the application.
 Handles UI updates, user actions, and plot generation.
 """
-import datetime
-from datetime import datetime, timezone, timedelta # Ensure these are imported
-import pytz # Not strictly used in this version, but often useful with F1 data
+from datetime import timezone, timedelta, datetime
 import logging
 import json
 import time
 import inspect
 import copy
-# from datetime import timezone # Already imported in app_state & utils if needed there
 import threading
 from pathlib import Path
+import flask  # For accessing flask.session
+from typing import Dict, List, Optional, Any, Tuple  # For type hints
 
 import dash
 from dash.dependencies import Input, Output, State, ClientsideFunction
@@ -21,29 +20,133 @@ from dash import dcc, html, dash_table, no_update
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import numpy as np # Keep if any complex numerical ops remain, else remove
-# from shapely.geometry import LineString, Point # Not directly used here, but in utils
-# from shapely.ops import nearest_points # Not directly used here
+# import numpy as np # Uncomment if complex numpy operations are re-introduced
 
-# --- App Import ---
-try:
-    from app_instance import app
-except ImportError:
-    print("ERROR: Could not import 'app' for callbacks.")
-    raise
+from app_instance import app  # Dash app instance
+import app_state  # For get_or_create_session_state and SessionState type hint
+import config
+import utils
+# Import a_s_m_a_t from main for the auto-connect callback
+#from main import auto_connect_monitor_session_actual_target
 
-# --- Module Imports ---
-import app_state
-import config # <<< UPDATED: For constants
-import utils # <<< UPDATED: For helper functions like create_empty_figure_with_message
+# These modules now contain session-aware functions
 import signalr_client
 import replay
-# data_processing functions are called by the loop, not directly needed here
+import data_processing  # For starting session-specific data processing loop
+
 
 logger = logging.getLogger("F1App.Callbacks")
 
 # Note: UI revision, height, and margin constants are now in config.py
 # Note: TRACK_STATUS_STYLES and WEATHER_ICON_MAP are now in config.py
+
+# --- Per-User Auto-Connect Toggle Callback ---
+
+
+@app.callback(
+    Output('session-auto-connect-switch', 'value'),
+    Input('session-auto-connect-switch', 'value'),
+    prevent_initial_call=True
+)
+def toggle_session_auto_connect(switch_is_on: bool) -> bool:
+    callback_name = "toggle_session_auto_connect"
+    logger.info(
+        f"Callback '{callback_name}': User toggled auto-connect switch. Desired state: {'On' if switch_is_on else 'Off'}")
+
+    session_state = app_state.get_or_create_session_state()
+    if not session_state:
+        logger.error(
+            f"Callback '{callback_name}': Could not get/create session state.")
+        return False  # Default to off if session state fails
+
+    with session_state.lock:
+        current_auto_connect_enabled = session_state.auto_connect_enabled
+        new_target_state = bool(switch_is_on)
+        thread_is_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
+
+        if new_target_state == current_auto_connect_enabled and new_target_state == thread_is_running:
+            logger.info(
+                f"Session {session_state.session_id[:8]}: Auto-connect already in desired state ({new_target_state}).")
+            return new_target_state
+
+        session_state.auto_connect_enabled = new_target_state
+        logger.info(
+            f"Session {session_state.session_id[:8]}: auto_connect_enabled preference set to {session_state.auto_connect_enabled}")
+
+        if session_state.auto_connect_enabled:
+            if not thread_is_running:
+                logger.info(
+                    f"Session {session_state.session_id[:8]}: Starting auto-connect monitor thread...")
+                # Use the session's main stop_event for now for auto-connect thread
+                session_state.stop_event.clear()
+
+                thread = threading.Thread(
+                    target=auto_connect_monitor_session_actual_target,
+                    args=(session_state,),
+                    name=f"AutoConnectMon_Sess_{session_state.session_id[:8]}"
+                )
+                thread.daemon = True
+                session_state.auto_connect_thread = thread
+                thread.start()
+            # else: thread already running
+        else:  # Disable auto-connect
+            if thread_is_running and session_state.auto_connect_thread:
+                logger.info(
+                    f"Session {session_state.session_id[:8]}: Stopping auto-connect monitor thread...")
+                session_state.stop_event.set()  # Signal this session's auto_connect thread to stop
+
+                session_state.auto_connect_thread.join(timeout=7.0)
+                if session_state.auto_connect_thread.is_alive():
+                    logger.warning(
+                        f"Session {session_state.session_id[:8]}: Auto-connect thread did not join cleanly.")
+                session_state.auto_connect_thread = None
+
+            # Determine if the main session stop_event should be cleared
+            s_conn_thread_alive = session_state.connection_thread and session_state.connection_thread.is_alive()
+            s_replay_thread_alive = session_state.replay_thread and session_state.replay_thread.is_alive()
+            if not s_conn_thread_alive and not s_replay_thread_alive:  # If no other major tasks using it
+                logger.debug(
+                    f"Session {session_state.session_id[:8]}: Clearing main stop_event for session.")
+                session_state.stop_event.clear()  # Okay to clear if only auto-connect was using it
+
+    return session_state.auto_connect_enabled
+
+@app.callback(  # If app is not defined here, this will error. Move to callbacks.py if needed.
+    [Output("sidebar", "style"),
+     Output("page-content", "style", allow_duplicate=True),
+     Output("sidebar-state-store", "data"),
+     Output("sidebar-toggle-signal", "data")],
+    [Input("sidebar-toggle", "n_clicks")],
+    [State("sidebar-state-store", "data")],
+    # Added to prevent firing on page load before n_clicks is defined
+    prevent_initial_call=True
+)
+def toggle_sidebar(n_clicks, sidebar_state_data):
+    is_open_currently = sidebar_state_data.get(
+        'is_open', False)  # Default to False if no data
+
+    # if n_clicks is None or n_clicks == 0: # This might prevent toggling if n_clicks starts at 0 and is then 1
+    if not n_clicks:  # Simpler check if n_clicks is None or 0 (initial state)
+        # Don't toggle on initial load automatically
+        new_is_open_state = is_open_currently
+    else:
+        new_is_open_state = not is_open_currently
+
+    if new_is_open_state:
+        sidebar_style_to_apply = config.SIDEBAR_STYLE_VISIBLE
+        content_style_to_apply = config.CONTENT_STYLE_WITH_SIDEBAR
+    else:
+        sidebar_style_to_apply = config.SIDEBAR_STYLE_HIDDEN
+        content_style_to_apply = config.CONTENT_STYLE_FULL_WIDTH
+
+    current_store_val = {'is_open': new_is_open_state}
+
+    # Only generate a new signal if there was a click that caused a toggle
+    signal_data = dash.no_update
+    if n_clicks:  # and (new_is_open_state != is_open_currently): # If state actually changed
+        signal_data = time.time()
+
+    return sidebar_style_to_apply, content_style_to_apply, current_store_val, signal_data
 
 @app.callback(
     Output('timing-data-actual-table', 'columns'),
@@ -57,11 +160,12 @@ def update_timing_table_columns(n_intervals):
     Dynamically sets the columns for the timing table based on the session type.
     The 'Pits' column is only shown for Race or Sprint sessions.
     """
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
-    with app_state.app_state_lock:
-        session_type = app_state.session_details.get('Type', None)
+    with session_state.lock:
+        session_type = session_state.session_details.get('Type', None)
 
     # Assuming config.TIMING_TABLE_COLUMNS_CONFIG is a list of dicts,
     # where each dict has at least an 'id' and 'name' key.
@@ -92,14 +196,15 @@ def update_timing_table_columns(n_intervals):
     Input('interval-component-medium', 'n_intervals') # Update periodically
 )
 def update_team_radio_display(n_intervals):
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
     try:
-        with app_state.app_state_lock:
+        with session_state.lock:
             # Make a copy of the deque for safe iteration
-            radio_messages_snapshot = list(app_state.team_radio_messages)
-            session_path = app_state.session_details.get('Path') # Needed for the audio URL
+            radio_messages_snapshot = list(session_state.team_radio_messages)
+            session_path = session_state.session_details.get('Path') # Needed for the audio URL
 
         if not radio_messages_snapshot:
             return html.Em(config.TEXT_TEAM_RADIO_AWAITING, style={'color': 'grey'})
@@ -194,6 +299,7 @@ def update_team_radio_display(n_intervals):
     [Input('interval-component-fast', 'n_intervals')]
 )
 def update_lap_and_session_info(n_intervals):
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
@@ -206,46 +312,46 @@ def update_lap_and_session_info(n_intervals):
 
     try:
         lock_acquisition_start_time = time.monotonic()
-        with app_state.app_state_lock: #
+        with session_state.lock: #
             lock_acquired_time = time.monotonic()
             logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
             critical_section_start_time = time.monotonic()
-            current_app_overall_status = app_state.app_status.get("state", "Idle") #
+            current_app_overall_status = session_state.app_status.get("state", "Idle") #
 
             if current_app_overall_status not in ["Live", "Replaying"]: #
                 return lap_value_str, lap_counter_div_style, session_timer_label_text, session_time_str, session_timer_div_style #
 
-            session_type_from_state = app_state.session_details.get('Type', "Unknown") #
-            current_session_feed_status = app_state.session_details.get('SessionStatus', 'Unknown') #
-            current_replay_speed = app_state.replay_speed # Used for LIVE extrapolation, replay speed is inherent in feed pace #
+            session_type_from_state = session_state.session_details.get('Type', "Unknown") #
+            current_session_feed_status = session_state.session_details.get('SessionStatus', 'Unknown') #
+            current_replay_speed = session_state.replay_speed # Used for LIVE extrapolation, replay speed is inherent in feed pace #
 
-            lap_count_data_payload = app_state.data_store.get('LapCount', {}) #
+            lap_count_data_payload = session_state.data_store.get('LapCount', {}) #
             lap_count_data = lap_count_data_payload.get('data', {}) if isinstance(lap_count_data_payload, dict) else {} #
             if not isinstance(lap_count_data, dict): lap_count_data = {} #
             current_lap_from_feed = lap_count_data.get('CurrentLap') #
             total_laps_from_feed = lap_count_data.get('TotalLaps') #
             if total_laps_from_feed is not None and total_laps_from_feed != '-': #
-                try: app_state.last_known_total_laps = int(total_laps_from_feed) #
+                try: session_state.last_known_total_laps = int(total_laps_from_feed) #
                 except (ValueError, TypeError): pass #
-            actual_total_laps_to_display = app_state.last_known_total_laps if app_state.last_known_total_laps is not None else '--' #
+            actual_total_laps_to_display = session_state.last_known_total_laps if session_state.last_known_total_laps is not None else '--' #
             current_lap_to_display = str(current_lap_from_feed) if current_lap_from_feed is not None else '-' #
 
             session_type_lower = session_type_from_state.lower() #
 
             # q_state is for LIVE timer extrapolation and Q REPLAY pause states
-            q_state_live_anchor = app_state.qualifying_segment_state.copy() #
+            q_state_live_anchor = session_state.qualifying_segment_state.copy() #
 
             # For Practice LIVE timing
-            practice_start_utc_live = app_state.practice_session_actual_start_utc #
-            practice_overall_duration_s = app_state.practice_session_scheduled_duration_seconds #
+            practice_start_utc_live = session_state.practice_session_actual_start_utc #
+            practice_overall_duration_s = session_state.practice_session_scheduled_duration_seconds #
 
             # For REPLAY feed-paced timing (Practice and Q)
-            current_feed_ts_dt_replay = app_state.current_processed_feed_timestamp_utc_dt if current_app_overall_status == "Replaying" else None #
-            start_feed_ts_dt_replay = app_state.session_start_feed_timestamp_utc_dt if current_app_overall_status == "Replaying" else None #
-            segment_duration_s_replay = app_state.current_segment_scheduled_duration_seconds if current_app_overall_status == "Replaying" else None #
+            current_feed_ts_dt_replay = session_state.current_processed_feed_timestamp_utc_dt if current_app_overall_status == "Replaying" else None #
+            start_feed_ts_dt_replay = session_state.session_start_feed_timestamp_utc_dt if current_app_overall_status == "Replaying" else None #
+            segment_duration_s_replay = session_state.current_segment_scheduled_duration_seconds if current_app_overall_status == "Replaying" else None #
 
-            session_name_from_details = app_state.session_details.get('Name', '') #
-            extrapolated_clock_remaining = app_state.extrapolated_clock_info.get("Remaining") if hasattr(app_state, 'extrapolated_clock_info') else None #
+            session_name_from_details = session_state.session_details.get('Name', '') #
+            extrapolated_clock_remaining = session_state.extrapolated_clock_info.get("Remaining") if hasattr(session_state, 'extrapolated_clock_info') else None #
             logger.debug(f"Lock in '{func_name}' - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
 
         # --- Logic for displaying session type specific info ---
@@ -382,6 +488,7 @@ def update_lap_and_session_info(n_intervals):
 )
 def update_connection_status(n):
     """Updates the connection status indicator."""
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
@@ -389,12 +496,12 @@ def update_connection_status(n):
     status_style = {'color': 'grey', 'fontWeight': 'bold'}
 
     try:
-        with app_state.app_state_lock:
-            status = app_state.app_status.get("connection", "Unknown")
-            state = app_state.app_status.get("state", "Idle")
-            is_rec = app_state.is_saving_active
-            rec_file = app_state.current_recording_filename
-            rep_file = app_state.app_status.get("current_replay_file")
+        with session_state.lock:
+            status = session_state.app_status.get("connection", "Unknown")
+            state = session_state.app_status.get("state", "Idle")
+            is_rec = session_state.is_saving_active
+            rec_file = session_state.current_recording_filename
+            rep_file = session_state.app_status.get("current_replay_file")
 
         status_text = f"State: {state} | Conn: {status}"
         color = 'grey'
@@ -433,32 +540,33 @@ def update_connection_status(n):
     Input('interval-component-slow', 'n_intervals')
 )
 def update_session_and_weather_info(n):
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
     session_info_str = config.TEXT_SESSION_INFO_AWAITING
     weather_details_spans = []
 
-    with app_state.app_state_lock:
+    with session_state.lock:
         # Overall condition state
-        overall_condition = app_state.last_known_overall_weather_condition
-        weather_card_color = app_state.last_known_weather_card_color
-        weather_card_inverse = app_state.last_known_weather_card_inverse
-        main_weather_icon_key = app_state.last_known_main_weather_icon_key
+        overall_condition = session_state.last_known_overall_weather_condition
+        weather_card_color = session_state.last_known_weather_card_color
+        weather_card_inverse = session_state.last_known_weather_card_inverse
+        main_weather_icon_key = session_state.last_known_main_weather_icon_key
 
         # Detailed weather metrics state (these will be our display fallbacks)
-        air_temp_to_display = app_state.last_known_air_temp
-        track_temp_to_display = app_state.last_known_track_temp
-        humidity_to_display = app_state.last_known_humidity
-        pressure_to_display = app_state.last_known_pressure
-        wind_speed_to_display = app_state.last_known_wind_speed
-        wind_direction_to_display = app_state.last_known_wind_direction
+        air_temp_to_display = session_state.last_known_air_temp
+        track_temp_to_display = session_state.last_known_track_temp
+        humidity_to_display = session_state.last_known_humidity
+        pressure_to_display = session_state.last_known_pressure
+        wind_speed_to_display = session_state.last_known_wind_speed
+        wind_direction_to_display = session_state.last_known_wind_direction
         # This specific rainfall value is primarily for the "RAIN" text logic
-        rainfall_val_for_text = app_state.last_known_rainfall_val
+        rainfall_val_for_text = session_state.last_known_rainfall_val
 
         # Get current session and new weather data payload
-        local_session_details = app_state.session_details.copy()
-        raw_weather_payload = app_state.data_store.get('WeatherData', {})
+        local_session_details = session_state.session_details.copy()
+        raw_weather_payload = session_state.data_store.get('WeatherData', {})
         current_weather_data_payload = raw_weather_payload.get('data', {}) if isinstance(raw_weather_payload, dict) else {}
         if not isinstance(current_weather_data_payload, dict):
             current_weather_data_payload = {}
@@ -492,30 +600,30 @@ def update_session_and_weather_info(n):
         parsed_wind_direction = current_weather_data_payload.get('WindDirection') # String or None
         parsed_rainfall_val = current_weather_data_payload.get('Rainfall')      # String '0', '1' or None
 
-        # Update display values and persisted app_state for each detailed metric
+        # Update display values and persisted session_state for each detailed metric
         # if new data for it is valid (not None). Otherwise, retain the loaded last_known value for display.
-        with app_state.app_state_lock:
+        with session_state.lock:
             if parsed_air_temp is not None:
                 air_temp_to_display = parsed_air_temp
-                app_state.last_known_air_temp = parsed_air_temp
+                session_state.last_known_air_temp = parsed_air_temp
             if parsed_track_temp is not None:
                 track_temp_to_display = parsed_track_temp
-                app_state.last_known_track_temp = parsed_track_temp
+                session_state.last_known_track_temp = parsed_track_temp
             if parsed_humidity is not None:
                 humidity_to_display = parsed_humidity
-                app_state.last_known_humidity = parsed_humidity
+                session_state.last_known_humidity = parsed_humidity
             if parsed_pressure is not None:
                 pressure_to_display = parsed_pressure
-                app_state.last_known_pressure = parsed_pressure
+                session_state.last_known_pressure = parsed_pressure
             if parsed_wind_speed is not None:
                 wind_speed_to_display = parsed_wind_speed
-                app_state.last_known_wind_speed = parsed_wind_speed
+                session_state.last_known_wind_speed = parsed_wind_speed
             if parsed_wind_direction is not None: # Allow empty string as valid update
                 wind_direction_to_display = parsed_wind_direction
-                app_state.last_known_wind_direction = parsed_wind_direction
+                session_state.last_known_wind_direction = parsed_wind_direction
             if parsed_rainfall_val is not None:
                 rainfall_val_for_text = parsed_rainfall_val # Update for current display logic
-                app_state.last_known_rainfall_val = parsed_rainfall_val
+                session_state.last_known_rainfall_val = parsed_rainfall_val
 
 
         # --- Step 3: Determine and persist OVERALL weather condition (icon, card color) ---
@@ -588,11 +696,11 @@ def update_session_and_weather_info(n):
             weather_card_inverse = temp_card_inverse_candidate
             main_weather_icon_key = overall_condition # Key for icon map
 
-            with app_state.app_state_lock:
-                app_state.last_known_overall_weather_condition = overall_condition
-                app_state.last_known_weather_card_color = weather_card_color
-                app_state.last_known_weather_card_inverse = weather_card_inverse
-                app_state.last_known_main_weather_icon_key = main_weather_icon_key
+            with session_state.lock:
+                session_state.last_known_overall_weather_condition = overall_condition
+                session_state.last_known_weather_card_color = weather_card_color
+                session_state.last_known_weather_card_inverse = weather_card_inverse
+                session_state.last_known_main_weather_icon_key = main_weather_icon_key
 
         current_main_weather_icon = config.WEATHER_ICON_MAP.get(main_weather_icon_key, config.WEATHER_ICON_MAP["default"])
 
@@ -648,11 +756,12 @@ def update_session_and_weather_info(n):
     Input('interval-component-medium', 'n_intervals')
 )
 def update_prominent_track_status(n):
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
-    with app_state.app_state_lock:
-        track_status_code = str(app_state.track_status_data.get('Status', '0'))
+    with session_state.lock:
+        track_status_code = str(session_state.track_status_data.get('Status', '0'))
 
     # Use TRACK_STATUS_STYLES from config
     status_info = config.TRACK_STATUS_STYLES.get(track_status_code, config.TRACK_STATUS_STYLES['DEFAULT'])
@@ -674,6 +783,7 @@ def update_prominent_track_status(n):
 )
 # MODIFICATION: Added debug_mode_enabled
 def update_main_data_displays(n, debug_mode_enabled):
+    session_state = app_state.get_or_create_session_state()
     overall_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
@@ -702,35 +812,35 @@ def update_main_data_displays(n, debug_mode_enabled):
         
         initial_state_copy_start_time = time.monotonic()
         lock_acquisition_start_time = time.monotonic()
-        with app_state.app_state_lock:
+        with session_state.lock:
             lock_acquired_time = time.monotonic()
             logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
             critical_section_start_time = time.monotonic()
-            app_overall_status = app_state.app_status.get("state", "Idle")
+            app_overall_status = session_state.app_status.get("state", "Idle")
             # Robustly get session type
             session_type_from_state_str = (
-                app_state.session_details.get('Type') or "").lower()
+                session_state.session_details.get('Type') or "").lower()
             # MODIFIED: Changed to debug
             logger.debug(
                 f"UPDATE_MAIN_DISPLAYS_DEBUG: Read session_type_from_state_str as '{session_type_from_state_str}'")
 
-            q_state_snapshot_for_live = app_state.qualifying_segment_state.copy()
+            q_state_snapshot_for_live = session_state.qualifying_segment_state.copy()
             current_q_segment_from_state = q_state_snapshot_for_live.get(
                 "current_segment")
             previous_q_segment_from_state = q_state_snapshot_for_live.get(
                 "old_segment")
-            current_replay_speed_snapshot = app_state.replay_speed
+            current_replay_speed_snapshot = session_state.replay_speed
             session_feed_status_snapshot = (
-                app_state.session_details.get('SessionStatus') or 'Unknown')
+                session_state.session_details.get('SessionStatus') or 'Unknown')
 
             if app_overall_status == "Replaying":
-                current_feed_ts_dt_replay_local = app_state.current_processed_feed_timestamp_utc_dt
-                start_feed_ts_dt_replay_local = app_state.session_start_feed_timestamp_utc_dt
-                segment_duration_s_replay_local = app_state.current_segment_scheduled_duration_seconds
+                current_feed_ts_dt_replay_local = session_state.current_processed_feed_timestamp_utc_dt
+                start_feed_ts_dt_replay_local = session_state.session_start_feed_timestamp_utc_dt
+                segment_duration_s_replay_local = session_state.current_segment_scheduled_duration_seconds
 
-            timing_state_copy = app_state.timing_state.copy()
+            timing_state_copy = session_state.timing_state.copy()
             # MODIFICATION: Conditionally get data_store_copy only if debug mode is enabled
-            data_store_copy = app_state.data_store.copy() if debug_mode_enabled else {}
+            data_store_copy = session_state.data_store.copy() if debug_mode_enabled else {}
             logger.debug(f"Lock in '{func_name}' - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
         logger.debug(f"'{func_name}' - Initial lock & state copy: {time.monotonic() - initial_state_copy_start_time:.4f}s")
 
@@ -876,10 +986,10 @@ def update_main_data_displays(n, debug_mode_enabled):
         # Use data_store_copy that was fetched within the lock if debug_mode_enabled, otherwise it's {}
         # This check is now implicit as sorted_streams will be empty if data_store_copy is {}
         # The original code fetched data_store_copy outside the debug_mode_enabled check.
-        # We've moved the copy of app_state.data_store inside the lock and made it conditional.
+        # We've moved the copy of session_state.data_store inside the lock and made it conditional.
         # However, timing_data_entry is still needed.
-        with app_state.app_state_lock:  # Re-acquire lock if needed for data_store if not copied before
-            timing_data_entry = app_state.data_store.get(
+        with session_state.lock:  # Re-acquire lock if needed for data_store if not copied before
+            timing_data_entry = session_state.data_store.get(
                 'TimingData', {}) if not debug_mode_enabled else data_store_copy.get('TimingData', {})
 
         timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else config.TEXT_WAITING_FOR_DATA
@@ -1100,7 +1210,8 @@ def update_main_data_displays(n, debug_mode_enabled):
     Input('replay-speed-slider', 'value'),
     prevent_initial_call=True
 )
-def update_replay_speed_state(new_speed_value): # Removed session_info_children_trigger, get from app_state
+def update_replay_speed_state(new_speed_value): # Removed session_info_children_trigger, get from session_state
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
@@ -1119,17 +1230,17 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
         return no_update
 
 
-    with app_state.app_state_lock:
-        old_speed = app_state.replay_speed # Speed active *before* this change
+    with session_state.lock:
+        old_speed = session_state.replay_speed # Speed active *before* this change
 
         # If speed hasn't actually changed, do nothing to avoid potential float precision issues
         if abs(old_speed - new_speed) < 0.01: # Tolerance for float comparison
-            # Still update app_state.replay_speed to the precise new_speed_value if slider was just wiggled
-            app_state.replay_speed = new_speed
+            # Still update session_state.replay_speed to the precise new_speed_value if slider was just wiggled
+            session_state.replay_speed = new_speed
             return no_update
 
-        session_type = app_state.session_details.get('Type', "Unknown").lower() #
-        q_state = app_state.qualifying_segment_state # Primary timing state dictionary
+        session_type = session_state.session_details.get('Type', "Unknown").lower() #
+        q_state = session_state.qualifying_segment_state # Primary timing state dictionary
 
         current_official_remaining_s_at_anchor = q_state.get("official_segment_remaining_seconds") #
         last_capture_utc_anchor = q_state.get("last_official_time_capture_utc") #
@@ -1140,8 +1251,8 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
         # --- This block calculates the true current remaining time based on OLD speed ---
         if session_type.startswith("practice"):
             # For practice, use its continuous model to find current true remaining time
-            practice_start_utc = app_state.practice_session_actual_start_utc #
-            practice_duration_s = app_state.practice_session_scheduled_duration_seconds #
+            practice_start_utc = session_state.practice_session_actual_start_utc #
+            practice_duration_s = session_state.practice_session_scheduled_duration_seconds #
             if practice_start_utc and practice_duration_s is not None:
                 wall_time_elapsed_practice = (now_utc - practice_start_utc).total_seconds() #
                 session_time_elapsed_practice = wall_time_elapsed_practice * old_speed
@@ -1176,10 +1287,10 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
             # If it was a Practice session using its continuous model, adjust its effective start time
             # so its formula yields the new_anchor_remaining_s with the new_speed.
             if session_type.startswith("practice") and \
-               app_state.practice_session_actual_start_utc and \
-               app_state.practice_session_scheduled_duration_seconds is not None:
+               session_state.practice_session_actual_start_utc and \
+               session_state.practice_session_scheduled_duration_seconds is not None:
 
-                duration_s = app_state.practice_session_scheduled_duration_seconds #
+                duration_s = session_state.practice_session_scheduled_duration_seconds #
                 if new_speed > 0: # Avoid division by zero
                     # We want: new_anchor_remaining_s = duration_s - (now_utc - new_practice_start_utc) * new_speed
                     # (now_utc - new_practice_start_utc) * new_speed = duration_s - new_anchor_remaining_s
@@ -1187,9 +1298,9 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
                     # new_practice_start_utc = now_utc - timedelta(seconds = (duration_s - new_anchor_remaining_s) / new_speed)
 
                     wall_time_offset_for_new_start = (duration_s - new_anchor_remaining_s) / new_speed
-                    app_state.practice_session_actual_start_utc = now_utc - timedelta(seconds=wall_time_offset_for_new_start) #
+                    session_state.practice_session_actual_start_utc = now_utc - timedelta(seconds=wall_time_offset_for_new_start) #
                     logger.info(
-                        f"Adjusted practice_session_actual_start_utc to {app_state.practice_session_actual_start_utc} " #
+                        f"Adjusted practice_session_actual_start_utc to {session_state.practice_session_actual_start_utc} " #
                         f"to maintain {new_anchor_remaining_s:.2f}s remaining at {new_speed:.2f}x."
                     )
         else:
@@ -1200,8 +1311,8 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
             )
 
         # Finally, update the global replay speed
-        app_state.replay_speed = new_speed #
-        logger.debug(f"Replay speed updated in app_state to: {app_state.replay_speed}") #
+        session_state.replay_speed = new_speed #
+        logger.debug(f"Replay speed updated in session_state to: {session_state.replay_speed}") #
     
     logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return no_update
@@ -1210,190 +1321,205 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
     [Output('dummy-output-for-controls', 'children', allow_duplicate=True),
      Output('track-map-graph', 'figure', allow_duplicate=True),
      Output('car-positions-store', 'data', allow_duplicate=True)],
-    Input('connect-button', 'n_clicks'),
-    Input('replay-button', 'n_clicks'),
-    Input('stop-reset-button', 'n_clicks'),
-    State('replay-file-selector', 'value'),
-    State('replay-speed-slider', 'value'),
-    State('record-data-checkbox', 'value'),
+    [Input('connect-button', 'n_clicks'),
+     Input('replay-button', 'n_clicks'),
+     Input('stop-reset-button', 'n_clicks')],
+    [State('replay-file-selector', 'value'),
+     State('replay-speed-slider', 'value'),
+     State('record-data-checkbox', 'value')],
     prevent_initial_call=True
 )
-def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
-                          selected_replay_file, replay_speed,
-                          record_checkbox_value):
-    overall_start_time = time.monotonic()
-    func_name = inspect.currentframe().f_code.co_name
+def handle_control_clicks(connect_clicks: Optional[int], replay_clicks: Optional[int], stop_reset_clicks: Optional[int],
+                          selected_replay_file: Optional[str], replay_speed_value: Optional[float],
+                          record_checkbox_input: Any) -> Tuple[Any, Any, Any]:
+    
+    session_state = app_state.get_or_create_session_state()
+    if not session_state:
+        logger.error("handle_control_clicks: Critical - Could not get/create session state!")
+        return dash.no_update, dash.no_update, dash.no_update
+
     ctx = dash.callback_context
     button_id = ctx.triggered_id if ctx.triggered else None
-    logger.debug(f"Callback '{func_name}' START, Button: {button_id}")
+    sess_id_log = session_state.session_id[:8]
+    logger.info(f"Session {sess_id_log}: Control button clicked: {button_id}")
 
-    dummy_output = no_update
-    track_map_figure_output = no_update
-    car_positions_store_output = no_update
+    # Default outputs
+    dummy_output = dash.no_update
+    track_map_output = dash.no_update # Use specific map reset when needed
+    car_pos_store_output = dash.no_update
 
-    if not button_id:
-        return dummy_output, track_map_figure_output, car_positions_store_output
-
-    logger.info(f"Control button clicked: {button_id}")
-
-    def generate_reset_track_map_figure():
-        unique_reset_uirevision = f"reset_map_rev_{time.time()}"
-        logger.debug(f"Generating reset track map with unique uirevision: {unique_reset_uirevision}")
-        # Use utils.create_empty_figure_with_message and config constants
-        fig = utils.create_empty_figure_with_message(
-            height=config.TRACK_MAP_WRAPPER_HEIGHT, uirevision=unique_reset_uirevision,
-            message=config.TEXT_TRACK_MAP_DATA_WILL_LOAD, margins=config.TRACK_MAP_MARGINS
-        )
-        fig.update_layout(yaxis_scaleanchor='x', yaxis_scaleratio=1,
-                          plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)')
-        if fig.layout.annotations: fig.layout.annotations[0].font.size = 10
-        return fig
+    # Update session's record_live_data preference from checkbox
+    # dbc.Switch value is boolean, dcc.Checklist is a list
+    if isinstance(record_checkbox_input, list): # Handles Checklist
+        session_record_pref = bool(record_checkbox_input and record_checkbox_input[0])
+    else: # Handles Switch or direct boolean
+        session_record_pref = bool(record_checkbox_input)
+    
+    with session_state.lock:
+        session_state.record_live_data = session_record_pref
+        logger.debug(f"Session {sess_id_log}: record_live_data preference set to {session_state.record_live_data}")
 
     if button_id == 'connect-button':
-        action_start_time = time.monotonic()
-        with app_state.app_state_lock:
-            current_app_s = app_state.app_status["state"]
-            if current_app_s in ["Replaying", "Playback Complete", "Stopped", "Error"]:
-                logger.info(f"Connect Live: Transitioning from {current_app_s}. Resetting track map related states for a clean live start.")
-                app_state.track_coordinates_cache = app_state.INITIAL_TRACK_COORDINATES_CACHE.copy()
-                app_state.session_details['SessionKey'] = None
-                app_state.selected_driver_for_map_and_lap_chart = None # Reset selected driver
+        with session_state.lock:
+            current_s_state = session_state.app_status["state"]
+            if current_s_state not in ["Idle", "Stopped", "Error", "Playback Complete"]:
+                logger.warning(f"Session {sess_id_log}: Connect ignored. Session state: {current_s_state}")
+                return dummy_output, track_map_output, car_pos_store_output
+            
+            # Stop any existing replay for this session first
+            if session_state.replay_thread and session_state.replay_thread.is_alive():
+                logger.info(f"Session {sess_id_log}: Stopping active replay to connect live.")
+                replay.stop_replay_session(session_state) # SESSION-AWARE
+                time.sleep(0.3) # Allow time for thread to join
+            
+            session_state.stop_event.clear()
+            session_state.reset_state_variables() # Reset data stores for a fresh session
+            session_state.record_live_data = session_record_pref # Re-apply preference after reset
 
-                track_map_figure_output = generate_reset_track_map_figure()
-                car_positions_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
+            session_state.app_status.update({
+                "state": "Initializing", 
+                "connection": config.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS,
+                "current_replay_file": None # Ensure no replay file is listed
+            })
+            logger.info(f"Session {sess_id_log}: State reset and set to Initializing for live connection.")
+            # Reset track map related states (will be handled by initialize_track_map on SessionKey change)
+            session_state.track_coordinates_cache = app_state.INITIAL_SESSION_TRACK_COORDINATES_CACHE.copy()
+            session_state.session_details['SessionKey'] = None # Force map update via key change
+            session_state.selected_driver_for_map_and_lap_chart = None
 
-            if current_app_s not in ["Idle", "Stopped", "Error", "Playback Complete", "Replaying"]:
-                logger.warning(f"Connect ignored. App state: {current_app_s}")
-                return dummy_output, track_map_figure_output, car_positions_store_output
 
-            if app_state.stop_event.is_set(): logger.info("Connect Live: Clearing pre-existing stop_event.")
-            app_state.stop_event.clear()
-            should_record_live = app_state.record_live_data # Use the state variable
-        logger.info(f"Initiating connection. Recording: {should_record_live}")
-        websocket_url, ws_headers = None, None
-        try:
-            with app_state.app_state_lock: app_state.app_status.update({"state": "Initializing", "connection": config.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS}) # Use constant
-            neg_start_time = time.monotonic()
-            websocket_url, ws_headers = signalr_client.build_connection_url(config.NEGOTIATE_URL_BASE, config.HUB_NAME) #
-            logger.debug(f"'{func_name}' (connect) - build_connection_url took: {time.monotonic() - neg_start_time:.4f}s")
-            if not websocket_url or not ws_headers: raise ConnectionError("Negotiation failed.")
-        except Exception as e:
-            logger.error(f"Negotiation error: {e}", exc_info=True)
-            with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": config.TEXT_SIGNALR_NEGOTIATION_ERROR_PREFIX + str(type(e).__name__)}) # Use constant
-            return dummy_output, track_map_figure_output, car_positions_store_output
+        logger.info(f"Session {sess_id_log}: Initiating live connection. Recording: {session_state.record_live_data}")
+        websocket_url, ws_headers = signalr_client.build_connection_url(config.NEGOTIATE_URL_BASE, config.HUB_NAME)
+        
         if websocket_url and ws_headers:
-            if should_record_live:
-                init_file_start_time = time.monotonic()
-                if not replay.init_live_file(): logger.error("Failed to init recording.") #
-                logger.debug(f"'{func_name}' (connect) - init_live_file took: {time.monotonic() - init_file_start_time:.4f}s")
-            else: replay.close_live_file() #
-            thread_obj = threading.Thread(target=signalr_client.run_connection_manual_neg, args=(websocket_url, ws_headers), name="SignalRConnectionThread", daemon=True) #
-            signalr_client.connection_thread = thread_obj; thread_obj.start() #
-            logger.info("SignalR connection thread initiated.")
-            logger.debug(f"'{func_name}' (connect) - Action took: {time.monotonic() - action_start_time:.4f}s")
-
+            if session_state.record_live_data:
+                if not replay.init_live_file_session(session_state): # SESSION-AWARE
+                    logger.error(f"Session {sess_id_log}: Failed to initialize live recording file.")
+            
+            conn_thread = threading.Thread(
+                target=signalr_client.run_connection_session, # SESSION-AWARE
+                args=(session_state, websocket_url, ws_headers), 
+                name=f"SigRConn_Sess_{sess_id_log}", daemon=True
+            )
+            dp_thread = threading.Thread(
+                target=data_processing.data_processing_loop_session, # SESSION-AWARE
+                args=(session_state,),
+                name=f"DataProc_Sess_{sess_id_log}", daemon=True
+            )
+            with session_state.lock:
+                session_state.connection_thread = conn_thread
+                session_state.data_processing_thread = dp_thread
+            conn_thread.start()
+            dp_thread.start()
+            logger.info(f"Session {sess_id_log}: SignalR connection and Data Processing threads initiated.")
+        else: 
+            with session_state.lock:
+                session_state.app_status.update({"state": "Error", "connection": "Negotiation Failed"})
+        
+        # Signal for map reset (clientside can use timestamp to force update)
+        track_map_output = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"map_connect_{time.time()}", config.TEXT_TRACK_MAP_LOADING, config.TRACK_MAP_MARGINS)
+        car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
 
     elif button_id == 'replay-button':
-        action_start_time = time.monotonic()
-        if selected_replay_file:
-            active_live_session = False
-            with app_state.app_state_lock:
-                state = app_state.app_status["state"]
-                app_state.selected_driver_for_map_and_lap_chart = None # Reset selected driver on new replay
-                if state in ["Live", "Connecting"]: active_live_session = True
-                elif state == "Replaying":
-                    logger.warning(config.TEXT_REPLAY_ALREADY_RUNNING) # Use constant
-                    return dummy_output, track_map_figure_output, car_positions_store_output
-            if active_live_session:
-                logger.info("Stopping live feed for replay.")
-                try: signalr_client.stop_connection(); time.sleep(0.3) #
-                except Exception as e:
-                    logger.error(f"Error stopping live feed for replay: {e}", exc_info=True)
-                    return dummy_output, track_map_figure_output, car_positions_store_output
-            try:
-                speed_float = float(replay_speed); speed_float = max(0.1, speed_float)
-                full_replay_path = Path(config.REPLAY_DIR) / selected_replay_file #
-                replay_start_call_time = time.monotonic()
-                if replay.replay_from_file(full_replay_path, speed_float): 
-                    logger.info(f"Replay initiated for {full_replay_path.name}.") #
-                    logger.debug(f"'{func_name}' (replay) - replay_from_file call took: {time.monotonic() - replay_start_call_time:.4f}s")
-                else: logger.error(f"Failed to start replay for {full_replay_path.name}.")
-            except Exception as e_replay_start:
-                 logger.error(f"Error starting replay: {e_replay_start}", exc_info=True)
-                 with app_state.app_state_lock: app_state.app_status.update({"state": "Error", "connection": config.TEXT_REPLAY_ERROR_THREAD_START_FAILED_STATUS}) # Use constant
-        else: logger.warning(f"Start Replay: {config.TEXT_REPLAY_SELECT_FILE}") # Use constant
-        logger.debug(f"'{func_name}' (replay) - Action took: {time.monotonic() - action_start_time:.4f}s")
+        if not selected_replay_file:
+            logger.warning(f"Session {sess_id_log}: Start Replay: {config.TEXT_REPLAY_SELECT_FILE}")
+            return dummy_output, track_map_output, car_pos_store_output
 
+        with session_state.lock:
+            # Stop any existing live connection or other replay for THIS session
+            if session_state.connection_thread and session_state.connection_thread.is_alive():
+                logger.info(f"Session {sess_id_log}: Stopping active live connection to start replay.")
+                signalr_client.stop_connection_session(session_state) # SESSION-AWARE
+                time.sleep(0.3) # Allow time for thread to join
+            if session_state.replay_thread and session_state.replay_thread.is_alive(): # If another replay was running
+                 logger.info(f"Session {sess_id_log}: Stopping previous replay to start new one.")
+                 replay.stop_replay_session(session_state) # SESSION-AWARE
+                 time.sleep(0.3)
+            
+            # Set replay speed for this session before starting replay
+            try: speed_val = float(replay_speed_value if replay_speed_value is not None else 1.0)
+            except: speed_val = 1.0
+            session_state.replay_speed = max(0.1, speed_val)
+            
+            # Clear relevant states before starting replay (start_replay_session will also do resets)
+            session_state.stop_event.clear()
+            session_state.reset_state_variables() # Full reset for new replay
+            session_state.record_live_data = False # Ensure recording is off for replays
+            
+            session_state.app_status.update({ # Set initial status before thread starts
+                "state": "Initializing",
+                "connection": f"Replay Prep: {selected_replay_file}",
+                "current_replay_file": selected_replay_file
+            })
+            # Reset track map related states
+            session_state.track_coordinates_cache = app_state.INITIAL_SESSION_TRACK_COORDINATES_CACHE.copy()
+            session_state.session_details['SessionKey'] = None 
+            session_state.selected_driver_for_map_and_lap_chart = None
+        
+        full_replay_path = Path(config.REPLAY_DIR) / selected_replay_file
+        
+        # replay.start_replay_session handles starting its own thread and data processing thread
+        if replay.start_replay_session(session_state, full_replay_path, session_state.replay_speed): # SESSION-AWARE
+            logger.info(f"Session {sess_id_log}: Replay initiation process for {full_replay_path.name} started.")
+        else:
+            logger.error(f"Session {sess_id_log}: Failed to start replay for {full_replay_path.name}.")
+            # start_replay_session should update session_state.app_status to Error
+        
+        track_map_output = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"map_replay_{time.time()}", config.TEXT_TRACK_MAP_LOADING, config.TRACK_MAP_MARGINS)
+        car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
 
     elif button_id == 'stop-reset-button':
-        logger.info("Stop & Reset Session button clicked.")
-        action_start_time = time.monotonic()
-        any_action_failed = False
-
-        logger.info("Stop & Reset: Attempting to stop SignalR connection (if any)...")
-        try: 
-            sc_start = time.monotonic();
-            signalr_client.stop_connection();
-            logger.info("Stop & Reset: signalr_client.stop_connection() completed.") #
-            logger.debug(f"'{func_name}' (stop) - stop_connection took: {time.monotonic() - sc_start:.4f}s")
-        except Exception as e: logger.error(f"Stop & Reset: Error during signalr_client.stop_connection(): {e}", exc_info=True); any_action_failed = True
-
-        logger.info("Stop & Reset: Attempting to stop replay (if any)...")
-        try: 
-            sr_start = time.monotonic();
-            replay.stop_replay();
-            logger.debug(f"'{func_name}' (stop) - stop_replay took: {time.monotonic() - sr_start:.4f}s")
-            logger.info("Stop & Reset: replay.stop_replay() completed.") #
-        except Exception as e: logger.error(f"Stop & Reset: Error during replay.stop_replay(): {e}", exc_info=True); any_action_failed = True
+        logger.info(f"Session {sess_id_log}: Stop & Reset Session button clicked.")
         
+        logger.info(f"Session {sess_id_log}: Stopping SignalR connection (if any)...")
+        signalr_client.stop_connection_session(session_state) # SESSION-AWARE
+
+        logger.info(f"Session {sess_id_log}: Stopping replay (if any)...")
+        replay.stop_replay_session(session_state) # SESSION-AWARE
         
-        reset_start = time.monotonic();
-        logger.debug("Stop & Reset: Pausing (0.3s) for stop signals...")
-        time.sleep(0.3)
+        # Stop auto-connect thread if running for this session
+        with session_state.lock:
+            if session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive():
+                logger.info(f"Session {sess_id_log}: Stopping auto-connect thread...")
+                session_state.stop_event.set() # stop_event is shared for now
+                session_state.auto_connect_thread.join(timeout=3.0)
+                if session_state.auto_connect_thread.is_alive(): logger.warning(f"Session {sess_id_log}: Auto-connect thread did not join.")
+                session_state.auto_connect_thread = None
+                session_state.auto_connect_enabled = False # Turn off preference as well on manual stop/reset
 
-        logger.info("Stop & Reset: Resetting application state...")
-        try:
-            app_state.reset_to_default_state() # This will now also reset selected_driver_for_map_and_lap_chart
-            track_map_figure_output = generate_reset_track_map_figure()
-            car_positions_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
-            logger.info("Stop & Reset: State reset; track map set to empty; car_positions_store signaled.")
-        except Exception as e:
-            logger.error(f"Stop & Reset: Error during reset_to_default_state: {e}", exc_info=True); any_action_failed = True
+            # Ensure data processing thread for this session is stopped
+            # It should stop when stop_event is set by stop_connection or stop_replay
+            if session_state.data_processing_thread and session_state.data_processing_thread.is_alive():
+                logger.info(f"Session {sess_id_log}: Ensuring data processing thread is stopped...")
+                # session_state.stop_event should already be set
+                session_state.data_processing_thread.join(timeout=3.0)
+                if session_state.data_processing_thread.is_alive():
+                    logger.warning(f"Session {sess_id_log}: Data processing thread did not join cleanly on stop/reset.")
+                session_state.data_processing_thread = None
 
-        logger.info("Stop & Reset: Finalizing stop_event and app status...")
-        with app_state.app_state_lock:
-            current_status_after_actions = app_state.app_status.get("state") # Get state *after* stop calls and reset
-            logger.info(f"Stop & Reset: State after reset_to_default_state() and before final adjustment: '{current_status_after_actions}'. Actions failed: {any_action_failed}")
-            
-            if app_state.stop_event.is_set(): 
-                logger.info("Stop & Reset: Global stop_event is SET. Clearing now.")
-                app_state.stop_event.clear()
-            else: 
-                logger.info("Stop & Reset: Global stop_event was already clear.")
+        logger.info(f"Session {sess_id_log}: Resetting session state...")
+        session_state.reset_state_variables() # Resets this session's state
+        
+        with session_state.lock: # Ensure status is correctly set after reset
+             session_state.app_status.update({
+                 "state": "Idle", 
+                 "connection": config.TEXT_SIGNALR_DISCONNECTED_STATUS,
+                 "current_replay_file": None,
+                 "auto_connected_session_identifier": None,
+                 "auto_connected_session_end_detected_utc": None
+            })
+        session_state.stop_event.clear() # Clear for future operations in this session
 
-            if any_action_failed: # If any action (stop_connection, stop_replay, reset_state) failed
-                logger.warning("Stop & Reset: At least one action failed. Forcing app status to 'Error'.")
-                app_state.app_status["state"] = "Error"
-                app_state.app_status["connection"] = "Reset failed"
-            else: # All actions succeeded
-                # reset_to_default_state() should have already set it to "Idle"
-                if current_status_after_actions == "Idle":
-                    logger.info(f"Stop & Reset: Actions succeeded. State is '{current_status_after_actions}'. Connection: '{config.TEXT_SIGNALR_DISCONNECTED_STATUS}'.")
-                    app_state.app_status["connection"] = config.TEXT_SIGNALR_DISCONNECTED_STATUS # Ensure connection message is default
-                else:
-                    # This case should ideally not be hit if reset_to_default_state() works
-                    logger.warning(f"Stop & Reset: Actions succeeded, but state is '{current_status_after_actions}' instead of 'Idle'. Forcing to 'Idle'.")
-                    app_state.app_status["state"] = "Idle"
-                    app_state.app_status["connection"] = config.TEXT_SIGNALR_DISCONNECTED_STATUS
-        logger.info("Stop & Reset Session processing finished.")
-        logger.debug(f"'{func_name}' (stop) - reset_to_default_state took: {time.monotonic() - reset_start:.4f}s")
+        map_reset_fig = utils.create_empty_figure_with_message(
+            config.TRACK_MAP_WRAPPER_HEIGHT, f"reset_map_sess_{sess_id_log}_{time.time()}",
+            config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS
+        )
+        map_reset_fig.update_layout(plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)')
+        track_map_output = map_reset_fig
+        car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
+        logger.info(f"Session {sess_id_log}: Stop & Reset processing finished.")
 
-    else:
-        logger.warning(f"Button ID '{button_id}' not handled by handle_control_clicks.")
-    
-    logger.debug(f"Callback '{func_name}' END. Total time: {time.monotonic() - overall_start_time:.4f}s")
-    return dummy_output, track_map_figure_output, car_positions_store_output
-
+    return dummy_output, track_map_output, car_pos_store_output
 
 @app.callback(
     Output('record-data-checkbox', 'id', allow_duplicate=True), # Keep id as string
@@ -1401,13 +1527,14 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
     prevent_initial_call=True
 )
 def record_checkbox_callback(checked_value):
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
     if checked_value is None: return 'record-data-checkbox' # Return existing ID string
     new_state = bool(checked_value)
     logger.debug(f"Record Live Data checkbox set to: {new_state}")
-    with app_state.app_state_lock: app_state.record_live_data = new_state
+    with session_state.lock: session_state.record_live_data = new_state
     logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return 'record-data-checkbox' # Return existing ID string
 
@@ -1448,6 +1575,7 @@ def toggle_controls_collapse(n, is_open):
 def update_driver_focus_content(selected_driver_number, active_tab_id, 
                                 selected_lap_for_telemetry, 
                                 current_telemetry_figure, current_stint_table_columns):
+    session_state = app_state.get_or_create_session_state()
     overall_callback_start_time = time.monotonic() # For overall timing
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START_OVERALL") # Overall start
@@ -1489,16 +1617,16 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
     all_stints_for_driver = []
     available_telemetry_laps = []
 
-    # --- Initial Data Fetch (Locking for app_state access) ---
+    # --- Initial Data Fetch (Locking for session_state access) ---
     lock_acquisition_start_time = time.monotonic()
-    with app_state.app_state_lock:
+    with session_state.lock:
         lock_acquired_time = time.monotonic()
         logger.debug(f"Lock in '{func_name}' (Initial Fetch) - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
         critical_section_start_time = time.monotonic()
         
-        driver_info_state = app_state.timing_state.get(driver_num_str, {}).copy()
-        all_stints_for_driver = copy.deepcopy(app_state.driver_stint_data.get(driver_num_str, [])) # Deepcopy if modified later, or if sub-elements are complex
-        available_telemetry_laps = sorted(list(app_state.telemetry_data.get(driver_num_str, {}).keys())) # Get keys (lap numbers)
+        driver_info_state = session_state.timing_state.get(driver_num_str, {}).copy()
+        all_stints_for_driver = copy.deepcopy(session_state.driver_stint_data.get(driver_num_str, [])) # Deepcopy if modified later, or if sub-elements are complex
+        available_telemetry_laps = sorted(list(session_state.telemetry_data.get(driver_num_str, {}).keys())) # Get keys (lap numbers)
         
         logger.debug(f"Lock in '{func_name}' (Initial Fetch) - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
 
@@ -1548,11 +1676,11 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
                     # Fetch specific lap_data for plotting
                     lap_data_fetch_start_time = time.monotonic()
                     lap_data = {}
-                    with app_state.app_state_lock: # Second, brief lock for specific lap data
+                    with session_state.lock: # Second, brief lock for specific lap data
                         lap_data_lock_acquired_time = time.monotonic()
                         logger.debug(f"Lock2 in '{func_name}' (Telemetry-LapData) - ACQUIRED. Wait: {lap_data_lock_acquired_time - lap_data_fetch_start_time:.4f}s")
                         lap_data_critical_start_time = time.monotonic()
-                        lap_data = copy.deepcopy(app_state.telemetry_data.get(driver_num_str, {}).get(telemetry_lap_value, {}))
+                        lap_data = copy.deepcopy(session_state.telemetry_data.get(driver_num_str, {}).get(telemetry_lap_value, {}))
                         logger.debug(f"Lock2 in '{func_name}' (Telemetry-LapData) - HELD for lap_data: {time.monotonic() - lap_data_critical_start_time:.4f}s")
                     
                     logger.debug(f"'{func_name}' (Telemetry Tab) - Specific lap_data fetch for {driver_num_str} Lap {telemetry_lap_value} took: {time.monotonic() - lap_data_fetch_start_time:.4f}s (incl. wait & hold)")
@@ -1667,21 +1795,22 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
     State('current-track-layout-cache-key-store', 'data')
 )
 def update_current_session_id_for_map(n_intervals, existing_session_id_in_store):
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
-    with app_state.app_state_lock:
-        year = app_state.session_details.get('Year')
-        circuit_key = app_state.session_details.get('CircuitKey')
-        app_status_state = app_state.app_status.get("state", "Idle")
+    with session_state.lock:
+        year = session_state.session_details.get('Year')
+        circuit_key = session_state.session_details.get('CircuitKey')
+        app_status_state = session_state.app_status.get("state", "Idle")
 
     if not year or not circuit_key or app_status_state in ["Idle", "Stopped", "Error"]:
         if existing_session_id_in_store is not None:
             # Clear the selected driver if session changes or becomes invalid
-            with app_state.app_state_lock:
-                if app_state.selected_driver_for_map_and_lap_chart is not None:
+            with session_state.lock:
+                if session_state.selected_driver_for_map_and_lap_chart is not None:
                     logger.debug("Clearing selected_driver_for_map_and_lap_chart due to invalid/changed session.")
-                    app_state.selected_driver_for_map_and_lap_chart = None
+                    session_state.selected_driver_for_map_and_lap_chart = None
             return None
         return dash.no_update
 
@@ -1690,8 +1819,8 @@ def update_current_session_id_for_map(n_intervals, existing_session_id_in_store)
     if current_session_id != existing_session_id_in_store:
         logger.debug(
             f"Updating current-track-layout-cache-key-store to: {current_session_id}. Clearing selected driver.")
-        with app_state.app_state_lock: # Clear selected driver on session change
-            app_state.selected_driver_for_map_and_lap_chart = None
+        with session_state.lock: # Clear selected driver on session change
+            session_state.selected_driver_for_map_and_lap_chart = None
         logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
         return current_session_id
 
@@ -1710,14 +1839,15 @@ def update_current_session_id_for_map(n_intervals, existing_session_id_in_store)
 def toggle_clientside_interval(connect_clicks, replay_clicks,
                                stop_reset_clicks,
                                fast_interval_tick, currently_disabled, selected_replay_file):
+    session_state = app_state.get_or_create_session_state()
     ctx = dash.callback_context
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered and ctx.triggered[0] else None
 
     if not triggered_id:
         return no_update
 
-    with app_state.app_state_lock:
-        current_app_s = app_state.app_status.get("state", "Idle")
+    with session_state.lock:
+        current_app_s = session_state.app_status.get("state", "Idle")
 
     if triggered_id in ['connect-button', 'replay-button']:
         if triggered_id == 'replay-button' and not selected_replay_file:
@@ -1757,6 +1887,7 @@ def toggle_clientside_interval(connect_clicks, replay_clicks,
     Input('clientside-update-interval', 'n_intervals'),
 )
 def update_car_data_for_clientside(n_intervals):
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
@@ -1764,15 +1895,15 @@ def update_car_data_for_clientside(n_intervals):
         return dash.no_update
     
     lock_acquisition_start_time = time.monotonic()
-    with app_state.app_state_lock:
+    with session_state.lock:
         lock_acquired_time = time.monotonic()
         logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
     
         critical_section_start_time = time.monotonic()
-        current_app_status = app_state.app_status.get("state", "Idle")
-        timing_state_snapshot = app_state.timing_state.copy()
+        current_app_status = session_state.app_status.get("state", "Idle")
+        timing_state_snapshot = session_state.timing_state.copy()
         # Get the currently selected driver for highlighting
-        selected_driver_rno = app_state.selected_driver_for_map_and_lap_chart
+        selected_driver_rno = session_state.selected_driver_for_map_and_lap_chart
         logger.debug(f"Lock in '{func_name}' - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
 
     if current_app_status not in ["Live", "Replaying"] or not timing_state_snapshot:
@@ -1863,6 +1994,7 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
                          current_track_map_figure_state,
                          current_figure_version_in_store_state,
                          previous_rendered_yellow_key_from_store):
+    session_state = app_state.get_or_create_session_state()
     overall_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
@@ -1873,14 +2005,14 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
     logger.debug(f"INIT_TRACK_MAP Trigger: {triggering_input_id}, SID: {expected_session_id}, PrevYellowKey: {previous_rendered_yellow_key_from_store}, SidebarSignal: {sidebar_toggled_signal}")
 
     lock_acquisition_start_time = time.monotonic()
-    with app_state.app_state_lock:
+    with session_state.lock:
         lock_acquired_time = time.monotonic()
         logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
         
         critical_section_start_time = time.monotonic()
-        cached_data = app_state.track_coordinates_cache.copy()
-        driver_list_snapshot = app_state.timing_state.copy() 
-        active_yellow_sectors_snapshot = set(app_state.active_yellow_sectors)
+        cached_data = session_state.track_coordinates_cache.copy()
+        driver_list_snapshot = session_state.timing_state.copy() 
+        active_yellow_sectors_snapshot = set(session_state.active_yellow_sectors)
         logger.debug(f"Lock in '{func_name}' - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
 
     if not expected_session_id or not isinstance(expected_session_id, str) or '_' not in expected_session_id:
@@ -2111,14 +2243,15 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
     Input('interval-component-slow', 'n_intervals')
 )
 def update_driver_dropdown_options(n_intervals):
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
     logger.debug("Attempting to update driver dropdown options...")
     options = config.DROPDOWN_NO_DRIVERS_OPTIONS # Use constant
     try:
-        with app_state.app_state_lock:
-            timing_state_copy = app_state.timing_state.copy()
+        with session_state.lock:
+            timing_state_copy = session_state.timing_state.copy()
 
         options = utils.generate_driver_options(timing_state_copy) # This helper already uses config constants for error states
         logger.debug(f"Updating driver dropdown options: {len(options)} options generated.")
@@ -2133,8 +2266,9 @@ def update_driver_dropdown_options(n_intervals):
     Input('interval-component-slow', 'n_intervals')
 )
 def update_lap_chart_driver_options(n_intervals):
-    with app_state.app_state_lock:
-        timing_state_copy = app_state.timing_state.copy()
+    session_state = app_state.get_or_create_session_state()
+    with session_state.lock:
+        timing_state_copy = session_state.timing_state.copy()
     # utils.generate_driver_options already handles empty/error cases with config constants
     options = utils.generate_driver_options(timing_state_copy) #
     return options
@@ -2147,6 +2281,7 @@ def update_lap_chart_driver_options(n_intervals):
     State('lap-time-progression-graph', 'figure') # Add current figure as State
 )
 def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals, current_figure_state):
+    session_state = app_state.get_or_create_session_state()
     overall_callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START_OVERALL") # Overall start
@@ -2173,15 +2308,15 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals, curren
 
     # --- Data Fetching (already timed well in your logs) ---
     lock_acquisition_start_time = time.monotonic()
-    with app_state.app_state_lock:
+    with session_state.lock:
         lock_acquired_time = time.monotonic()
         logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
         critical_section_start_time = time.monotonic()
         
         # Make deep copies if you plan to modify/filter these snapshots extensively
         # For read-only iteration, shallow copies or direct iteration (carefully) might be okay
-        lap_history_snapshot = {rno: list(app_state.lap_time_history.get(rno, [])) for rno in selected_drivers_rnos}
-        timing_state_snapshot = {rno: app_state.timing_state.get(rno, {}).copy() for rno in selected_drivers_rnos}
+        lap_history_snapshot = {rno: list(session_state.lap_time_history.get(rno, [])) for rno in selected_drivers_rnos}
+        timing_state_snapshot = {rno: session_state.timing_state.get(rno, {}).copy() for rno in selected_drivers_rnos}
         
         logger.debug(f"Lock in '{func_name}' - HELD for data snapshot: {time.monotonic() - critical_section_start_time:.4f}s")
 
@@ -2282,15 +2417,16 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals, curren
     Input('interval-component-medium', 'n_intervals') # Update periodically
 )
 def update_race_control_display(n_intervals):
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
     try:
-        with app_state.app_state_lock:
+        with session_state.lock:
             # The deque stores messages with newest first due to appendleft
             # To display them chronologically (oldest at top), we reverse.
             # Or, if you want newest at top, just join directly.
-            log_messages = list(app_state.race_control_log) # Get a snapshot
+            log_messages = list(session_state.race_control_log) # Get a snapshot
 
         if not log_messages:
             return config.TEXT_RC_WAITING # Use constant
@@ -2328,6 +2464,7 @@ def toggle_debug_data_visibility(debug_mode_enabled):
     prevent_initial_call=True
 )
 def update_dropdown_from_map_click(click_data_json_str, dropdown_options): # Renamed arg
+    session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
@@ -2340,18 +2477,18 @@ def update_dropdown_from_map_click(click_data_json_str, dropdown_options): # Ren
         clicked_driver_number_str = str(click_data.get('carNumber')) # Ensure it's a string
 
         if clicked_driver_number_str is None or clicked_driver_number_str == 'None': # Check for None or 'None' string
-            with app_state.app_state_lock: # If click is invalid, clear selection
-                if app_state.selected_driver_for_map_and_lap_chart is not None:
-                    logger.info("Map click invalid, clearing app_state.selected_driver_for_map_and_lap_chart.")
-                    app_state.selected_driver_for_map_and_lap_chart = None
+            with session_state.lock: # If click is invalid, clear selection
+                if session_state.selected_driver_for_map_and_lap_chart is not None:
+                    logger.info("Map click invalid, clearing session_state.selected_driver_for_map_and_lap_chart.")
+                    session_state.selected_driver_for_map_and_lap_chart = None
             return dash.no_update
 
         logger.info(f"Map click: Attempting to select driver number: {clicked_driver_number_str} for telemetry dropdown.")
 
-        # Update app_state with the clicked driver
-        with app_state.app_state_lock:
-            app_state.selected_driver_for_map_and_lap_chart = clicked_driver_number_str
-            logger.info(f"Updated app_state.selected_driver_for_map_and_lap_chart to: {clicked_driver_number_str}")
+        # Update session_state with the clicked driver
+        with session_state.lock:
+            session_state.selected_driver_for_map_and_lap_chart = clicked_driver_number_str
+            logger.info(f"Updated session_state.selected_driver_for_map_and_lap_chart to: {clicked_driver_number_str}")
 
 
         if dropdown_options and isinstance(dropdown_options, list):
@@ -2362,14 +2499,14 @@ def update_dropdown_from_map_click(click_data_json_str, dropdown_options): # Ren
                 return clicked_driver_number_str
             else:
                 logger.warning(f"Map click: Driver number {clicked_driver_number_str} not found in telemetry dropdown options: {valid_driver_numbers}")
-                # Even if not in telemetry dropdown, keep it selected in app_state for map/lap chart
+                # Even if not in telemetry dropdown, keep it selected in session_state for map/lap chart
                 return dash.no_update # Don't change telemetry dropdown if invalid for it
     except json.JSONDecodeError:
         logger.error(f"update_dropdown_from_map_click: Could not decode JSON from store: {click_data_json_str}")
-        with app_state.app_state_lock: app_state.selected_driver_for_map_and_lap_chart = None # Clear on error
+        with session_state.lock: session_state.selected_driver_for_map_and_lap_chart = None # Clear on error
     except Exception as e:
         logger.error(f"update_dropdown_from_map_click: Error processing click data: {e}")
-        with app_state.app_state_lock: app_state.selected_driver_for_map_and_lap_chart = None # Clear on error
+        with session_state.lock: session_state.selected_driver_for_map_and_lap_chart = None # Clear on error
 
     return dash.no_update
 

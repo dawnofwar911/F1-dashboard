@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 # --- Core Application & Server ---
-DASH_DEBUG_MODE = False
+DASH_DEBUG_MODE = True
 DASH_HOST = "0.0.0.0"
 DASH_PORT = 8050
 
@@ -112,6 +112,48 @@ CHANNEL_MAP = {
     '4': 'Throttle',
     '5': 'Brake',
     '45': 'DRS'
+}
+
+# --- Constants for Auto-Connect (can also be in config.py) ---
+# How often to check schedule when idle
+AUTO_CONNECT_POLL_INTERVAL_SECONDS = 60
+# How often to check status when connected / waiting for disconnect
+AUTO_CONNECT_ACTIVE_POLL_INTERVAL_SECONDS = 15
+AUTO_CONNECT_LEAD_TIME_MINUTES = 5    # Connect X minutes before session start
+# Short delay before first check for a session
+INITIAL_SESSION_AUTO_CONNECT_DELAY_SECONDS = 5
+AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES = 10
+
+
+# --- Content Area Definition ---
+# (CONTENT_STYLE_FULL_WIDTH, CONTENT_STYLE_WITH_SIDEBAR remain unchanged)
+CONTENT_STYLE_FULL_WIDTH = {
+    "marginLeft": "1rem",
+    "padding": "1rem 1.5rem",
+    "minHeight": "100vh", "backgroundColor": "#1c1c1c",
+    "transition": "margin-left .3s"
+}
+CONTENT_STYLE_WITH_SIDEBAR = {
+    "marginLeft": "19rem",
+    "padding": "1rem 1.5rem",
+    "minHeight": "100vh", "backgroundColor": "#1c1c1c",
+    "transition": "margin-left .3s"
+}
+
+# --- Sidebar Definition ---
+# (SIDEBAR_STYLE_VISIBLE, SIDEBAR_STYLE_HIDDEN, sidebar_header, sidebar remain unchanged)
+SIDEBAR_STYLE_VISIBLE = {
+    "position": "fixed", "top": 0, "left": 0, "bottom": 0,
+    "width": "18rem", "padding": "1rem 1rem", "backgroundColor": "#2c3e50",
+    "color": "#ecf0f1", "overflowY": "auto", "zIndex": 1031,
+    "transition": "margin-left .3s, width .3s"
+}
+SIDEBAR_STYLE_HIDDEN = {
+    "position": "fixed", "top": 0, "left": 0, "bottom": 0,
+    "width": "18rem", "padding": "1rem 1rem", "backgroundColor": "#2c3e50",
+    "color": "#ecf0f1", "overflowY": "auto", "zIndex": 1031,
+    "transition": "margin-left .3s, width .3s",
+    "marginLeft": "-18rem"
 }
 
 # --- Timing Table Column Definitions ---
