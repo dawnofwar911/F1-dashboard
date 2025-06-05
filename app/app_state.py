@@ -66,7 +66,7 @@ INITIAL_DRIVER_INFO: Dict = {}
 class SessionState:
     def __init__(self, session_id: str):
         self.session_id: str = session_id
-        self.lock: threading.Lock = threading.Lock()
+        self.lock: threading.RLock = threading.RLock()
 
         self.app_status: Dict[str, Any] = deepcopy(INITIAL_SESSION_APP_STATUS)
         self.stop_event: threading.Event = threading.Event()
@@ -142,6 +142,7 @@ class SessionState:
         self.auto_connect_enabled: bool = False
         # CORRECTED
         self.auto_connect_thread: Optional[threading.Thread] = None
+        self.track_data_fetch_thread: Optional[threading.Thread] = None # ADD THIS LINE
 
         logger.info(
             f"Initialized new SessionState for session_id: {self.session_id}")
@@ -207,6 +208,8 @@ class SessionState:
             self.last_known_wind_direction = None
             self.last_known_rainfall_val = None
             self.selected_driver_for_map_and_lap_chart = None
+            self.auto_connect_thread = None
+            self.track_data_fetch_thread = None # ADD THIS LINE
             logger.info(
                 f"Session {self.session_id}: State variables have been reset to defaults.")
 

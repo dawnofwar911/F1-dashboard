@@ -34,24 +34,22 @@ main_logger = logging.getLogger("F1App.SignalR")  # General SignalR operations
 # --- Connection Functions ---
 
 def build_connection_url(negotiate_url_base_arg: str, hub_name_arg: str):
-    """
-    Performs negotiation and builds the WebSocket connection URL.
-    This function remains largely the same as it's a pre-connection step
-    and doesn't depend on an active session_state.
-    """
-    main_logger.info(
-        f"Negotiating connection: {negotiate_url_base_arg}/negotiate for hub {hub_name_arg}")
+    main_logger.info(f"SignalR: ENTERING build_connection_url. Base: {negotiate_url_base_arg}, Hub: {hub_name_arg}") # NEW LOG
     try:
         connection_data = json.dumps([{"name": hub_name_arg}])
         params = {"clientProtocol": config.SIGNALR_CLIENT_PROTOCOL,
                   "connectionData": connection_data}
         negotiate_url_full = f"{negotiate_url_base_arg}/negotiate?{urllib.parse.urlencode(params)}"
+        main_logger.info(f"SignalR: Negotiate URL: {negotiate_url_full}") # NEW LOG
 
         negotiate_headers = {"User-Agent": config.USER_AGENT_NEGOTIATE}
+        main_logger.info(f"SignalR: Attempting requests.get to {negotiate_url_full} with timeout {config.REQUESTS_TIMEOUT_SECONDS}s") # NEW LOG
+
         response = requests.get(negotiate_url_full, headers=negotiate_headers,
                                 verify=True, timeout=config.REQUESTS_TIMEOUT_SECONDS)
-        main_logger.info(f"Negotiate status: {response.status_code}")
-        response.raise_for_status()
+
+        main_logger.info(f"SignalR: Negotiate GET response status: {response.status_code}") # NEW LOG
+        response.raise_for_status() # This will raise an exception for 4xx/5xx errors
 
         negotiate_cookie_parts = [
             f'{c.name}={c.value}' for c in response.cookies]
@@ -89,17 +87,19 @@ def build_connection_url(negotiate_url_base_arg: str, hub_name_arg: str):
         if negotiate_cookie:
             ws_headers["Cookie"] = negotiate_cookie
 
-        main_logger.info("Negotiation OK. WS URL and Headers prepared.")
+        main_logger.info("SignalR: build_connection_url COMPLETED successfully.") # NEW LOG
         return websocket_url, ws_headers
 
     except requests.exceptions.Timeout:
-        main_logger.error(config.TEXT_SIGNALR_NEGOTIATION_TIMEOUT)
+        main_logger.error(f"SignalR: {config.TEXT_SIGNALR_NEGOTIATION_TIMEOUT} for URL: {negotiate_url_full}", exc_info=True) # Add exc_info
     except requests.exceptions.RequestException as e:
         main_logger.error(
-            config.TEXT_SIGNALR_NEGOTIATION_HTTP_FAIL_PREFIX + str(e), exc_info=False)
+            f"SignalR: {config.TEXT_SIGNALR_NEGOTIATION_HTTP_FAIL_PREFIX} {str(e)} for URL: {negotiate_url_full}", exc_info=True) # Add exc_info
     except Exception as e:
         main_logger.error(
-            config.TEXT_SIGNALR_NEGOTIATION_ERROR_PREFIX + str(e), exc_info=True)
+            f"SignalR: {config.TEXT_SIGNALR_NEGOTIATION_ERROR_PREFIX} {str(e)} for URL: {negotiate_url_full}", exc_info=True) # Add exc_info
+
+    main_logger.error("SignalR: build_connection_url FAILED.") # NEW LOG
     return None, None
 
 

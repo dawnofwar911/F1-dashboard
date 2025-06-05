@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 # --- Core Application & Server ---
-DASH_DEBUG_MODE = True
+DASH_DEBUG_MODE = False
 DASH_HOST = "0.0.0.0"
 DASH_PORT = 8050
 
@@ -200,6 +200,7 @@ TEXT_WEATHER_ERROR = "Error: Weather"
 TEXT_WEATHER_UNAVAILABLE = "Weather data unavailable"
 TEXT_WEATHER_CONDITION_GENERIC = "{condition} conditions" # For placeholder like "Cloudy conditions"
 FASTF1_ONGOING_SESSION_WINDOW_HOURS = 3
+TEXT_SIGNALR_SOCKET_PRE_NEGOTIATE_STATUS = "Negotiating..."
 
 # Track Status
 TEXT_TRACK_STATUS_DEFAULT_LABEL = "CLEAR" # Used in layout.py

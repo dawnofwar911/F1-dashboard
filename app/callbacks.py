@@ -10,6 +10,7 @@ import time
 import inspect
 import copy
 import threading
+import pytz
 from pathlib import Path
 import flask  # For accessing flask.session
 from typing import Dict, List, Optional, Any, Tuple  # For type hints
@@ -26,13 +27,12 @@ from app_instance import app  # Dash app instance
 import app_state  # For get_or_create_session_state and SessionState type hint
 import config
 import utils
-# Import a_s_m_a_t from main for the auto-connect callback
-#from main import auto_connect_monitor_session_actual_target
 
 # These modules now contain session-aware functions
 import signalr_client
 import replay
 import data_processing  # For starting session-specific data processing loop
+import schedule_page
 
 
 logger = logging.getLogger("F1App.Callbacks")
@@ -42,6 +42,218 @@ logger = logging.getLogger("F1App.Callbacks")
 
 # --- Per-User Auto-Connect Toggle Callback ---
 
+# --- Target function for per-session auto-connect threads (MOVED HERE) ---
+def auto_connect_monitor_session_actual_target(session_state: app_state.SessionState):
+    logger_s_auto_connect = logging.getLogger(
+        f"F1App.AutoConnect.Sess_{session_state.session_id[:8]}") # Ensure logging is imported
+    logger_s_auto_connect.info(
+        f"Session auto-connect monitor thread started for session {session_state.session_id}.")
+
+    # Use constants from config module
+    if session_state.stop_event.wait(timeout=config.INITIAL_SESSION_AUTO_CONNECT_DELAY_SECONDS):
+        logger_s_auto_connect.info(
+            "Stop event received during initial delay. Exiting.")
+        with session_state.lock:
+            session_state.auto_connect_thread = None
+        return
+
+    while not session_state.stop_event.is_set():
+        try:
+            with session_state.lock:
+                if not session_state.auto_connect_enabled:
+                    logger_s_auto_connect.info(
+                        "Auto-connect preference disabled. Exiting monitor thread.")
+                    break
+                current_s_app_status = session_state.app_status["state"]
+                s_auto_connected_event_id = session_state.app_status.get(
+                    "auto_connected_session_identifier")
+                s_auto_session_end_detected_utc = session_state.app_status.get(
+                    "auto_connected_session_end_detected_utc")
+                s_current_replay_file = session_state.app_status.get(
+                    "current_replay_file")
+
+            # --- Auto-disconnection logic ---
+            if current_s_app_status == "Live" and s_auto_connected_event_id and not s_current_replay_file:
+                s_current_session_feed_status = "Unknown"
+                current_live_event_details_id = None
+                with session_state.lock:
+                    s_current_session_feed_status = session_state.session_details.get(
+                        'SessionStatus', 'Unknown')
+                    live_year = session_state.session_details.get('Year')
+                    live_event_name = session_state.session_details.get(
+                        'EventName')
+                    live_session_name = session_state.session_details.get(
+                        'SessionName')
+                    if live_year and live_event_name and live_session_name:
+                        current_live_event_details_id = f"{live_year}_{live_event_name}_{live_session_name}"
+
+                if current_live_event_details_id == s_auto_connected_event_id:
+                    ended_statuses = ["Finished",
+                                      "Ends", "Aborted", "Inactive"]
+                    if s_current_session_feed_status in ended_statuses:
+                        if s_auto_session_end_detected_utc is None:
+                            finished_time = datetime.datetime.now(pytz.utc) # Ensure datetime and pytz imported
+                            logger_s_auto_connect.info(
+                                f"Auto-connected F1 session '{s_auto_connected_event_id}' status is '{s_current_session_feed_status}' at {finished_time}. Starting disconnect countdown.")
+                            with session_state.lock:
+                                session_state.app_status["auto_connected_session_end_detected_utc"] = finished_time
+                        elif isinstance(s_auto_session_end_detected_utc, datetime.datetime) and \
+                                datetime.datetime.now(pytz.utc) >= (s_auto_session_end_detected_utc + datetime.timedelta(minutes=config.AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES)): # Use config
+                            logger_s_auto_connect.info(
+                                f"Disconnect timer expired for F1 session '{s_auto_connected_event_id}'. Disconnecting user session.")
+                            signalr_client.stop_connection_session(
+                                session_state)
+                            with session_state.lock:
+                                session_state.app_status["auto_connected_session_identifier"] = None
+                                session_state.app_status["auto_connected_session_end_detected_utc"] = None
+                            logger_s_auto_connect.info(
+                                "Auto-disconnected. Monitor will pause and re-scan.")
+                            session_state.stop_event.clear()
+                            if session_state.stop_event.wait(timeout=config.AUTO_CONNECT_POLL_INTERVAL_SECONDS): # Use config
+                                break
+                            continue
+                    elif s_auto_session_end_detected_utc is not None:
+                        with session_state.lock:
+                            session_state.app_status["auto_connected_session_end_detected_utc"] = None
+
+                if session_state.stop_event.wait(timeout=config.AUTO_CONNECT_ACTIVE_POLL_INTERVAL_SECONDS): # Use config
+                    break
+                continue
+
+            # --- Logic for finding and initiating a new auto-connection ---
+            if current_s_app_status not in ["Idle", "Stopped", "Error", "Playback Complete"]:
+                if session_state.stop_event.wait(timeout=config.AUTO_CONNECT_POLL_INTERVAL_SECONDS): # Use config
+                    break
+                continue
+
+            full_schedule_data = schedule_page.get_current_year_schedule_with_sessions() # Ensure schedule_page imported
+            if session_state.stop_event.is_set() or not full_schedule_data:
+                if not full_schedule_data:
+                    logger_s_auto_connect.info(
+                        "No schedule data for auto-connect scan.")
+                if session_state.stop_event.wait(timeout=config.AUTO_CONNECT_POLL_INTERVAL_SECONDS * 2): # Use config
+                    break
+                continue
+
+            now_utc = datetime.datetime.now(pytz.utc)
+            next_f1_session_to_connect = None
+            min_future_start_time = datetime.datetime.max.replace(
+                tzinfo=pytz.utc)
+            for event in full_schedule_data:
+                if session_state.stop_event.is_set():
+                    break
+                event_official_name = event.get(
+                    'OfficialEventName', event.get('EventName', 'Unknown Event'))
+                event_year_from_schedule = utils.parse_iso_timestamp_safe(event.get('EventDate')).year if event.get(
+                    'EventDate') and utils.parse_iso_timestamp_safe(event.get('EventDate')) else now_utc.year
+                for session_detail in event.get('Sessions', []):
+                    if session_state.stop_event.is_set():
+                        break
+                    session_name = session_detail.get('SessionName')
+                    session_date_utc_str = session_detail.get('SessionDateUTC')
+                    if session_date_utc_str and session_name:
+                        session_dt_utc = utils.parse_iso_timestamp_safe(
+                            session_date_utc_str)
+                        if session_dt_utc and session_dt_utc > now_utc and session_dt_utc < min_future_start_time:
+                            min_future_start_time = session_dt_utc
+                            session_type_auto = utils.determine_session_type_from_name(
+                                session_name)
+                            next_f1_session_to_connect = {
+                                'event_name': event_official_name, 'session_name': session_name,
+                                'start_time_utc': session_dt_utc, 'year': event_year_from_schedule,
+                                'circuit_name': event.get('Location', "N/A"), 'circuit_key': event.get('CircuitKey'),
+                                'session_type': session_type_auto,
+                                'unique_id': f"{event_year_from_schedule}_{event_official_name}_{session_name}"}
+                if session_state.stop_event.is_set():
+                    break
+            if session_state.stop_event.is_set():
+                break
+
+            if next_f1_session_to_connect:
+                f1_session_unique_id = next_f1_session_to_connect['unique_id']
+                time_to_f1_session = next_f1_session_to_connect['start_time_utc'] - now_utc
+
+                with session_state.lock:
+                    is_already_handled_event = (session_state.app_status.get(
+                        "auto_connected_session_identifier") == f1_session_unique_id)
+
+                if time_to_f1_session.total_seconds() <= (config.AUTO_CONNECT_LEAD_TIME_MINUTES * 60) and \
+                   time_to_f1_session.total_seconds() > -300 and not is_already_handled_event: # Use config
+
+                    logger_s_auto_connect.info(
+                        f"Auto-connecting user session {session_state.session_id} to F1 session: {f1_session_unique_id}")
+
+                    with session_state.lock:
+                        session_state.session_details.update({
+                            'Year': next_f1_session_to_connect['year'], 'CircuitKey': next_f1_session_to_connect.get('circuit_key'),
+                            'CircuitName': next_f1_session_to_connect['circuit_name'], 'EventName': next_f1_session_to_connect['event_name'],
+                            'SessionName': next_f1_session_to_connect['session_name'],
+                            'SessionStartTimeUTC': next_f1_session_to_connect['start_time_utc'].isoformat(),
+                            'Type': next_f1_session_to_connect['session_type']})
+                        session_state.app_status.update({
+                            "state": "Initializing", "connection": config.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS,
+                            "auto_connected_session_identifier": f1_session_unique_id,
+                            "auto_connected_session_end_detected_utc": None,
+                            "current_replay_file": None})
+                        session_state.stop_event.clear()
+
+                    websocket_url, ws_headers = signalr_client.build_connection_url(
+                        config.NEGOTIATE_URL_BASE, config.HUB_NAME) # Ensure config is imported
+
+                    if session_state.stop_event.is_set():
+                        logger_s_auto_connect.info(
+                            "Stop event after negotiation. Aborting connection start for this cycle.")
+                    elif websocket_url and ws_headers:
+                        if session_state.record_live_data:
+                            if not replay.init_live_file_session(session_state): # Ensure replay is imported
+                                logger_s_auto_connect.error(
+                                    f"Failed to initialize live recording file for session {session_state.session_id}.")
+                        
+                        sess_id_log = session_state.session_id[:8]
+                        conn_thread = threading.Thread( # Ensure threading is imported
+                            target=signalr_client.run_connection_session,
+                            args=(session_state, websocket_url, ws_headers),
+                            name=f"SigRConn_Sess_{sess_id_log}", daemon=True)
+
+                        dp_thread = threading.Thread(
+                            target=data_processing.data_processing_loop_session, # Ensure data_processing is imported
+                            args=(session_state,),
+                            name=f"DataProc_Sess_{sess_id_log}", daemon=True)
+
+                        with session_state.lock:
+                            session_state.connection_thread = conn_thread
+                            session_state.data_processing_thread = dp_thread
+
+                        conn_thread.start()
+                        dp_thread.start()
+                        logger_s_auto_connect.info(
+                            "Session-specific SignalR connection and Data Processing threads initiated by auto-connect.")
+                        if session_state.stop_event.wait(timeout=config.AUTO_CONNECT_ACTIVE_POLL_INTERVAL_SECONDS): # Use config
+                            break
+                        continue
+                    else:
+                        logger_s_auto_connect.error(
+                            f"Negotiation failed for F1 session {f1_session_unique_id}. Will retry scan.")
+                        with session_state.lock:
+                            session_state.app_status.update({"state": "Error", "connection": "Negotiation Failed (Auto)",
+                                                             "auto_connected_session_identifier": None})
+
+            if session_state.stop_event.wait(timeout=config.AUTO_CONNECT_POLL_INTERVAL_SECONDS): # Use config
+                break
+
+        except Exception as e_monitor:
+            logger_s_auto_connect.error(
+                f"Error in session auto-connect monitor loop: {e_monitor}", exc_info=True)
+            if session_state.stop_event.wait(timeout=config.AUTO_CONNECT_POLL_INTERVAL_SECONDS * 3): # Use config
+                break
+
+        if session_state.stop_event.is_set():
+            break
+
+    logger_s_auto_connect.info(
+        f"Session auto-connect monitor thread stopped for session {session_state.session_id}.")
+    with session_state.lock:
+        session_state.auto_connect_thread = None
 
 @app.callback(
     Output('session-auto-connect-switch', 'value'),
@@ -58,18 +270,21 @@ def toggle_session_auto_connect(switch_is_on: bool) -> bool:
         logger.error(
             f"Callback '{callback_name}': Could not get/create session state.")
         return False  # Default to off if session state fails
+        
+    # Hold a local reference to the thread to join, if it exists
+    thread_to_join = None
+    new_enabled_state = bool(switch_is_on)
 
     with session_state.lock:
         current_auto_connect_enabled = session_state.auto_connect_enabled
-        new_target_state = bool(switch_is_on)
         thread_is_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
 
-        if new_target_state == current_auto_connect_enabled and new_target_state == thread_is_running:
+        if new_enabled_state == current_auto_connect_enabled and new_enabled_state == thread_is_running:
             logger.info(
-                f"Session {session_state.session_id[:8]}: Auto-connect already in desired state ({new_target_state}).")
-            return new_target_state
+                f"Session {session_state.session_id[:8]}: Auto-connect already in desired state ({new_enabled_state}).")
+            return new_enabled_state
 
-        session_state.auto_connect_enabled = new_target_state
+        session_state.auto_connect_enabled = new_enabled_state
         logger.info(
             f"Session {session_state.session_id[:8]}: auto_connect_enabled preference set to {session_state.auto_connect_enabled}")
 
@@ -77,39 +292,53 @@ def toggle_session_auto_connect(switch_is_on: bool) -> bool:
             if not thread_is_running:
                 logger.info(
                     f"Session {session_state.session_id[:8]}: Starting auto-connect monitor thread...")
-                # Use the session's main stop_event for now for auto-connect thread
                 session_state.stop_event.clear()
-
                 thread = threading.Thread(
-                    target=auto_connect_monitor_session_actual_target,
+                    target=auto_connect_monitor_session_actual_target, # Assumes it's in this file
                     args=(session_state,),
                     name=f"AutoConnectMon_Sess_{session_state.session_id[:8]}"
                 )
                 thread.daemon = True
-                session_state.auto_connect_thread = thread
+                session_state.auto_connect_thread = thread # Assign before start
                 thread.start()
-            # else: thread already running
-        else:  # Disable auto-connect
+        else: # Disable auto-connect
             if thread_is_running and session_state.auto_connect_thread:
                 logger.info(
-                    f"Session {session_state.session_id[:8]}: Stopping auto-connect monitor thread...")
-                session_state.stop_event.set()  # Signal this session's auto_connect thread to stop
+                    f"Session {session_state.session_id[:8]}: Signalling auto-connect monitor thread to stop...")
+                session_state.stop_event.set()
+                thread_to_join = session_state.auto_connect_thread # Get a reference to join outside the lock
+    # --- Lock is released here ---
 
-                session_state.auto_connect_thread.join(timeout=7.0)
-                if session_state.auto_connect_thread.is_alive():
-                    logger.warning(
-                        f"Session {session_state.session_id[:8]}: Auto-connect thread did not join cleanly.")
-                session_state.auto_connect_thread = None
+    if thread_to_join: # If we need to stop and join a thread
+        logger.info(f"Session {session_state.session_id[:8]}: Attempting to join auto-connect thread {thread_to_join.name}...")
+        thread_to_join.join(timeout=7.0) # Join happens outside the lock
+        if thread_to_join.is_alive():
+            logger.warning(
+                f"Session {session_state.session_id[:8]}: Auto-connect thread {thread_to_join.name} did not join cleanly after timeout.")
+        else:
+            logger.info(
+                f"Session {session_state.session_id[:8]}: Auto-connect thread {thread_to_join.name} joined successfully.")
+        # The thread itself should set session_state.auto_connect_thread to None in its finally block.
+        # As a fallback, ensure it's cleared if the join succeeded but somehow the thread didn't clear it.
+        with session_state.lock:
+             if session_state.auto_connect_thread is thread_to_join and not thread_to_join.is_alive():
+                  session_state.auto_connect_thread = None
 
-            # Determine if the main session stop_event should be cleared
-            s_conn_thread_alive = session_state.connection_thread and session_state.connection_thread.is_alive()
-            s_replay_thread_alive = session_state.replay_thread and session_state.replay_thread.is_alive()
-            if not s_conn_thread_alive and not s_replay_thread_alive:  # If no other major tasks using it
-                logger.debug(
-                    f"Session {session_state.session_id[:8]}: Clearing main stop_event for session.")
-                session_state.stop_event.clear()  # Okay to clear if only auto-connect was using it
 
-    return session_state.auto_connect_enabled
+    # Clear stop event only if no other major threads are running for this session
+    # This part can also be guarded by the lock if reading other thread states
+    with session_state.lock:
+        s_conn_thread_alive = session_state.connection_thread and session_state.connection_thread.is_alive()
+        s_replay_thread_alive = session_state.replay_thread and session_state.replay_thread.is_alive()
+        # Also check the auto_connect_thread again in case it was restarted quickly or join failed
+        s_auto_connect_thread_still_alive = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
+
+        if not s_conn_thread_alive and not s_replay_thread_alive and not s_auto_connect_thread_still_alive:
+            logger.debug(
+                f"Session {session_state.session_id[:8]}: Clearing main stop_event for session as no major threads active.")
+            session_state.stop_event.clear()
+
+        return session_state.auto_connect_enabled # Return the definitive state
 
 @app.callback(  # If app is not defined here, this will error. Move to callbacks.py if needed.
     [Output("sidebar", "style"),
@@ -1360,63 +1589,95 @@ def handle_control_clicks(connect_clicks: Optional[int], replay_clicks: Optional
         logger.debug(f"Session {sess_id_log}: record_live_data preference set to {session_state.record_live_data}")
 
     if button_id == 'connect-button':
+        logger.info(f"LiveConnSess {sess_id_log}: 'connect-button' pressed by user.")
+        
+        # --- Phase 1: Stop any existing replay for this session ---
+        # Get the replay thread handle briefly under lock
+        _replay_thread_to_potentially_stop = None
         with session_state.lock:
+            _replay_thread_to_potentially_stop = session_state.replay_thread
+    
+        if _replay_thread_to_potentially_stop and _replay_thread_to_potentially_stop.is_alive():
+            logger.info(f"LiveConnSess {sess_id_log}: Active replay thread found ({_replay_thread_to_potentially_stop.name}). Calling stop_replay_session to clear the way for live connection.")
+            replay.stop_replay_session(session_state) # This function should handle its own thread joins and timeouts.
+            logger.info(f"LiveConnSess {sess_id_log}: call to stop_replay_session completed.")
+            # A brief pause to allow OS to fully reclaim thread resources if needed, outside any lock.
+            time.sleep(0.1) 
+        else:
+            logger.info(f"LiveConnSess {sess_id_log}: No active replay thread found to stop; proceeding directly to live connection setup.")
+    
+        # --- Phase 2: Prepare and set state for the new live connection ---
+        with session_state.lock:
+            # Re-check current state, as stop_replay_session might have changed it or taken time
             current_s_state = session_state.app_status["state"]
             if current_s_state not in ["Idle", "Stopped", "Error", "Playback Complete"]:
-                logger.warning(f"Session {sess_id_log}: Connect ignored. Session state: {current_s_state}")
-                return dummy_output, track_map_output, car_pos_store_output
+                logger.warning(f"LiveConnSess {sess_id_log}: Session state is '{current_s_state}', not suitable for new live connection. Aborting.")
+                return dummy_output, track_map_output, car_pos_store_output # Or appropriate no_update
             
-            # Stop any existing replay for this session first
-            if session_state.replay_thread and session_state.replay_thread.is_alive():
-                logger.info(f"Session {sess_id_log}: Stopping active replay to connect live.")
-                replay.stop_replay_session(session_state) # SESSION-AWARE
-                time.sleep(0.3) # Allow time for thread to join
+            logger.info(f"LiveConnSess {sess_id_log}: Proceeding with connect-live state setup. Current state: {current_s_state}")
+            session_state.stop_event.clear() # Clear stop event for the new tasks
+            session_state.reset_state_variables() # Reset data stores, queues, and sets thread handles to None
             
-            session_state.stop_event.clear()
-            session_state.reset_state_variables() # Reset data stores for a fresh session
-            session_state.record_live_data = session_record_pref # Re-apply preference after reset
-
+            # Set user's preference for recording for this new live session
+            session_state.record_live_data = session_record_pref 
+    
             session_state.app_status.update({
                 "state": "Initializing", 
-                "connection": config.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS,
-                "current_replay_file": None # Ensure no replay file is listed
+                "connection": config.TEXT_SIGNALR_SOCKET_PRE_NEGOTIATE_STATUS, # Status indicating negotiation will start
+                "current_replay_file": None, # Ensure no replay file is listed
+                "auto_connected_session_identifier": None, # Clear auto-connect markers
+                "auto_connected_session_end_detected_utc": None
             })
-            logger.info(f"Session {sess_id_log}: State reset and set to Initializing for live connection.")
-            # Reset track map related states (will be handled by initialize_track_map on SessionKey change)
+            logger.info(f"LiveConnSess {sess_id_log}: Session state reset and app_status set to Initializing/Negotiating. Record: {session_state.record_live_data}")
+            
+            # Reset track map specific states (important if switching from a replay)
             session_state.track_coordinates_cache = app_state.INITIAL_SESSION_TRACK_COORDINATES_CACHE.copy()
-            session_state.session_details['SessionKey'] = None # Force map update via key change
+            session_state.session_details['SessionKey'] = None 
             session_state.selected_driver_for_map_and_lap_chart = None
-
-
-        logger.info(f"Session {sess_id_log}: Initiating live connection. Recording: {session_state.record_live_data}")
+            logger.debug(f"LiveConnSess {sess_id_log}: Map-related states in session_state reset.")
+        # --- Lock released after state setup ---
+    
+        logger.info(f"LiveConnSess {sess_id_log}: Attempting to build connection URL (network operation outside lock)...")
         websocket_url, ws_headers = signalr_client.build_connection_url(config.NEGOTIATE_URL_BASE, config.HUB_NAME)
         
         if websocket_url and ws_headers:
-            if session_state.record_live_data:
-                if not replay.init_live_file_session(session_state): # SESSION-AWARE
-                    logger.error(f"Session {sess_id_log}: Failed to initialize live recording file.")
+            logger.info(f"LiveConnSess {sess_id_log}: Connection URL built. Record preference: {session_state.record_live_data}. Starting threads.")
             
+            # Check recording preference again, as it might be based on checkbox state not yet reflected if reset cleared it without re-reading
+            # The `session_record_pref` from the callback State should be reliable here.
+            if session_record_pref: # Use the state of the checkbox when the button was clicked
+                logger.info(f"LiveConnSess {sess_id_log}: Initializing live recording file based on checkbox state ({session_record_pref}).")
+                if not replay.init_live_file_session(session_state): # init_live_file_session uses session_state.record_live_data
+                    logger.error(f"LiveConnSess {sess_id_log}: Failed to initialize live recording file.")
+                else:
+                    logger.info(f"LiveConnSess {sess_id_log}: Live recording file initialized successfully.")
+            else:
+                logger.info(f"LiveConnSess {sess_id_log}: Live recording not requested ({session_record_pref}).")
+    
+            logger.info(f"LiveConnSess {sess_id_log}: Creating SignalR connection and Data Processing threads for live session.")
             conn_thread = threading.Thread(
-                target=signalr_client.run_connection_session, # SESSION-AWARE
+                target=signalr_client.run_connection_session, 
                 args=(session_state, websocket_url, ws_headers), 
                 name=f"SigRConn_Sess_{sess_id_log}", daemon=True
             )
             dp_thread = threading.Thread(
-                target=data_processing.data_processing_loop_session, # SESSION-AWARE
+                target=data_processing.data_processing_loop_session, 
                 args=(session_state,),
-                name=f"DataProc_Sess_{sess_id_log}", daemon=True
+                name=f"DataProc_Live_{sess_id_log}", daemon=True 
             )
-            with session_state.lock:
+            with session_state.lock: # Brief lock to store thread handles
                 session_state.connection_thread = conn_thread
                 session_state.data_processing_thread = dp_thread
+            
             conn_thread.start()
+            logger.info(f"LiveConnSess {sess_id_log}: SignalR connection thread STARTED: {conn_thread.name}")
             dp_thread.start()
-            logger.info(f"Session {sess_id_log}: SignalR connection and Data Processing threads initiated.")
+            logger.info(f"LiveConnSess {sess_id_log}: Data Processing thread for live STARTED: {dp_thread.name}")
         else: 
-            with session_state.lock:
-                session_state.app_status.update({"state": "Error", "connection": "Negotiation Failed"})
+            logger.error(f"LiveConnSess {sess_id_log}: Negotiation failed. WebSocket URL or headers are None.")
+            with session_state.lock: # Lock to update error status
+                session_state.app_status.update({"state": "Error", "connection": "Negotiation Failed (handle_control_clicks)"})
         
-        # Signal for map reset (clientside can use timestamp to force update)
         track_map_output = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"map_connect_{time.time()}", config.TEXT_TRACK_MAP_LOADING, config.TRACK_MAP_MARGINS)
         car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
 
@@ -1425,80 +1686,102 @@ def handle_control_clicks(connect_clicks: Optional[int], replay_clicks: Optional
             logger.warning(f"Session {sess_id_log}: Start Replay: {config.TEXT_REPLAY_SELECT_FILE}")
             return dummy_output, track_map_output, car_pos_store_output
 
+        logger.info(f"ReplaySess {sess_id_log}: In 'replay-button' logic. Selected file: {selected_replay_file}.")
+
+        # --- Stop existing activities for THIS session WITHOUT holding the main session lock during joins ---
+        # It's better if stop_connection_session and stop_replay_session manage their own locking carefully
+        # or if they signal threads and the actual join happens outside critical lock sections.
+        
+        # Get current threads to check if they are alive, without lock initially if possible,
+        # or briefly acquire lock just to get handles.
+        _conn_thread = None
+        _repl_thread = None
         with session_state.lock:
-            # Stop any existing live connection or other replay for THIS session
-            if session_state.connection_thread and session_state.connection_thread.is_alive():
-                logger.info(f"Session {sess_id_log}: Stopping active live connection to start replay.")
-                signalr_client.stop_connection_session(session_state) # SESSION-AWARE
-                time.sleep(0.3) # Allow time for thread to join
-            if session_state.replay_thread and session_state.replay_thread.is_alive(): # If another replay was running
-                 logger.info(f"Session {sess_id_log}: Stopping previous replay to start new one.")
-                 replay.stop_replay_session(session_state) # SESSION-AWARE
-                 time.sleep(0.3)
-            
-            # Set replay speed for this session before starting replay
-            try: speed_val = float(replay_speed_value if replay_speed_value is not None else 1.0)
-            except: speed_val = 1.0
-            session_state.replay_speed = max(0.1, speed_val)
-            
-            # Clear relevant states before starting replay (start_replay_session will also do resets)
-            session_state.stop_event.clear()
-            session_state.reset_state_variables() # Full reset for new replay
-            session_state.record_live_data = False # Ensure recording is off for replays
-            
-            session_state.app_status.update({ # Set initial status before thread starts
-                "state": "Initializing",
-                "connection": f"Replay Prep: {selected_replay_file}",
-                "current_replay_file": selected_replay_file
-            })
-            # Reset track map related states
-            session_state.track_coordinates_cache = app_state.INITIAL_SESSION_TRACK_COORDINATES_CACHE.copy()
-            session_state.session_details['SessionKey'] = None 
-            session_state.selected_driver_for_map_and_lap_chart = None
-        
+            _conn_thread = session_state.connection_thread
+            _repl_thread = session_state.replay_thread
+
+        if _conn_thread and _conn_thread.is_alive():
+            logger.info(f"ReplaySess {sess_id_log}: Stopping active live connection (from handle_control_clicks) to start replay.")
+            signalr_client.stop_connection_session(session_state) # This function should handle its own join and lock release.
+            # No sleep here while holding the main callback's lock.
+            # Wait for it to actually stop if necessary, or ensure stop_connection_session is fully synchronous.
+            # For simplicity, assume stop_connection_session blocks until done or times out.
+
+        if _repl_thread and _repl_thread.is_alive():
+             logger.info(f"ReplaySess {sess_id_log}: Stopping previous replay (from handle_control_clicks) to start new one.")
+             replay.stop_replay_session(session_state) # This function should handle its own join.
+             # No sleep here.
+
+        # Brief sleep outside any specific session lock, to allow threads to react if needed.
+        # This is a bit of a pragmatic measure; ideally, thread stopping is fully synchronous.
+        time.sleep(0.1) 
+
+        # Set replay speed (can be done under lock before calling start_replay_session, or pass as arg)
+        current_replay_speed_val = 1.0 # Default
+        with session_state.lock:
+            try:
+                speed_val_from_slider = float(replay_speed_value if replay_speed_value is not None else 1.0)
+                current_replay_speed_val = max(0.1, speed_val_from_slider)
+                session_state.replay_speed = current_replay_speed_val # Update session state here
+            except:
+                logger.warning(f"ReplaySess {sess_id_log}: Could not parse replay_speed_value '{replay_speed_value}', defaulting to 1.0x")
+                session_state.replay_speed = 1.0
+                current_replay_speed_val = 1.0
+
         full_replay_path = Path(config.REPLAY_DIR) / selected_replay_file
+        logger.info(f"ReplaySess {sess_id_log}: Preparing to call replay.start_replay_session with path: {full_replay_path}, speed: {current_replay_speed_val}")
         
-        # replay.start_replay_session handles starting its own thread and data processing thread
-        if replay.start_replay_session(session_state, full_replay_path, session_state.replay_speed): # SESSION-AWARE
-            logger.info(f"Session {sess_id_log}: Replay initiation process for {full_replay_path.name} started.")
+        # replay.start_replay_session will now handle reset_state_variables, app_status updates, and starting its threads
+        if replay.start_replay_session(session_state, full_replay_path, current_replay_speed_val):
+            logger.info(f"ReplaySess {sess_id_log}: Replay initiation for {full_replay_path.name} reported success by start_replay_session.")
         else:
-            logger.error(f"Session {sess_id_log}: Failed to start replay for {full_replay_path.name}.")
-            # start_replay_session should update session_state.app_status to Error
+            logger.error(f"ReplaySess {sess_id_log}: Replay initiation for {full_replay_path.name} reported failure by start_replay_session.")
+            # Ensure UI reflects error if start_replay_session fails
+            with session_state.lock:
+                if session_state.app_status["state"] != "Error": # If start_replay_session didn't set it
+                    session_state.app_status.update({"state": "Error", "connection": "Replay Start Failed"})
         
         track_map_output = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"map_replay_{time.time()}", config.TEXT_TRACK_MAP_LOADING, config.TRACK_MAP_MARGINS)
         car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
 
+
     elif button_id == 'stop-reset-button':
         logger.info(f"Session {sess_id_log}: Stop & Reset Session button clicked.")
         
+        # Stop live connection (if any)
+        # signalr_client.stop_connection_session should handle its DP thread.
         logger.info(f"Session {sess_id_log}: Stopping SignalR connection (if any)...")
-        signalr_client.stop_connection_session(session_state) # SESSION-AWARE
-
+        signalr_client.stop_connection_session(session_state) 
+    
+        # Stop replay (if any)
+        # replay.stop_replay_session should handle its DP thread.
         logger.info(f"Session {sess_id_log}: Stopping replay (if any)...")
-        replay.stop_replay_session(session_state) # SESSION-AWARE
+        replay.stop_replay_session(session_state) 
         
         # Stop auto-connect thread if running for this session
+        _auto_connect_thread_to_join = None
         with session_state.lock:
             if session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive():
-                logger.info(f"Session {sess_id_log}: Stopping auto-connect thread...")
-                session_state.stop_event.set() # stop_event is shared for now
-                session_state.auto_connect_thread.join(timeout=3.0)
-                if session_state.auto_connect_thread.is_alive(): logger.warning(f"Session {sess_id_log}: Auto-connect thread did not join.")
-                session_state.auto_connect_thread = None
-                session_state.auto_connect_enabled = False # Turn off preference as well on manual stop/reset
-
-            # Ensure data processing thread for this session is stopped
-            # It should stop when stop_event is set by stop_connection or stop_replay
-            if session_state.data_processing_thread and session_state.data_processing_thread.is_alive():
-                logger.info(f"Session {sess_id_log}: Ensuring data processing thread is stopped...")
-                # session_state.stop_event should already be set
-                session_state.data_processing_thread.join(timeout=3.0)
-                if session_state.data_processing_thread.is_alive():
-                    logger.warning(f"Session {sess_id_log}: Data processing thread did not join cleanly on stop/reset.")
-                session_state.data_processing_thread = None
-
-        logger.info(f"Session {sess_id_log}: Resetting session state...")
-        session_state.reset_state_variables() # Resets this session's state
+                logger.info(f"Session {sess_id_log}: Signalling auto-connect thread to stop...")
+                session_state.stop_event.set() 
+                _auto_connect_thread_to_join = session_state.auto_connect_thread
+            session_state.auto_connect_enabled = False 
+        
+        if _auto_connect_thread_to_join:
+            logger.info(f"Session {sess_id_log}: Joining auto-connect thread {_auto_connect_thread_to_join.name}...")
+            _auto_connect_thread_to_join.join(timeout=3.0) 
+            with session_state.lock:
+                if _auto_connect_thread_to_join.is_alive():
+                    logger.warning(f"Session {sess_id_log}: Auto-connect thread {_auto_connect_thread_to_join.name} did not join cleanly.")
+                if session_state.auto_connect_thread is _auto_connect_thread_to_join:
+                    session_state.auto_connect_thread = None
+        
+        # After specific stop functions have run, the DP thread handles should ideally be None.
+        # A brief pause to allow threads to fully terminate if their join returned slightly before full cleanup.
+        time.sleep(0.2) # Small delay
+    
+        logger.info(f"Session {sess_id_log}: Resetting session state variables...")
+        session_state.reset_state_variables() # This will clear all thread handles to None again.
         
         with session_state.lock: # Ensure status is correctly set after reset
              session_state.app_status.update({
@@ -1508,8 +1791,8 @@ def handle_control_clicks(connect_clicks: Optional[int], replay_clicks: Optional
                  "auto_connected_session_identifier": None,
                  "auto_connected_session_end_detected_utc": None
             })
-        session_state.stop_event.clear() # Clear for future operations in this session
-
+        session_state.stop_event.clear()
+    
         map_reset_fig = utils.create_empty_figure_with_message(
             config.TRACK_MAP_WRAPPER_HEIGHT, f"reset_map_sess_{sess_id_log}_{time.time()}",
             config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS
@@ -1518,9 +1801,9 @@ def handle_control_clicks(connect_clicks: Optional[int], replay_clicks: Optional
         track_map_output = map_reset_fig
         car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
         logger.info(f"Session {sess_id_log}: Stop & Reset processing finished.")
-
+    
     return dummy_output, track_map_output, car_pos_store_output
-
+    
 @app.callback(
     Output('record-data-checkbox', 'id', allow_duplicate=True), # Keep id as string
     Input('record-data-checkbox', 'value'),

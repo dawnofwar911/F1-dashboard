@@ -30,7 +30,7 @@ sidebar = html.Div([
     html.Div([
         html.Small("F1 Dashboard v0.2.1", className="text-muted") 
     ], className="text-center mt-auto p-2", style={'position':'absolute', 'bottom':'0', 'left':'0', 'right':'0'})
-], style=config.SIDEBAR_STYLE_VISIBLE, id="sidebar")
+], style=config.SIDEBAR_STYLE_HIDDEN, id="sidebar")
 
 # --- Sidebar Toggle Button ---
 # (sidebar_toggle_button remains unchanged)
@@ -44,7 +44,7 @@ sidebar_toggle_button = dbc.Button(
     outline=True
 )
 
-content_area = html.Div(id="page-content", style=config.CONTENT_STYLE_WITH_SIDEBAR)
+content_area = html.Div(id="page-content", style=config.CONTENT_STYLE_FULL_WIDTH)
 
 
 # --- Main App Layout Definition ---
