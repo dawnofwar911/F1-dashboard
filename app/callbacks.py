@@ -3,6 +3,7 @@
 Contains all the Dash callback functions for the application.
 Handles UI updates, user actions, and plot generation.
 """
+import datetime
 from datetime import timezone, timedelta, datetime
 import logging
 import json
@@ -17,7 +18,7 @@ from typing import Dict, List, Optional, Any, Tuple  # For type hints
 
 import dash
 from dash.dependencies import Input, Output, State, ClientsideFunction
-from dash import dcc, html, dash_table, no_update
+from dash import dcc, html, dash_table, no_update, Patch
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -254,91 +255,149 @@ def auto_connect_monitor_session_actual_target(session_state: app_state.SessionS
         f"Session auto-connect monitor thread stopped for session {session_state.session_id}.")
     with session_state.lock:
         session_state.auto_connect_thread = None
-
+        
 @app.callback(
     Output('session-auto-connect-switch', 'value'),
-    Input('session-auto-connect-switch', 'value'),
-    prevent_initial_call=True
+    # No Output to 'session-preferences-store' here, as this callback only READS from it to set the switch
+    Input('session-preferences-store', 'data')
+    # prevent_initial_call=False (this is the default and is correct)
 )
-def toggle_session_auto_connect(switch_is_on: bool) -> bool:
-    callback_name = "toggle_session_auto_connect"
-    logger.info(
-        f"Callback '{callback_name}': User toggled auto-connect switch. Desired state: {'On' if switch_is_on else 'Off'}")
+def update_auto_connect_switch_from_store(store_data: Optional[dict]):
+    ctx_triggered_id = dash.callback_context.triggered_id
+    logger.debug(f"Callback 'update_auto_connect_switch_from_store' triggered. Store data: {store_data}. Trigger ID: {ctx_triggered_id}")
+
+    auto_connect_pref: bool
+    if store_data is None:
+        logger.info("Auto-connect switch: 'session-preferences-store' is None. Defaulting switch to OFF.")
+        auto_connect_pref = False
+    else:
+        auto_connect_pref = store_data.get('auto_connect_f1mv', False)
+
+    logger.info(f"Auto-connect switch: Setting from store. Preference 'auto_connect_f1mv' is {auto_connect_pref}. Switch value will be set to: {auto_connect_pref}")
 
     session_state = app_state.get_or_create_session_state()
-    if not session_state:
-        logger.error(
-            f"Callback '{callback_name}': Could not get/create session state.")
-        return False  # Default to off if session state fails
+    thread_to_join_on_load_stop: Optional[threading.Thread] = None # Initialize to None
+
+    if session_state:
+        with session_state.lock: # RLock
+            if session_state.auto_connect_enabled != auto_connect_pref:
+                logger.info(f"Sess {session_state.session_id[:8]}: Syncing in-memory auto_connect_enabled ({session_state.auto_connect_enabled}) to stored pref ({auto_connect_pref}) on load.")
+                session_state.auto_connect_enabled = auto_connect_pref
+                
+                thread_is_currently_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
+
+                if auto_connect_pref:
+                    if not thread_is_currently_running:
+                        logger.info(f"Sess {session_state.session_id[:8]}: Stored preference is ON. Starting auto-connect monitor thread from store load.")
+                        session_state.stop_event.clear() 
+                        thread = threading.Thread(
+                            target=auto_connect_monitor_session_actual_target,
+                            args=(session_state,),
+                            name=f"AutoConnectMon_Load_{session_state.session_id[:8]}",
+                            daemon=True
+                        )
+                        session_state.auto_connect_thread = thread
+                        thread.start()
+                else: 
+                     if thread_is_currently_running and session_state.auto_connect_thread:
+                        logger.info(f"Sess {session_state.session_id[:8]}: Stored preference is OFF. Signalling auto-connect monitor thread to stop from store load.")
+                        session_state.stop_event.set()
+                        thread_to_join_on_load_stop = session_state.auto_connect_thread # Assigned here
+            else:
+                logger.debug(f"Sess {session_state.session_id[:8]}: In-memory auto_connect_enabled already matches stored pref ({auto_connect_pref}).")
         
-    # Hold a local reference to the thread to join, if it exists
+        if thread_to_join_on_load_stop: # Now this check is safe
+            logger.info(f"Sess {session_state.session_id[:8]}: (From Store Load) Attempting to join auto-connect thread {thread_to_join_on_load_stop.name}...")
+            thread_to_join_on_load_stop.join(timeout=3.0)
+            with session_state.lock:
+                if thread_to_join_on_load_stop.is_alive():
+                    logger.warning(f"Sess {session_state.session_id[:8]}: (From Store Load) Auto-connect thread {thread_to_join_on_load_stop.name} did not join cleanly.")
+                if session_state.auto_connect_thread is thread_to_join_on_load_stop:
+                    session_state.auto_connect_thread = None
+    
+    return auto_connect_pref
+
+@app.callback(
+    [Output('session-auto-connect-switch', 'value', allow_duplicate=True),
+     Output('session-preferences-store', 'data', allow_duplicate=True)], # ADDED THIS OUTPUT
+    Input('session-auto-connect-switch', 'value'),
+    State('session-preferences-store', 'data'), # Keep this State to patch existing prefs if any
+    prevent_initial_call=True
+)
+def toggle_session_auto_connect(switch_is_on: Optional[bool], current_prefs_data: Optional[dict]) -> tuple[bool, Patch]: # Return type changed
+    # Logging and session_state retrieval
+    callback_name = "toggle_session_auto_connect"
+    session_state = app_state.get_or_create_session_state()
+    if not session_state:
+        logger.error(f"Callback '{callback_name}': Could not get/create session state.")
+        return False, dash.no_update # Default switch to off, don't update store
+
+    sess_id_log = session_state.session_id[:8]
+    
+    # Determine the new state from the switch input
+    new_enabled_state = bool(switch_is_on) if switch_is_on is not None else False
+    logger.info(
+        f"Callback '{callback_name}' for Sess {sess_id_log}. User toggled. Desired state: {new_enabled_state}. Current store: {current_prefs_data}")
+
+    # Update in-memory session_state for current browser session behavior
+    # and manage the auto_connect_monitor_session_actual_target thread
     thread_to_join = None
-    new_enabled_state = bool(switch_is_on)
+    with session_state.lock: # RLock
+        # Only proceed if the new state is different from current state or if thread status is inconsistent
+        # This prevents re-starting/re-stopping if callback is somehow triggered without actual change.
+        current_in_memory_auto_connect_enabled = session_state.auto_connect_enabled
+        thread_is_actually_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
 
-    with session_state.lock:
-        current_auto_connect_enabled = session_state.auto_connect_enabled
-        thread_is_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
-
-        if new_enabled_state == current_auto_connect_enabled and new_enabled_state == thread_is_running:
+        if new_enabled_state == current_in_memory_auto_connect_enabled and new_enabled_state == thread_is_actually_running:
             logger.info(
-                f"Session {session_state.session_id[:8]}: Auto-connect already in desired state ({new_enabled_state}).")
-            return new_enabled_state
-
-        session_state.auto_connect_enabled = new_enabled_state
-        logger.info(
-            f"Session {session_state.session_id[:8]}: auto_connect_enabled preference set to {session_state.auto_connect_enabled}")
-
-        if session_state.auto_connect_enabled:
-            if not thread_is_running:
-                logger.info(
-                    f"Session {session_state.session_id[:8]}: Starting auto-connect monitor thread...")
-                session_state.stop_event.clear()
-                thread = threading.Thread(
-                    target=auto_connect_monitor_session_actual_target, # Assumes it's in this file
-                    args=(session_state,),
-                    name=f"AutoConnectMon_Sess_{session_state.session_id[:8]}"
-                )
-                thread.daemon = True
-                session_state.auto_connect_thread = thread # Assign before start
-                thread.start()
-        else: # Disable auto-connect
-            if thread_is_running and session_state.auto_connect_thread:
-                logger.info(
-                    f"Session {session_state.session_id[:8]}: Signalling auto-connect monitor thread to stop...")
-                session_state.stop_event.set()
-                thread_to_join = session_state.auto_connect_thread # Get a reference to join outside the lock
-    # --- Lock is released here ---
-
-    if thread_to_join: # If we need to stop and join a thread
-        logger.info(f"Session {session_state.session_id[:8]}: Attempting to join auto-connect thread {thread_to_join.name}...")
-        thread_to_join.join(timeout=7.0) # Join happens outside the lock
-        if thread_to_join.is_alive():
-            logger.warning(
-                f"Session {session_state.session_id[:8]}: Auto-connect thread {thread_to_join.name} did not join cleanly after timeout.")
+                f"Sess {sess_id_log}: Auto-connect already in desired state ({new_enabled_state}) and thread status consistent. No action.")
         else:
+            session_state.auto_connect_enabled = new_enabled_state
             logger.info(
-                f"Session {session_state.session_id[:8]}: Auto-connect thread {thread_to_join.name} joined successfully.")
-        # The thread itself should set session_state.auto_connect_thread to None in its finally block.
-        # As a fallback, ensure it's cleared if the join succeeded but somehow the thread didn't clear it.
-        with session_state.lock:
-             if session_state.auto_connect_thread is thread_to_join and not thread_to_join.is_alive():
-                  session_state.auto_connect_thread = None
+                f"Sess {sess_id_log}: In-memory auto_connect_enabled set to {new_enabled_state}")
 
+            if new_enabled_state: # If switch is toggled ON
+                if not thread_is_actually_running:
+                    logger.info(f"Sess {sess_id_log}: Starting auto-connect monitor thread...")
+                    # Ensure stop_event is clear if the monitor thread uses it
+                    session_state.stop_event.clear() 
+                    thread = threading.Thread(
+                        target=auto_connect_monitor_session_actual_target, 
+                        args=(session_state,),
+                        name=f"AutoConnectMon_Sess_{sess_id_log}",
+                        daemon=True
+                    )
+                    session_state.auto_connect_thread = thread
+                    thread.start()
+                else:
+                    logger.info(f"Sess {sess_id_log}: Auto-connect enabled, monitor thread already running.")
+            else: # If switch is toggled OFF
+                if thread_is_actually_running and session_state.auto_connect_thread:
+                    logger.info(f"Sess {sess_id_log}: Signalling auto-connect monitor thread to stop...")
+                    session_state.stop_event.set() # Signal the thread to stop
+                    thread_to_join = session_state.auto_connect_thread
+                else:
+                    logger.info(f"Sess {sess_id_log}: Auto-connect disabled, no active monitor thread to stop or already stopped.")
+    
+    # Join thread outside the lock if necessary
+    if thread_to_join:
+        logger.info(f"Sess {sess_id_log}: Attempting to join auto-connect thread {thread_to_join.name}...")
+        thread_to_join.join(timeout=7.0) 
+        with session_state.lock: # Re-acquire lock to safely clear handle
+            if thread_to_join.is_alive():
+                logger.warning(f"Sess {sess_id_log}: Auto-connect thread {thread_to_join.name} did not join cleanly.")
+            if session_state.auto_connect_thread is thread_to_join:
+                session_state.auto_connect_thread = None
+                logger.info(f"Sess {sess_id_log}: Cleared auto_connect_thread handle from session_state.")
 
-    # Clear stop event only if no other major threads are running for this session
-    # This part can also be guarded by the lock if reading other thread states
-    with session_state.lock:
-        s_conn_thread_alive = session_state.connection_thread and session_state.connection_thread.is_alive()
-        s_replay_thread_alive = session_state.replay_thread and session_state.replay_thread.is_alive()
-        # Also check the auto_connect_thread again in case it was restarted quickly or join failed
-        s_auto_connect_thread_still_alive = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
-
-        if not s_conn_thread_alive and not s_replay_thread_alive and not s_auto_connect_thread_still_alive:
-            logger.debug(
-                f"Session {session_state.session_id[:8]}: Clearing main stop_event for session as no major threads active.")
-            session_state.stop_event.clear()
-
-        return session_state.auto_connect_enabled # Return the definitive state
+    # Persist the preference to dcc.Store
+    patched_session_prefs = Patch()
+    patched_session_prefs['auto_connect_f1mv'] = new_enabled_state # Use a consistent key
+    logger.info(f"Sess {sess_id_log}: Updating 'session-preferences-store' with auto_connect_f1mv: {new_enabled_state}")
+    
+    # The first element returned updates 'session-auto-connect-switch.value'
+    # The second element updates 'session-preferences-store.data'
+    return new_enabled_state, patched_session_prefs
 
 @app.callback(  # If app is not defined here, this will error. Move to callbacks.py if needed.
     [Output("sidebar", "style"),
