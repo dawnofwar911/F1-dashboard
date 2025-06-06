@@ -11,6 +11,7 @@ DASH_DEBUG_MODE = False
 DASH_HOST = "0.0.0.0"
 DASH_PORT = 8050
 
+IS_PRODUCTION = os.environ.get('DASH_ENV') == 'production'
 
 # --- File Paths ---
 _SCRIPT_DIR = Path(__file__).parent.resolve()

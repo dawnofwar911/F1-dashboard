@@ -415,7 +415,7 @@ def _replay_thread_target_session(session_state: 'app_state.SessionState', filen
                             actual_sleep_duration = max(0, target_delay_adjusted_for_speed - line_proc_duration)
 
                             if actual_sleep_duration > 0.001:
-                                logger.info(f"ReplaySess {sess_id_log}: L{line_num} - Pacing sleep: {actual_sleep_duration:.3f}s. (FileDelta: {calculated_time_to_wait_for_original_timing:.3f}s, Speed: {current_s_replay_speed:.1f}x)")
+                                logger.debug(f"ReplaySess {sess_id_log}: L{line_num} - Pacing sleep: {actual_sleep_duration:.3f}s. (FileDelta: {calculated_time_to_wait_for_original_timing:.3f}s, Speed: {current_s_replay_speed:.1f}x)")
                                 # ... (Chunked sleep logic from Response #11) ...
                                 max_sleep_chunk = 1.0; remaining_sleep = actual_sleep_duration
                                 while remaining_sleep > 0.001:

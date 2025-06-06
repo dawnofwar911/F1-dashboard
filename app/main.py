@@ -46,7 +46,7 @@ def setup_logging():
     actual_root_logger.addHandler(root_console_handler)
 
     f1_app_logger = logging.getLogger("F1App")
-    f1_app_logger.setLevel(logging.DEBUG)
+    f1_app_logger.setLevel(logging.INFO)
     f1_app_logger.propagate = True
 
     # Logger for per-session auto-connect (will be dynamically named)
