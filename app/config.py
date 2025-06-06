@@ -5,21 +5,20 @@ Configuration constants for the F1 Telemetry Dashboard application.
 
 import os
 from pathlib import Path
+import logging
 
 # --- Core Application & Server ---
-DASH_DEBUG_MODE = False
-DASH_HOST = "0.0.0.0"
-DASH_PORT = 8050
-
-IS_PRODUCTION = os.environ.get('DASH_ENV') == 'production'
+DASH_ENV = os.environ.get('DASH_ENV', 'development')
+IS_PRODUCTION = DASH_ENV == 'production'
+DASH_DEBUG_MODE = not IS_PRODUCTION
+DASH_HOST = os.environ.get('DASH_HOST', '0.0.0.0')
+DASH_PORT = int(os.environ.get('DASH_PORT', 8050))
 
 # --- File Paths ---
 _SCRIPT_DIR = Path(__file__).parent.resolve()
-REPLAY_DIR_NAME = "replays"
-REPLAY_DIR = _SCRIPT_DIR / REPLAY_DIR_NAME
-TARGET_SAVE_DIRECTORY = REPLAY_DIR # Directory for saving live data files
-DEFAULT_REPLAY_FILENAME = "2023-yas-marina-quali.data.txt" # Default replay file suggestion
-FASTF1_CACHE_DIR = _SCRIPT_DIR / "ff1_cache" # Cache directory for FastF1
+REPLAY_DIR = Path(os.environ.get('REPLAY_DIR', _SCRIPT_DIR / 'replays'))
+TARGET_SAVE_DIRECTORY = Path(os.environ.get('TARGET_SAVE_DIRECTORY', REPLAY_DIR))
+FASTF1_CACHE_DIR = Path(os.environ.get('FASTF1_CACHE_DIR', _SCRIPT_DIR / 'ff1_cache'))
 
 QUALIFYING_ELIMINATION_COUNT = {
     "Q1": 5, "SQ1": 5,
@@ -67,18 +66,19 @@ QUALIFYING_ELIMINATED_Q2 = 5  # Drivers P11-P15 are out from Q2
 
 QUALIFYING_CARS_Q3 = 10     # Drivers P1-P10 participate
 
-# Base URL for F1 live timing static assets (audio files)
-# Example: "livetiming.formula1.com" (schema will be added in callbacks)
-F1_LIVETIMING_BASE_URL = "livetiming.formula1.com"
-
 # --- Filename Templates ---
 DATA_FILENAME_TEMPLATE = "f1_signalr_data_{timestamp}.data.txt" # Not currently used directly for replay saving
 LIVE_DATA_FILENAME_FALLBACK_PREFIX = "F1LiveData"
 # DATABASE_FILENAME_TEMPLATE = "f1_signalr_data_{timestamp}.db" # If DB functionality added later
 
+# --- API and Network ---
+NEGOTIATE_URL_BASE = os.environ.get('NEGOTIATE_URL_BASE', 'https://livetiming.formula1.com/signalr')
+WEBSOCKET_URL_BASE = os.environ.get('WEBSOCKET_URL_BASE', 'wss://livetiming.formula1.com/signalr')
+REQUESTS_TIMEOUT_SECONDS = int(os.environ.get('REQUESTS_TIMEOUT_SECONDS', 15))
+F1_LIVETIMING_BASE_URL = os.environ.get('F1_LIVETIMING_BASE_URL', 'livetiming.formula1.com')
+MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE = os.environ.get('MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE', "https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}")
+
 # --- SignalR Connection ---
-NEGOTIATE_URL_BASE = "https://livetiming.formula1.com/signalr"
-WEBSOCKET_URL_BASE = "wss://livetiming.formula1.com/signalr"
 HUB_NAME = "Streaming"
 STREAMS_TO_SUBSCRIBE = ["Heartbeat",
         "CarData.z",
@@ -101,7 +101,6 @@ STREAMS_TO_SUBSCRIBE = ["Heartbeat",
         "PitLaneTimeCollection",
         "ChampionshipPrediction"]
 SIGNALR_CLIENT_PROTOCOL = "1.5"
-REQUESTS_TIMEOUT_SECONDS = 15
 USER_AGENT_NEGOTIATE = "Python SignalRClient"
 USER_AGENT_WEBSOCKET = "BestHTTP" # Match F1 expectations
 
@@ -352,8 +351,7 @@ LOG_REPLAY_FILE_SESSION_INFO_PREFIX = "# Session Info (from FastF1 at start): "
 LOG_REPLAY_FILE_STOP_MSG_PREFIX = "\n# Recording Stopped: "
 
 
-# --- API URLs (other than SignalR) ---
-MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE = "https://api.multiviewer.app/api/v1/circuits/{circuit_key}/{year}"
+# --- API URLs (other than SignalR) ---"
 MULTIVIEWER_API_USER_AGENT = 'F1-Dash/0.5' # Increment version or make more dynamic
 
 print("DEBUG: config module loaded")
