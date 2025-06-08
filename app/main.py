@@ -21,17 +21,14 @@ import utils
 from app_instance import app, server  # Import app AND server
 import fastf1
 
-# Import layout components
-from layout import main_app_layout, dashboard_content_layout
-# Import the cached schedule function
-from schedule_page import get_current_year_schedule_with_sessions, schedule_page_layout
-
 # Import callbacks so they are registered
 import callbacks
 # These modules will be refactored to be session-aware in subsequent steps
 import signalr_client
 import data_processing
 import replay
+
+from layout import main_app_layout
 
 # --- Logging Setup (from your previous main.py) ---
 
@@ -82,27 +79,6 @@ else:
 
 # --- Assign Main App Layout ---
 app.layout = main_app_layout
-
-# --- Callback to Update Page Content Based on URL (from your previous main.py) ---
-
-
-@app.callback(
-    Output("page-content", "children"),
-    [Input("url", "pathname")]
-)
-def display_page(pathname):
-    if pathname == "/schedule":
-        return schedule_page_layout  # Already imported
-    elif pathname == "/":
-        return dashboard_content_layout  # Already imported
-    else:
-        return dbc.Container([
-            html.H1("404: Not found", className="text-danger display-3 mt-5"),
-            html.Hr(),
-            html.P(
-                f"The pathname {pathname} was not recognised.", className="lead"),
-            dbc.Button("Go to Dashboard", href="/", color="primary", size="lg")
-        ], fluid=True, className="py-5 text-center bg-dark text-light vh-100")
 
 
 # --- Clientside Timezone Callback (from your previous main.py) ---

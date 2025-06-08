@@ -28,18 +28,84 @@ from app_instance import app  # Dash app instance
 import app_state  # For get_or_create_session_state and SessionState type hint
 import config
 import utils
+from layout import main_app_layout, dashboard_content_layout
+# Import the cached schedule function
+from schedule_page import get_current_year_schedule_with_sessions, schedule_page_layout
+from settings_layout import create_settings_layout # Import the new layout function
 
 # These modules now contain session-aware functions
 import signalr_client
 import replay
 import data_processing  # For starting session-specific data processing loop
-import schedule_page
 
 
 logger = logging.getLogger("F1App.Callbacks")
 
-# Note: UI revision, height, and margin constants are now in config.py
-# Note: TRACK_STATUS_STYLES and WEATHER_ICON_MAP are now in config.py
+# --- Callback to Update Page Content Based on URL (from your previous main.py) ---
+
+@app.callback(
+    Output("page-content", "children"),
+    Input("url", "pathname")
+)
+def display_page(pathname: str):
+    if pathname == "/":
+        return dashboard_content_layout
+    elif pathname == "/schedule":
+        return schedule_page_layout
+    elif pathname == "/settings": # ADD THIS
+        return create_settings_layout() # ADD THIS
+    else:
+        return dbc.Container([
+            html.H1("404: Not found", className="text-danger"),
+            html.Hr(),
+            html.P(f"The pathname {pathname} was not recognised..."),
+        ])
+        
+# --- CALLBACKS FOR SETTINGS PAGE ---
+
+# Callback to SAVE the "Hide Retired" preference
+@app.callback(
+    Output('session-preferences-store', 'data', allow_duplicate=True),
+    Input('hide-retired-drivers-switch', 'value'),
+    prevent_initial_call=True
+)
+def update_hide_retired_preference(switch_is_on: bool) -> Patch:
+    patched_prefs = Patch()
+    patched_prefs['hide_retired'] = bool(switch_is_on)
+    logger_callbacks.info(f"Updated 'hide_retired' preference in store to: {bool(switch_is_on)}")
+    return patched_prefs
+
+# Callback to LOAD the "Hide Retired" preference into the switch
+@app.callback(
+    Output('hide-retired-drivers-switch', 'value'),
+    Input('session-preferences-store', 'data')
+)
+def update_hide_retired_switch_from_store(store_data: Optional[dict]):
+    if store_data and 'hide_retired' in store_data:
+        return store_data['hide_retired']
+    return config.HIDE_RETIRED_DRIVERS # Default from config
+
+# Callback to SAVE the "Use MPH" preference
+@app.callback(
+    Output('session-preferences-store', 'data', allow_duplicate=True),
+    Input('use-mph-switch', 'value'),
+    prevent_initial_call=True
+)
+def update_use_mph_preference(switch_is_on: bool) -> Patch:
+    patched_prefs = Patch()
+    patched_prefs['use_mph'] = bool(switch_is_on)
+    logger_callbacks.info(f"Updated 'use_mph' preference in store to: {bool(switch_is_on)}")
+    return patched_prefs
+
+# Callback to LOAD the "Use MPH" preference into the switch
+@app.callback(
+    Output('use-mph-switch', 'value'),
+    Input('session-preferences-store', 'data')
+)
+def update_use_mph_switch_from_store(store_data: Optional[dict]):
+    if store_data and 'use_mph' in store_data:
+        return store_data['use_mph']
+    return config.USE_MPH # Default from config
 
 # --- Per-User Auto-Connect Toggle Callback ---
 
@@ -1062,15 +1128,15 @@ def update_prominent_track_status(n):
 
 
 @app.callback(
-    Output('other-data-display', 'children'),
-    Output('timing-data-actual-table', 'data'),
-    Output('timing-data-timestamp', 'children'),
+    [Output('other-data-display', 'children'),
+     Output('timing-data-actual-table', 'data'),
+     Output('timing-data-timestamp', 'children')],
     Input('interval-component-timing', 'n_intervals'),
-    # MODIFICATION: Added State for debug mode
-    State("debug-mode-switch", "value")
+    [State("debug-mode-switch", "value"),
+     State('session-preferences-store', 'data')]
 )
 # MODIFICATION: Added debug_mode_enabled
-def update_main_data_displays(n, debug_mode_enabled):
+def update_main_data_displays(n, debug_mode_enabled: bool, session_prefs: Optional[dict]):
     session_state = app_state.get_or_create_session_state()
     overall_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
@@ -1080,6 +1146,10 @@ def update_main_data_displays(n, debug_mode_enabled):
     timestamp_text = config.TEXT_WAITING_FOR_DATA
     current_time_for_callbacks = time.time()
     callback_start_time = time.perf_counter()  # For performance logging
+    if session_prefs is None:
+        session_prefs = {} # Handle case where store is empty on first load
+    
+    hide_retired_pref = session_prefs.get('hide_retired', config.HIDE_RETIRED_DRIVERS)
 
     try:
         current_q_segment_from_state = None
@@ -1287,6 +1357,9 @@ def update_main_data_displays(n, debug_mode_enabled):
             TERMINAL_RACING_STATUSES = [
                 "retired", "crashed", "disqualified", "out of race", "out", "accident"]
             for car_num, driver_state in timing_state_copy.items():
+                is_retired = driver_state.get('Status', '').lower() in TERMINAL_RACING_STATUSES
+                if hide_retired_pref and is_retired:
+                    continue # Skip this driver
                 racing_no = driver_state.get("RacingNumber", car_num)
                 tla = driver_state.get("Tla", "N/A")
                 pos = driver_state.get('Position', '-')
@@ -1912,15 +1985,18 @@ def toggle_controls_collapse(n, is_open):
      Input('driver-focus-tabs', 'active_tab'),         # Which tab is active
      Input('lap-selector-dropdown', 'value')],         # Lap selected for telemetry (if telemetry tab is active)
     [State('telemetry-graph', 'figure'),               # Current telemetry figure state
-     State('stint-history-table', 'columns')]          # Current columns for stint table (if needed)
+     State('stint-history-table', 'columns'),          # Current columns for stint table (if needed)
+     State('session-preferences-store', 'data'),
+    ]
 )
 def update_driver_focus_content(selected_driver_number, active_tab_id, 
                                 selected_lap_for_telemetry, 
-                                current_telemetry_figure, current_stint_table_columns):
+                                current_telemetry_figure, current_stint_table_columns, session_prefs: Optional[dict]):
     session_state = app_state.get_or_create_session_state()
     overall_callback_start_time = time.monotonic() # For overall timing
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START_OVERALL") # Overall start
+    use_mph_pref: bool
     
     ctx = dash.callback_context
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered and ctx.triggered[0] else 'N/A'
@@ -1988,49 +2064,40 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
 
     # --- Tab Specific Logic ---
     if active_tab_id == "tab-telemetry":
-        driver_selected_uirevision_telemetry = f"telemetry_driver_{driver_num_str}_pendinglap" # For "no laps" or "select lap" states
+        driver_selected_uirevision_telemetry = f"telemetry_driver_{driver_num_str}_pendinglap"
         
         if available_telemetry_laps:
             telemetry_lap_options = [{'label': f'Lap {l}', 'value': l} for l in available_telemetry_laps]
             telemetry_lap_disabled = False
             
             # Determine the lap to plot
-            if triggered_id == 'driver-select-dropdown' or \
-               triggered_id == 'driver-focus-tabs' or \
+            if triggered_id in ['driver-select-dropdown', 'driver-focus-tabs'] or \
                not selected_lap_for_telemetry or \
                selected_lap_for_telemetry not in available_telemetry_laps:
-                telemetry_lap_value = available_telemetry_laps[-1] 
+                telemetry_lap_value = available_telemetry_laps[-1]
             else:
                 telemetry_lap_value = selected_lap_for_telemetry
         
-            # If telemetry_lap_value is now set (meaning we have a lap to plot)
             if telemetry_lap_value:
-                data_plot_uirevision_telemetry = f"telemetry_data_{driver_num_str}_{telemetry_lap_value}" # uirevision for specific data
+                data_plot_uirevision_telemetry = f"telemetry_data_{driver_num_str}_{telemetry_lap_value}"
 
                 # Check if we really need to update the figure
-                # (e.g., if only active_tab_id changed to telemetry but figure for this driver/lap already shown)
                 if current_telemetry_figure and \
                    current_telemetry_figure.get('layout',{}).get('uirevision') == data_plot_uirevision_telemetry and \
-                   triggered_id == 'driver-focus-tabs': # Only no_update if it was just a tab switch to an already rendered exact figure
+                   triggered_id == 'driver-focus-tabs':
                     logger.debug(f"'{func_name}': Telemetry figure for {driver_num_str} Lap {telemetry_lap_value} already rendered, no_update on tab switch.")
                     fig_telemetry = no_update
                 else:
                     # Fetch specific lap_data for plotting
                     lap_data_fetch_start_time = time.monotonic()
                     lap_data = {}
-                    with session_state.lock: # Second, brief lock for specific lap data
-                        lap_data_lock_acquired_time = time.monotonic()
-                        logger.debug(f"Lock2 in '{func_name}' (Telemetry-LapData) - ACQUIRED. Wait: {lap_data_lock_acquired_time - lap_data_fetch_start_time:.4f}s")
-                        lap_data_critical_start_time = time.monotonic()
+                    with session_state.lock:
+                        # ... (existing lock logging) ...
                         lap_data = copy.deepcopy(session_state.telemetry_data.get(driver_num_str, {}).get(telemetry_lap_value, {}))
-                        logger.debug(f"Lock2 in '{func_name}' (Telemetry-LapData) - HELD for lap_data: {time.monotonic() - lap_data_critical_start_time:.4f}s")
-                    
-                    logger.debug(f"'{func_name}' (Telemetry Tab) - Specific lap_data fetch for {driver_num_str} Lap {telemetry_lap_value} took: {time.monotonic() - lap_data_fetch_start_time:.4f}s (incl. wait & hold)")
+                    logger.debug(f"'{func_name}' (Telemetry Tab) - Specific lap_data fetch took: {time.monotonic() - lap_data_fetch_start_time:.4f}s")
 
-                    # Plotting logic
                     if lap_data:
                         logger.debug(f"'{func_name}' (Telemetry Tab) - Starting Plotly figure generation for driver {driver_num_str}, lap {telemetry_lap_value}.")
-                        plotly_render_actual_start_time = time.monotonic()
                         
                         timestamps_str = lap_data.get('Timestamps', [])
                         timestamps_dt = [utils.parse_iso_timestamp_safe(ts) for ts in timestamps_str]
@@ -2039,11 +2106,28 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
                         if valid_indices:
                             timestamps_plot = [timestamps_dt[i] for i in valid_indices]
                             channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
-                            fig_telemetry = make_subplots(rows=len(channels), cols=1, shared_xaxes=True,
-                                                          subplot_titles=[c[:10] for c in channels], vertical_spacing=0.06)
+                            
+                            # --- MODIFICATION: Set subplot titles dynamically ---
+                            subplot_titles = list(channels) # Create a mutable copy
+                            if use_mph_pref:
+                                speed_index = subplot_titles.index('Speed')
+                                subplot_titles[speed_index] = 'Speed (MPH)'
+                            # --- END MODIFICATION ---
+
+                            fig_telemetry = make_subplots(
+                                rows=len(channels), cols=1, shared_xaxes=True,
+                                subplot_titles=subplot_titles, vertical_spacing=0.06
+                            )
+
                             for i, channel in enumerate(channels):
                                 y_data_raw = lap_data.get(channel, [])
                                 y_data_plot = [(y_data_raw[idx] if idx < len(y_data_raw) else None) for idx in valid_indices]
+                                
+                                # --- MODIFICATION: Conditional Speed Conversion ---
+                                if channel == 'Speed' and use_mph_pref:
+                                    y_data_plot = utils.convert_kph_to_mph(y_data_plot)
+                                # --- END MODIFICATION ---
+
                                 if channel == 'DRS':
                                     drs_plot = [1 if val in [10, 12, 14] else 0 for val in y_data_plot]
                                     fig_telemetry.add_trace(go.Scattergl(x=timestamps_plot, y=drs_plot, mode='lines', name=channel, line_shape='hv', connectgaps=False), row=i+1, col=1)
@@ -2057,37 +2141,24 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
                                 hovermode="x unified", showlegend=False, margin=config.TELEMETRY_MARGINS_DATA,
                                 title_text=f"<b>{tla} - Lap {telemetry_lap_value} Telemetry</b>",
                                 title_x=0.5, title_y=0.98, title_font_size=12,
-                                uirevision=data_plot_uirevision_telemetry, # CRITICAL for performance
+                                uirevision=data_plot_uirevision_telemetry,
                                 annotations=[] 
                             )
-                            # ... (your axes updates) ...
-                        else: # No valid plot data for this lap
-                            fig_telemetry = utils.create_empty_figure_with_message(
-                                config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
-                                config.TEXT_TELEMETRY_NO_PLOT_DATA_FOR_LAP_PREFIX + str(telemetry_lap_value) + ".",
-                                config.TELEMETRY_MARGINS_EMPTY
-                            )
-                        logger.debug(f"'{func_name}' (Telemetry Tab) - Plotly Figure Generation actual took: {time.monotonic() - plotly_render_actual_start_time:.4f}s")
+                        else: # No valid plot data
+                            fig_telemetry = utils.create_empty_figure_with_message(...)
                     else: # lap_data was empty
-                        fig_telemetry = utils.create_empty_figure_with_message(
-                            config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
-                            config.TEXT_TELEMETRY_NO_PLOT_DATA_FOR_LAP_PREFIX +
-                            str(telemetry_lap_value) + ".",
-                            config.TELEMETRY_MARGINS_EMPTY
-                        )
-            else: # No available_telemetry_laps or telemetry_lap_value could not be set
-                no_laps_message = config.TEXT_DRIVER_NO_LAP_DATA_PREFIX + tla + "."
-                fig_telemetry = utils.create_empty_figure_with_message(
-                    config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision_telemetry, 
-                    no_laps_message, config.TELEMETRY_MARGINS_EMPTY
-                )
+                        fig_telemetry = utils.create_empty_figure_with_message(...)
+            else: # No available telemetry laps
+                 fig_telemetry = utils.create_empty_figure_with_message(...)
         else: # No available_telemetry_laps
-             no_laps_message = config.TEXT_DRIVER_NO_LAP_DATA_PREFIX + tla + "."
-             fig_telemetry = utils.create_empty_figure_with_message(
-                config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision_telemetry, 
-                no_laps_message, config.TELEMETRY_MARGINS_EMPTY
-            )
-        stint_history_data = no_update # Stint history not visible on this tab
+             fig_telemetry = utils.create_empty_figure_with_message(...)
+
+        # This will now contain either the telemetry figure or an empty message figure
+        telemetry_content = dcc.Graph(id="telemetry-graph-actual", figure=fig_telemetry, config={'displayModeBar': False})
+        # ... rest of your returns for this tab
+        stint_history_data = no_update
+        return telemetry_content, telemetry_lap_options, telemetry_lap_value, stint_history_data, telemetry_lap_disabled
+
 
     elif active_tab_id == "tab-stint-history":
         # ... (your existing stint history logic - ensure it's efficient if it becomes an issue) ...

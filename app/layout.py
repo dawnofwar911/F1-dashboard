@@ -26,6 +26,10 @@ sidebar = html.Div([
             [html.I(className="fas fa-calendar-alt me-2"), "Race Schedule"],
             href="/schedule", active="exact", className="nav-link-custom mb-1"
         ),
+        dbc.NavLink(
+            [html.I(className="fas fa-cog me-2"), "Settings"],
+            href="/settings", active="exact", className="nav-link-custom mb-1"
+        )
     ], vertical=True, pills=True, className="flex-grow-1"),
     html.Div([
         html.Small("F1 Dashboard v0.2.1", className="text-muted") 
@@ -95,6 +99,7 @@ def define_dashboard_layout():
         dcc.Store(id='track-map-figure-version-store'),
         dcc.Store(id='track-map-yellow-key-store', storage_type='memory', data=""),
         dcc.Store(id='clicked-car-driver-number-store', storage_type='memory'),
+        dcc.Store(id='session-preferences-store', storage_type='local'),
         dcc.Interval(id='clientside-click-poll-interval', interval=100, n_intervals=0), 
         dcc.Interval(id='clientside-update-interval', interval=1250, n_intervals=0, disabled=True)
     ])

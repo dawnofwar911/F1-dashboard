@@ -44,6 +44,17 @@ logger = logging.getLogger("F1App.Utils")
 
 # --- Utility Functions (Many can remain as is if they are pure or use config) ---
 
+def convert_kph_to_mph(kph_values: list[float]) -> list[float]:
+    """Converts a list of speed values from KPH to MPH."""
+    if not kph_values:
+        return []
+    try:
+        # Use a list comprehension for efficient conversion
+        return [kph * config.KPH_TO_MPH_FACTOR for kph in kph_values]
+    except (TypeError, ValueError):
+        # Handle cases where the list might contain non-numeric data gracefully
+        return []
+
 
 def determine_session_type_from_name(session_name_str: str) -> str:
     s_name_lower = str(session_name_str).lower()
