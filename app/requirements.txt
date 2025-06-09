@@ -26,3 +26,6 @@ Shapely
 
 # For Development Server
 waitress
+
+# for cacheing
+cachetools>=4.0.0,<6.0.0

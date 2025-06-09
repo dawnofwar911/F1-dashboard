@@ -1,275 +1,298 @@
 # app_state.py
 """
-Module to hold shared application state variables and the main lock.
+Module to hold shared application state variables, now per-session.
 """
-
 import threading
-import queue
-import collections
+import queue  # For queue.Queue
+import collections  # For collections.deque
 import logging
+from copy import deepcopy
+import uuid
+import flask  # Required for accessing Flask's session object
+from typing import Dict, Optional, Set, Deque, List, Any  # Import necessary types
 
-# --- Core Application State ---
-INITIAL_APP_STATUS = {
+# Logger for this module
+logger = logging.getLogger("F1App.AppState")
+
+# --- Constants for Initializing Session State ---
+# (INITIAL_SESSION_* constants remain the same as in Response #13)
+INITIAL_SESSION_APP_STATUS: Dict[str, Any] = {  # Added type hint
     "state": "Idle",
     "connection": "Disconnected",
     "subscribed_streams": [],
     "last_heartbeat": None,
     "current_replay_file": None,
-    # New: To prevent multiple auto-connect attempts for the same session
-    "auto_connect_attempted_for_session": None,
-    # ADDED: Timestamp for when an auto-connected session finished
+    "auto_connected_session_identifier": None,
     "auto_connected_session_end_detected_utc": None,
 }
 
-
-app_status = INITIAL_APP_STATUS.copy() # Initialize with a copy
-app_state_lock = threading.Lock()
-stop_event = threading.Event()
-
-# --- Data Queue ---
-data_queue = queue.Queue()
-
-# --- Data Storage ---
-INITIAL_DATA_STORE = {}
-data_store = INITIAL_DATA_STORE.copy()
-
-INITIAL_TIMING_STATE = {}
-timing_state = INITIAL_TIMING_STATE.copy()
-
-INITIAL_LAP_TIME_HISTORY = {}
-lap_time_history = INITIAL_LAP_TIME_HISTORY.copy()
-
-INITIAL_TRACK_STATUS_DATA = {}
-track_status_data = INITIAL_TRACK_STATUS_DATA.copy()
-
-INITIAL_SESSION_DETAILS = {
-    'ScheduledDurationSeconds': None,
-    'PreviousSessionStatus': None,
-    'Year': None,
-    'CircuitKey': None,
-    'CircuitName': "",  # Default to empty string
-    'EventName': "",   # Default to empty string
-    'SessionName': "",  # Default to empty string
-    'SessionKey': None,
-    'Path': "",        # Default to empty string for consistency, or None if "" is problematic for URL construction elsewhere
-    'Type': "",        # Default to empty string
-    'SessionStartTimeUTC': None,
-    'SessionStatus': 'Unknown',
-    # Add other known keys from SessionInfo with sensible defaults (None, "", 0, etc.)
-    'Meeting': {},
-    'ArchiveStatus': {},
-    'Key': None,
-    'Number': None,
-    'Name': "",      # For the top-level "Name" in the SessionInfo snippet
-    'GmtOffset': None,
-    'Location': ""
+INITIAL_SESSION_DATA_STORE: Dict = {}  # Example type hint
+INITIAL_SESSION_TIMING_STATE: Dict = {}
+INITIAL_SESSION_LAP_TIME_HISTORY: Dict = {}
+INITIAL_SESSION_TRACK_STATUS_DATA: Dict = {}
+INITIAL_SESSION_SESSION_DETAILS: Dict[str, Any] = {
+    'ScheduledDurationSeconds': None, 'PreviousSessionStatus': None, 'Year': None,
+    'CircuitKey': None, 'CircuitName': "", 'EventName': "", 'SessionName': "",
+    'SessionKey': None, 'Path': "", 'Type': "", 'SessionStartTimeUTC': None,
+    'SessionStatus': 'Unknown', 'Meeting': {}, 'ArchiveStatus': {}, 'Key': None,
+    'Number': None, 'Name': "", 'GmtOffset': None, 'Location': ""
 }
-session_details = INITIAL_SESSION_DETAILS.copy()
-
-INITIAL_RACE_CONTROL_LOG_MAXLEN = 50
-race_control_log = collections.deque(maxlen=INITIAL_RACE_CONTROL_LOG_MAXLEN)
-
-INITIAL_TEAM_RADIO_MESSAGES_MAXLEN = 20
-team_radio_messages = collections.deque(maxlen=INITIAL_TEAM_RADIO_MESSAGES_MAXLEN)
-
-INITIAL_TRACK_COORDINATES_CACHE = {
-    'x': None, 'y': None, 'range_x': None, 'range_y': None,
-    'rotation': None, 'session_key': None,
-    'corners_data': None,          # Will store list of dicts: [{'number': 1, 'x': X, 'y': Y}, ...]
-    'marshal_lights_data': None,   # Will store list of dicts: [{'number': 1, 'x': X, 'y': Y}, ...]
-    'marshal_sector_points': None, # List of raw dicts from JSON: [{'number':1, 'trackPosition':{'x':X, 'y':Y}, ...}, ...]
-    'marshal_sector_segments': None # Dict: {sector_num: (start_idx_on_trackline, end_idx_on_trackline), ...}
+INITIAL_SESSION_EXTRAPOLATED_CLOCK_INFO: Dict[str, Any] = {
+    "Utc": None, "Remaining": "00:00:00", "Extrapolating": False, "Timestamp": None
 }
-track_coordinates_cache = INITIAL_TRACK_COORDINATES_CACHE.copy()
-
-INITIAL_ACTIVE_YELLOW_SECTORS = set() # Using a set for efficient add/remove
-active_yellow_sectors = INITIAL_ACTIVE_YELLOW_SECTORS.copy()
-
-INITIAL_TELEMETRY_DATA = {}
-telemetry_data = INITIAL_TELEMETRY_DATA.copy()
-
-# NEW: Store detailed stint data for each driver
-INITIAL_DRIVER_STINT_DATA = {}
-driver_stint_data = INITIAL_DRIVER_STINT_DATA.copy()
-
-
-INITIAL_DRIVER_INFO = {} # Though this seems unused, keeping for consistency if planned
-driver_info = INITIAL_DRIVER_INFO.copy()
-
-initial_replay_speed = 1.0 # This might not need resetting, or reset to a config default
-replay_speed = 1.0         # Same as above
-
-# --- Live Recording State ---
-live_data_file = None
-is_saving_active = False
-record_live_data = False # Default
-current_recording_filename = None
-
-INITIAL_EXTRAPOLATED_CLOCK_INFO = {
-    "Utc": None,
-    "Remaining": "00:00:00",  # Default value
-    "Extrapolating": False,
-    "Timestamp": None  # To store when we received the data
+INITIAL_SESSION_QUALIFYING_SEGMENT_STATE: Dict[str, Any] = {
+    "old_segment": None, "current_segment": None, "official_segment_remaining_seconds": 0,
+    "last_official_time_capture_utc": None, "last_capture_replay_speed": 1.0,
+    "just_resumed_flag": False, "session_status_at_capture": None
 }
-extrapolated_clock_info = INITIAL_EXTRAPOLATED_CLOCK_INFO.copy()
-
-INITIAL_QUALIFYING_SEGMENT_STATE = {
-    "old_segment": None,
-    "current_segment": None,  # e.g., "Q1", "Q2", "Q3", "SQ1", "SQ2", "SQ3", "Between Segments", "Ended"
-    "official_segment_remaining_seconds": 0, # Time from ExtrapolatedClock when segment started/synced
-    "last_official_time_capture_utc": None,  # datetime object (wall clock UTC)
-    "last_capture_replay_speed": 1.0,        # Replay speed at time of capture
-    "just_resumed_flag": False,
-    "session_status_at_capture": None        # e.g. "Started", "Running"
-}
-qualifying_segment_state = INITIAL_QUALIFYING_SEGMENT_STATE.copy()
-
-# --- Practice Session Timing ---
-practice_session_actual_start_utc = None
-practice_session_scheduled_duration_seconds = None # e.g., 3600 for a 60-minute session
-
-# --- Replay Feed Pacing ---
-current_processed_feed_timestamp_utc_dt = None # datetime object of the latest processed message
-session_start_feed_timestamp_utc_dt = None     # datetime of the first key message for current session/segment clock start in replay
-current_segment_scheduled_duration_seconds = None # Duration of the current timed segment for replay
-
-# --- Session Best Times ---
-INITIAL_SESSION_BESTS = {
+INITIAL_SESSION_SESSION_BESTS: Dict[str, Any] = {
     "OverallBestLapTime": {"Value": None, "DriverNumber": None},
-    "OverallBestSectors": [
-        {"Value": None, "DriverNumber": None}, # Sector 1
-        {"Value": None, "DriverNumber": None}, # Sector 2
-        {"Value": None, "DriverNumber": None}  # Sector 3
-    ]
+    "OverallBestSectors": [{"Value": None, "DriverNumber": None} for _ in range(3)]
 }
-session_bests = INITIAL_SESSION_BESTS.copy()
-
-last_known_total_laps = None
-
-INITIAL_LAST_KNOWN_OVERALL_WEATHER_CONDITION = "default"
-INITIAL_LAST_KNOWN_WEATHER_CARD_COLOR = "light"
-INITIAL_LAST_KNOWN_WEATHER_CARD_INVERSE = False
-INITIAL_LAST_KNOWN_MAIN_WEATHER_ICON_KEY = "default" # Store the key for the icon
-INITIAL_LAST_KNOWN_AIR_TEMP = None
-INITIAL_LAST_KNOWN_TRACK_TEMP = None
-INITIAL_LAST_KNOWN_HUMIDITY = None
-INITIAL_LAST_KNOWN_PRESSURE = None
-INITIAL_LAST_KNOWN_WIND_SPEED = None
-INITIAL_LAST_KNOWN_WIND_DIRECTION = None
-INITIAL_LAST_KNOWN_RAINFALL_VAL = None # For the "RAIN" text persistence
-
-last_known_overall_weather_condition = INITIAL_LAST_KNOWN_OVERALL_WEATHER_CONDITION
-last_known_weather_card_color = INITIAL_LAST_KNOWN_WEATHER_CARD_COLOR
-last_known_weather_card_inverse = INITIAL_LAST_KNOWN_WEATHER_CARD_INVERSE
-last_known_main_weather_icon_key = INITIAL_LAST_KNOWN_MAIN_WEATHER_ICON_KEY
-last_known_air_temp = INITIAL_LAST_KNOWN_AIR_TEMP
-last_known_track_temp = INITIAL_LAST_KNOWN_TRACK_TEMP
-last_known_humidity = INITIAL_LAST_KNOWN_HUMIDITY
-last_known_pressure = INITIAL_LAST_KNOWN_PRESSURE
-last_known_wind_speed = INITIAL_LAST_KNOWN_WIND_SPEED
-last_known_wind_direction = INITIAL_LAST_KNOWN_WIND_DIRECTION
-last_known_rainfall_val = INITIAL_LAST_KNOWN_RAINFALL_VAL
-
-selected_driver_for_map_and_lap_chart = None
+INITIAL_SESSION_TRACK_COORDINATES_CACHE: Dict[str, Any] = {
+    'x': None, 'y': None, 'range_x': None, 'range_y': None, 'rotation': None,
+    'session_key': None, 'corners_data': None, 'marshal_lights_data': None,
+    'marshal_sector_points': None, 'marshal_sector_segments': None
+}
+INITIAL_RACE_CONTROL_LOG_MAXLEN: int = 50
+INITIAL_TEAM_RADIO_MESSAGES_MAXLEN: int = 20
+INITIAL_ACTIVE_YELLOW_SECTORS: Set[Any] = set()  # Example type hint
+INITIAL_TELEMETRY_DATA: Dict = {}
+INITIAL_DRIVER_STINT_DATA: Dict = {}
+INITIAL_DRIVER_INFO: Dict = {}
 
 
-logger = logging.getLogger("F1App.AppState") # Logger for this module
+# --- Per-Session State Class ---
+class SessionState:
+    def __init__(self, session_id: str):
+        self.session_id: str = session_id
+        self.lock: threading.RLock = threading.RLock()
 
-def reset_to_default_state():
+        self.app_status: Dict[str, Any] = deepcopy(INITIAL_SESSION_APP_STATUS)
+        self.stop_event: threading.Event = threading.Event()
+        # type: ignore[type-arg] # If using older queue version
+        self.data_queue: queue.Queue = queue.Queue()
+        self.data_store: Dict[str, Any] = deepcopy(INITIAL_SESSION_DATA_STORE)
+        self.timing_state: Dict[str, Any] = deepcopy(
+            INITIAL_SESSION_TIMING_STATE)
+        self.lap_time_history: Dict[str, Any] = deepcopy(
+            INITIAL_SESSION_LAP_TIME_HISTORY)
+        self.track_status_data: Dict[str, Any] = deepcopy(
+            INITIAL_SESSION_TRACK_STATUS_DATA)
+        self.session_details: Dict[str, Any] = deepcopy(
+            INITIAL_SESSION_SESSION_DETAILS)
+        self.race_control_log: Deque[str] = collections.deque(
+            maxlen=INITIAL_RACE_CONTROL_LOG_MAXLEN)
+        self.team_radio_messages: Deque[Dict[str, Any]] = collections.deque(
+            maxlen=INITIAL_TEAM_RADIO_MESSAGES_MAXLEN)  # Assuming dicts
+        self.track_coordinates_cache: Dict[str, Any] = deepcopy(
+            INITIAL_SESSION_TRACK_COORDINATES_CACHE)
+        self.active_yellow_sectors: Set[Any] = deepcopy(
+            INITIAL_ACTIVE_YELLOW_SECTORS)
+        self.telemetry_data: Dict[str, Any] = deepcopy(INITIAL_TELEMETRY_DATA)
+        self.driver_stint_data: Dict[str, Any] = deepcopy(
+            INITIAL_DRIVER_STINT_DATA)
+        self.driver_info: Dict[str, Any] = deepcopy(INITIAL_DRIVER_INFO)
+        self.replay_speed: float = 1.0
+
+        # Assuming it's a file-like object, replace Any with actual type
+        self.live_data_file: Optional[Any] = None
+        self.is_saving_active: bool = False
+        self.record_live_data: bool = False
+        self.current_recording_filename: Optional[str] = None  # CORRECTED
+
+        self.extrapolated_clock_info: Dict[str, Any] = deepcopy(
+            INITIAL_SESSION_EXTRAPOLATED_CLOCK_INFO)
+        self.qualifying_segment_state: Dict[str, Any] = deepcopy(
+            INITIAL_SESSION_QUALIFYING_SEGMENT_STATE)
+        # Replace Any with datetime if that's the type
+        self.practice_session_actual_start_utc: Optional[Any] = None
+        self.practice_session_scheduled_duration_seconds: Optional[int] = None
+        # Replace Any with datetime
+        self.current_processed_feed_timestamp_utc_dt: Optional[Any] = None
+        # Replace Any with datetime
+        self.session_start_feed_timestamp_utc_dt: Optional[Any] = None
+        self.current_segment_scheduled_duration_seconds: Optional[int] = None
+        self.session_bests: Dict[str, Any] = deepcopy(
+            INITIAL_SESSION_SESSION_BESTS)
+        self.last_known_total_laps: Optional[int] = None
+
+        self.last_known_overall_weather_condition: str = "default"
+        self.last_known_weather_card_color: str = "light"
+        self.last_known_weather_card_inverse: bool = False
+        self.last_known_main_weather_icon_key: str = "default"
+        self.last_known_air_temp: Optional[float] = None
+        self.last_known_track_temp: Optional[float] = None
+        self.last_known_humidity: Optional[float] = None
+        self.last_known_pressure: Optional[float] = None
+        self.last_known_wind_speed: Optional[float] = None
+        self.last_known_wind_direction: Optional[int] = None  # Or str
+        self.last_known_rainfall_val: Optional[str] = None  # Or int
+
+        # Assuming driver number as str
+        self.selected_driver_for_map_and_lap_chart: Optional[str] = None
+
+        self.connection_thread: Optional[threading.Thread] = None  # CORRECTED
+        # Replace Any with actual HubConnection type if available
+        self.hub_connection: Optional[Any] = None
+        self.replay_thread: Optional[threading.Thread] = None  # CORRECTED
+        # CORRECTED
+        self.data_processing_thread: Optional[threading.Thread] = None
+
+        self.auto_connect_enabled: bool = False
+        # CORRECTED
+        self.auto_connect_thread: Optional[threading.Thread] = None
+        self.track_data_fetch_thread: Optional[threading.Thread] = None # ADD THIS LINE
+
+        logger.info(
+            f"Initialized new SessionState for session_id: {self.session_id}")
+
+    def reset_state_variables(self):
+        # (Implementation of reset_state_variables as in Response #13)
+        # Ensure all attributes are reset according to their types defined above
+        with self.lock:
+            self.app_status = deepcopy(INITIAL_SESSION_APP_STATUS)
+            while not self.data_queue.empty():
+                try:
+                    self.data_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self.data_store = deepcopy(INITIAL_SESSION_DATA_STORE)
+            self.timing_state = deepcopy(INITIAL_SESSION_TIMING_STATE)
+            self.lap_time_history = deepcopy(INITIAL_SESSION_LAP_TIME_HISTORY)
+            self.track_status_data = deepcopy(
+                INITIAL_SESSION_TRACK_STATUS_DATA)
+            self.session_details = deepcopy(INITIAL_SESSION_SESSION_DETAILS)
+            self.race_control_log.clear()
+            self.team_radio_messages.clear()
+            self.track_coordinates_cache = deepcopy(
+                INITIAL_SESSION_TRACK_COORDINATES_CACHE)
+            self.active_yellow_sectors = deepcopy(
+                INITIAL_ACTIVE_YELLOW_SECTORS)
+            self.telemetry_data = deepcopy(INITIAL_TELEMETRY_DATA)
+            self.driver_stint_data = deepcopy(INITIAL_DRIVER_STINT_DATA)
+            self.driver_info = deepcopy(INITIAL_DRIVER_INFO)
+            self.replay_speed = 1.0
+            if self.live_data_file and not self.live_data_file.closed:
+                try:
+                    logger.warning(
+                        f"Session {self.session_id}: Found an open live_data_file during reset. Attempting to close.")
+                    self.live_data_file.close()
+                except Exception as e:
+                    logger.error(
+                        f"Session {self.session_id}: Error closing live_data_file during reset: {e}")
+            self.live_data_file = None
+            self.is_saving_active = False
+            self.record_live_data = False
+            self.current_recording_filename = None
+            self.extrapolated_clock_info = deepcopy(
+                INITIAL_SESSION_EXTRAPOLATED_CLOCK_INFO)
+            self.qualifying_segment_state = deepcopy(
+                INITIAL_SESSION_QUALIFYING_SEGMENT_STATE)
+            self.practice_session_actual_start_utc = None
+            self.practice_session_scheduled_duration_seconds = None
+            self.current_processed_feed_timestamp_utc_dt = None
+            self.session_start_feed_timestamp_utc_dt = None
+            self.current_segment_scheduled_duration_seconds = None
+            self.session_bests = deepcopy(INITIAL_SESSION_SESSION_BESTS)
+            self.last_known_total_laps = None
+            self.last_known_overall_weather_condition = "default"
+            self.last_known_weather_card_color = "light"
+            self.last_known_weather_card_inverse = False
+            self.last_known_main_weather_icon_key = "default"
+            self.last_known_air_temp = None
+            self.last_known_track_temp = None
+            self.last_known_humidity = None
+            self.last_known_pressure = None
+            self.last_known_wind_speed = None
+            self.last_known_wind_direction = None
+            self.last_known_rainfall_val = None
+            self.selected_driver_for_map_and_lap_chart = None
+            self.auto_connect_thread = None
+            self.track_data_fetch_thread = None # ADD THIS LINE
+            logger.info(
+                f"Session {self.session_id}: State variables have been reset to defaults.")
+
+
+# --- Global Session Management ---
+SESSIONS_STORE: Dict[str, SessionState] = {}  # Added type hint
+SESSIONS_STORE_LOCK: threading.Lock = threading.Lock()
+
+
+def get_current_session_id() -> Optional[str]:  # CORRECTED
     """
-    Resets all relevant application state variables to their initial default values.
-    This function should be called AFTER stopping any active connections or replays.
-    It acquires the app_state_lock.
+    Retrieves the user_app_session_id from Flask's session context.
+    Creates and stores a new ID in Flask's session if one is not present.
+    Returns the session ID string, or None if not in a request context.
     """
-    logger.info("Resetting application state to default...")
-    with app_state_lock:
-        global app_status, data_store, timing_state, lap_time_history, track_status_data
-        global session_details, race_control_log, track_coordinates_cache, telemetry_data, driver_info
-        global live_data_file, is_saving_active, current_recording_filename
-        global session_bests
-        global extrapolated_clock_info
-        global last_known_total_laps
-        global last_known_overall_weather_condition, last_known_weather_card_color
-        global last_known_weather_card_inverse, last_known_main_weather_icon_key
-        global last_known_air_temp, last_known_track_temp, last_known_humidity
-        global last_known_pressure, last_known_wind_speed, last_known_wind_direction
-        global last_known_rainfall_val
-        global current_processed_feed_timestamp_utc_dt, session_start_feed_timestamp_utc_dt
-        global current_segment_scheduled_duration_seconds
-        global qualifying_segment_state
-        global practice_session_actual_start_utc
-        global active_yellow_sectors
-        global selected_driver_for_map_and_lap_chart
-        global driver_stint_data # <<< ADDED
+    try:
+        if not flask.has_request_context():
+            logger.debug(
+                "get_current_session_id called outside of a Flask request context.")
+            return None
 
-        app_status = INITIAL_APP_STATUS.copy()
-        data_store = INITIAL_DATA_STORE.copy()
-        timing_state = INITIAL_TIMING_STATE.copy()
-        lap_time_history = INITIAL_LAP_TIME_HISTORY.copy()
-        track_status_data = INITIAL_TRACK_STATUS_DATA.copy()
-        session_details = INITIAL_SESSION_DETAILS.copy()
-        extrapolated_clock_info = INITIAL_EXTRAPOLATED_CLOCK_INFO.copy()
-        qualifying_segment_state = INITIAL_QUALIFYING_SEGMENT_STATE.copy()
+        session_id = flask.session.get('user_app_session_id')
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            flask.session['user_app_session_id'] = session_id
+            logger.info(
+                f"Generated new Flask session ID and stored: {session_id}")
+        return session_id
+    except RuntimeError as e:
+        logger.error(
+            f"Error accessing Flask session context in get_current_session_id: {e}")
+        return None
 
-        race_control_log.clear()
-        team_radio_messages.clear()
 
-        track_coordinates_cache = INITIAL_TRACK_COORDINATES_CACHE.copy()
-        active_yellow_sectors = INITIAL_ACTIVE_YELLOW_SECTORS.copy()
-        telemetry_data = INITIAL_TELEMETRY_DATA.copy()
-        driver_stint_data = INITIAL_DRIVER_STINT_DATA.copy() # <<< RESET
-        driver_info = INITIAL_DRIVER_INFO.copy()
+# CORRECTED
+def get_session_state(session_id: Optional[str] = None) -> Optional[SessionState]:
+    """
+    Gets the state object for a given session_id. If session_id is None, uses current Flask session.
+    Returns None if the session_id cannot be determined or the state object is not found.
+    """
+    resolved_session_id = session_id or get_current_session_id()
+    if not resolved_session_id:
+        return None
+    with SESSIONS_STORE_LOCK:
+        return SESSIONS_STORE.get(resolved_session_id)
 
-        session_bests = INITIAL_SESSION_BESTS.copy()
-        last_known_total_laps = None
 
-        last_known_overall_weather_condition = INITIAL_LAST_KNOWN_OVERALL_WEATHER_CONDITION
-        last_known_weather_card_color = INITIAL_LAST_KNOWN_WEATHER_CARD_COLOR
-        last_known_weather_card_inverse = INITIAL_LAST_KNOWN_WEATHER_CARD_INVERSE
-        last_known_main_weather_icon_key = INITIAL_LAST_KNOWN_MAIN_WEATHER_ICON_KEY
-        last_known_air_temp = INITIAL_LAST_KNOWN_AIR_TEMP
-        last_known_track_temp = INITIAL_LAST_KNOWN_TRACK_TEMP
-        last_known_humidity = INITIAL_LAST_KNOWN_HUMIDITY
-        last_known_pressure = INITIAL_LAST_KNOWN_PRESSURE
-        last_known_wind_speed = INITIAL_LAST_KNOWN_WIND_SPEED
-        last_known_wind_direction = INITIAL_LAST_KNOWN_WIND_DIRECTION
-        last_known_rainfall_val = INITIAL_LAST_KNOWN_RAINFALL_VAL
+# CORRECTED
+def get_or_create_session_state(session_id: Optional[str] = None) -> Optional[SessionState]:
+    """
+    Gets or creates the state object for a session_id.
+    If session_id is None, uses current Flask session (creating the Flask session ID if necessary).
+    Returns the SessionState object, or None if a session_id cannot be established.
+    """
+    resolved_session_id = session_id or get_current_session_id()
+    if not resolved_session_id:
+        logger.error(
+            "get_or_create_session_state: Critical - Could not establish a session_id.")
+        return None
 
-        current_processed_feed_timestamp_utc_dt = None
-        session_start_feed_timestamp_utc_dt = None
-        current_segment_scheduled_duration_seconds = None
+    with SESSIONS_STORE_LOCK:
+        if resolved_session_id not in SESSIONS_STORE:
+            logger.info(
+                f"Session_id '{resolved_session_id}' not in SESSIONS_STORE. Creating new SessionState.")
+            SESSIONS_STORE[resolved_session_id] = SessionState(
+                resolved_session_id)
+        return SESSIONS_STORE[resolved_session_id]
 
-        practice_session_actual_start_utc = None
-        selected_driver_for_map_and_lap_chart = None
 
-        while not data_queue.empty():
-            try:
-                data_queue.get_nowait()
-            except queue.Empty:
-                break
-        logger.debug("Data queue cleared.")
+def remove_session_state(session_id: str):
+    # (Implementation as in Response #13)
+    if not session_id:
+        logger.warning(
+            "Attempted to remove session state with an empty session_id.")
+        return
+    with SESSIONS_STORE_LOCK:
+        if session_id in SESSIONS_STORE:
+            logger.info(
+                f"Removing SessionState object from SESSIONS_STORE for session_id: {session_id}")
+            del SESSIONS_STORE[session_id]
+        else:
+            logger.warning(
+                f"Attempted to remove non-existent session_id from SESSIONS_STORE: {session_id}")
 
-        if live_data_file and not live_data_file.closed:
-            try:
-                logger.warning("Found an open live_data_file during reset. Attempting to close.")
-                live_data_file.close()
-            except Exception as e:
-                logger.error(f"Error closing live_data_file during reset: {e}")
-        live_data_file = None
-        is_saving_active = False
-        current_recording_filename = None
 
-        logger.info("Application state has been reset to defaults.")
-        
-def update_target_session_details(year=None, circuit_key=None, circuit_name=None, event_name=None, session_name=None, session_start_time_utc=None, session_type=None):
-    logger.info(f"Updating target session details: Year={year}, Circuit={circuit_name}, Event={event_name}, Session={session_name}, StartUTC={session_start_time_utc}, Type={session_type}")
-    with app_state_lock:
-        if year: session_details['Year'] = year
-        if circuit_key: session_details['CircuitKey'] = circuit_key
-        if circuit_name: session_details['CircuitName'] = circuit_name
-        if event_name: session_details['EventName'] = event_name # Usually the GP name
-        if session_name: session_details['SessionName'] = session_name # e.g., Practice 1
-        if session_start_time_utc: session_details['SessionStartTimeUTC'] = session_start_time_utc
-        if session_type: session_details['Type'] = session_type
-
-print("DEBUG: app_state module loaded")
+print("DEBUG: app_state.py (multi-session structure with corrected type hints) loaded.")

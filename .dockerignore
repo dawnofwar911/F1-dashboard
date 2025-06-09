@@ -6,6 +6,7 @@ app/ff1_cache
 *.pyd
 .Python
 .venv
+.env
 # If you have a venv inside your app/ directory for local testing:
 app/venv/
 app/env/

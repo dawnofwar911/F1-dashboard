@@ -1,40 +1,20 @@
 # layout.py
 import logging
 import dash_bootstrap_components as dbc
-from dash import dcc, html, dash_table
+from dash import dcc, html, dash_table # Removed Input, Output, State as they are for callbacks
 import plotly.graph_objects as go
-import time
-
-import dash_bootstrap_components as dbc
-from dash import html, dcc, Input, Output, State # Add Input, Output, State
-from app_instance import app # Import app for the new callback
 
 # Import config for constants and replay for file listing
-import config # <<< UPDATED: For constants
-import replay # For get_replay_files
+import config 
+import replay 
 import utils # Make sure utils is imported if create_empty_figure_with_message is used
-
-# --- Sidebar Definition ---
-SIDEBAR_STYLE_VISIBLE = { # Style when sidebar is visible
-    "position": "fixed", "top": 0, "left": 0, "bottom": 0,
-    "width": "18rem", "padding": "1rem 1rem", "backgroundColor": "#2c3e50",
-    "color": "#ecf0f1", "overflowY": "auto", "zIndex": 1031,
-    "transition": "margin-left .3s, width .3s" # Smooth transition
-}
-SIDEBAR_STYLE_HIDDEN = { # Style when sidebar is hidden
-    "position": "fixed", "top": 0, "left": 0, "bottom": 0,
-    "width": "18rem", "padding": "1rem 1rem", "backgroundColor": "#2c3e50",
-    "color": "#ecf0f1", "overflowY": "auto", "zIndex": 1031,
-    "transition": "margin-left .3s, width .3s",
-    "marginLeft": "-18rem" # Hide it off-screen
-}
 
 sidebar_header = dbc.Row(
     [dbc.Col(html.H4(config.APP_TITLE, className="app-title"), className="text-center")],
-    className="my-3", # Adjusted margin
+    className="my-3",
 )
 
-sidebar = html.Div([ # No changes to direct children here
+sidebar = html.Div([ 
     sidebar_header,
     html.Hr(style={'borderColor': '#34495e'}),
     dbc.Nav([
@@ -48,44 +28,33 @@ sidebar = html.Div([ # No changes to direct children here
         ),
     ], vertical=True, pills=True, className="flex-grow-1"),
     html.Div([
-        html.Small("F1 Dashboard v0.2.1", className="text-muted") # Increment version if you like
+        html.Small("F1 Dashboard v0.2.1", className="text-muted") 
     ], className="text-center mt-auto p-2", style={'position':'absolute', 'bottom':'0', 'left':'0', 'right':'0'})
-], style=SIDEBAR_STYLE_VISIBLE, id="sidebar") # Start with visible style
-
-# --- Content Area Definition ---
-CONTENT_STYLE_FULL_WIDTH = { # When sidebar is hidden
-    "marginLeft": "1rem", # Small margin
-    "padding": "1rem 1.5rem", 
-    "minHeight": "100vh", "backgroundColor": "#1c1c1c",
-    "transition": "margin-left .3s" # Smooth transition
-}
-CONTENT_STYLE_WITH_SIDEBAR = { # When sidebar is visible
-    "marginLeft": "19rem", # 18rem (sidebar) + 1rem (gap)
-    "padding": "1rem 1.5rem",
-    "minHeight": "100vh", "backgroundColor": "#1c1c1c",
-    "transition": "margin-left .3s"
-}
+], style=config.SIDEBAR_STYLE_HIDDEN, id="sidebar")
 
 # --- Sidebar Toggle Button ---
+# (sidebar_toggle_button remains unchanged)
 sidebar_toggle_button = dbc.Button(
-    html.I(className="fas fa-bars"), # Hamburger icon
+    html.I(className="fas fa-bars"), 
     id="sidebar-toggle",
     n_clicks=0,
-    className="position-fixed top-0 start-0 m-2 p-2", # Positioned at top-left
+    className="position-fixed top-0 start-0 m-2 p-2", 
     style={"zIndex": 1032, "fontSize": "1.2rem", "border": "none", "background": "rgba(0,0,0,0.3)"},
     color="light",
     outline=True
 )
 
-content_area = html.Div(id="page-content", style=CONTENT_STYLE_WITH_SIDEBAR) # Start with style for visible sidebar
+content_area = html.Div(id="page-content", style=config.CONTENT_STYLE_FULL_WIDTH)
 
 
+# --- Main App Layout Definition ---
 main_app_layout = html.Div([
     dcc.Location(id="url", refresh=False),
-    dcc.Store(id='user-timezone-store-data'),
-    dcc.Store(id='sidebar-state-store', data={'is_open': False}),
-    dcc.Store(id='sidebar-toggle-signal', data=None),
-    sidebar_toggle_button, # Add the toggle button
+    dcc.Store(id='user-session-id', storage_type='session'), # <<< ESSENTIAL: ADDED THIS FOR SESSION ID
+    dcc.Store(id='user-timezone-store-data', storage_type='session'), # Suggested: add storage_type
+    dcc.Store(id='sidebar-state-store', data={'is_open': False}, storage_type='local'), # Suggested: storage_type (local or session)
+    dcc.Store(id='sidebar-toggle-signal', data=None), # This is a signal, no storage needed
+    sidebar_toggle_button,
     sidebar,
     content_area,
 ])
@@ -93,31 +62,26 @@ main_app_layout = html.Div([
 
 def define_dashboard_layout():
     logger = logging.getLogger("F1App.Layout")
-    # logger.info("Creating application layout...")
+    # logger.info("Creating application layout...") # Can be noisy
 
     try:
-        replay.ensure_replay_dir_exists() #
-        replay_file_options = replay.get_replay_files(config.REPLAY_DIR) #
+        replay.ensure_replay_dir_exists()
+        replay_file_options = replay.get_replay_files(config.REPLAY_DIR)
     except Exception as e:
         logger.error(f"Failed to get replay files during layout creation: {e}")
         replay_file_options = []
 
-    # Use TIMING_TABLE_COLUMNS_CONFIG from config.py
-    # timing_table_columns = config.TIMING_TABLE_COLUMNS_CONFIG #
-
     tyre_style_base = {'textAlign': 'center', 'fontWeight': 'bold'}
-
-    # Define standard styles for personal and overall bests for readability
-    # Colors can be moved to config.py if preferred
-    PERSONAL_BEST_STYLE = {'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold'} # Green (Bootstrap success-like)
-    OVERALL_BEST_STYLE = {'backgroundColor': '#6f42c1', 'color': 'white', 'fontWeight': 'bold'}  # Purple (Bootstrap purple-like)
-    REGULAR_LAP_SECTOR_STYLE = {'backgroundColor': '#ffc107', 'color': '#343a40', 'fontWeight': 'normal'} # Bootstrap warning yellow, dark text
-    # Ensure these styles are distinct enough from tyre colors
-
+    # ... (Your style definitions: PERSONAL_BEST_STYLE, OVERALL_BEST_STYLE, etc. remain unchanged) ...
+    PERSONAL_BEST_STYLE = {'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold'} 
+    OVERALL_BEST_STYLE = {'backgroundColor': '#6f42c1', 'color': 'white', 'fontWeight': 'bold'}  
+    REGULAR_LAP_SECTOR_STYLE = {'backgroundColor': '#ffc107', 'color': '#343a40', 'fontWeight': 'normal'}
     IN_PIT_STYLE = {'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'}
-    PIT_DURATION_STYLE = {'backgroundColor': '#007bff', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'} # Bootstrap primary blue
+    PIT_DURATION_STYLE = {'backgroundColor': '#007bff', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'}
+
 
     stores_and_intervals = html.Div([
+        # ... (all your existing dcc.Interval and dcc.Store components remain here) ...
         dcc.Interval(id='interval-component-map-animation', interval=100, n_intervals=0),
         dcc.Interval(id='interval-component-timing', interval=350, n_intervals=0),
         dcc.Interval(id='interval-component-fast', interval=500, n_intervals=0),
@@ -131,27 +95,50 @@ def define_dashboard_layout():
         dcc.Store(id='track-map-figure-version-store'),
         dcc.Store(id='track-map-yellow-key-store', storage_type='memory', data=""),
         dcc.Store(id='clicked-car-driver-number-store', storage_type='memory'),
-        dcc.Interval(id='clientside-click-poll-interval', interval=100, n_intervals=0), # Polls every 100ms
+        dcc.Interval(id='clientside-click-poll-interval', interval=100, n_intervals=0), 
         dcc.Interval(id='clientside-update-interval', interval=1250, n_intervals=0, disabled=True)
     ])
 
     header_zone = dbc.Row([
-        dbc.Col(html.H2(config.APP_TITLE, className="mb-0"), width="auto", lg=4), # Use constant
-        dbc.Col(html.Div(id='session-info-display', children=config.TEXT_SESSION_INFO_AWAITING), # Use constant
+        # ... (header_zone remains unchanged) ...
+        dbc.Col(html.H2(config.APP_TITLE, className="mb-0"), width="auto", lg=4), 
+        dbc.Col(html.Div(id='session-info-display', children=config.TEXT_SESSION_INFO_AWAITING), 
                 lg=5, className="text-center align-self-center"),
-        dbc.Col(html.Div(id='connection-status', children=config.STATUS_INITIALIZING), # Use constant
+        dbc.Col(html.Div(id='connection-status', children=config.STATUS_INITIALIZING), 
                 lg=3, className="text-end align-self-center")
     ], className="mb-2 p-2 bg-dark text-white rounded", id='header-zone', align="center")
 
+    # --- MODIFIED control_card_content_list ---
     control_card_content_list = [
         dbc.Row([
             dbc.Col(dbc.Button("Connect Live", id="connect-button", color="success", size="sm"), width="auto", className="me-1"),
-            dbc.Col(dbc.Checkbox(id='record-data-checkbox', label="Record Live Data", value=False,
-                                 className="form-check-inline ms-md-2"), width="auto", className="align-self-center mt-2 mt-md-0"),
+            dbc.Col(dbc.Checkbox(
+                id='record-data-checkbox', 
+                label="Record Live Data", 
+                value=False,
+                persistence=True, # ADDED: For UI state persistence
+                persistence_type='session', # ADDED: Store in session storage
+                className="form-check-inline ms-md-2"
+            ), width="auto", className="align-self-center mt-2 mt-md-0"),
         ], className="mb-2 justify-content-start justify-content-md-start"),
+        
+        # --- ADDED: Row for Auto-Connect Switch ---
+        dbc.Row([
+            dbc.Col(html.Label("Enable Auto-Connect:", className="me-2", style={'color': 'white'}), width="auto", # Assuming dark theme
+                    className="align-self-center"), # Align label vertically
+            dbc.Col(dbc.Switch(
+                id='session-auto-connect-switch', 
+                value=False, # Default to off
+                persistence=True, 
+                persistence_type='session'
+            ), width="auto", className="align-self-center") # Align switch vertically
+        ], className="mb-3 mt-2 justify-content-start justify-content-md-start", align="center"), # Added align="center" to row
+
+        html.Hr(style={'marginTop': '15px', 'marginBottom': '15px'}), # Separator
+
         dbc.Row([
             dbc.Col(dcc.Dropdown(id='replay-file-selector', options=replay_file_options,
-                                 placeholder=config.TEXT_REPLAY_SELECT_FILE, style={'color': '#333', 'minWidth': '180px'}), # Use constant
+                                 placeholder=config.TEXT_REPLAY_SELECT_FILE, style={'color': '#333', 'minWidth': '180px'}),
                     xs=12, sm=6, md=4, lg=4, className="mb-2 mb-sm-0"),
             dbc.Col(dcc.Slider(id='replay-speed-slider', min=0.1, max=10, step=0.1, value=1.0,
                                marks={0.5:'0.5x', 1:'1x', 2:'2x', 5:'5x', 10:'10x'},
@@ -166,18 +153,21 @@ def define_dashboard_layout():
             )
         ],className="justify-content-start justify-content-md-start mt-2")
     ]
+    # --- END MODIFIED control_card_content_list ---
+
     control_zone = html.Div([
+        # ... (control_zone structure remains unchanged, uses control_card_content_list) ...
         dbc.Button("Show/Hide Controls",id="collapse-controls-button",className="mb-2",color="secondary",n_clicks=0,size="sm"),
         dbc.Collapse(
             dbc.Card(dbc.CardBody(children=control_card_content_list)),
             id="collapse-controls",
-            is_open=True, # Default to open
+            is_open=True, 
         )
     ], className="mb-3", id='control-zone-wrapper')
 
+    # ... (lap_and_session_time_info_component, status_weather_bar, main_data_zone, analysis_zone, app_footer remain unchanged) ...
     lap_and_session_time_info_component = html.Div(
         [
-            # Lap Counter Div
             html.Div(
                 [
                     html.Span("Laps: ", className='lap-time-label', id='lap-counter-label'),
@@ -188,7 +178,6 @@ def define_dashboard_layout():
                 style={'display': 'inline-block', 'margin-right': '20px', 'color': 'white',
                        'font-size': '0.9rem'}
             ),
-            # Session Timer / Extrapolated Clock Div
             html.Div(
                 [
                     html.Span(id='session-timer-label', className='lap-time-label',
@@ -261,7 +250,7 @@ def define_dashboard_layout():
     main_data_zone = dbc.Row([
         dbc.Col([
             html.H4("Live Timing"),
-            html.P(id='timing-data-timestamp', children=config.TEXT_WAITING_FOR_DATA, style={'fontSize':'0.8rem', 'color':'grey', 'marginBottom':'2px'}), # Use constant
+            html.P(id='timing-data-timestamp', children=config.TEXT_WAITING_FOR_DATA, style={'fontSize':'0.8rem', 'color':'grey', 'marginBottom':'2px'}),
             dash_table.DataTable(
                 id='timing-data-actual-table',
                 fixed_rows={'headers': True},
@@ -276,16 +265,16 @@ def define_dashboard_layout():
                     'lineHeight': '1.2'
                 },
                 css=[
-                        {
-                            'selector': 'td div.cell-markdown > p',
-                            'rule': '''
+                    {
+                        'selector': 'td div.cell-markdown > p',
+                        'rule': '''
                                 margin-top: 0 !important;
                                 margin-bottom: 0 !important;
                                 padding-top: 0.1em !important;
                                 padding-bottom: 0.1em !important;
                                 line-height: 1.1 !important;
-                            '''
-                        },
+                        '''
+                    },
                 ],
                 style_header={
                     'backgroundColor': 'rgb(30, 30, 30)', 'fontWeight': 'bold',
@@ -309,7 +298,7 @@ def define_dashboard_layout():
                         'width': '50px',
                         'minWidth': '45px',
                         'maxWidth': '60px'
-                     },
+                       },
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "S " || {Tyre} = "S"'},
                         'backgroundColor': '#D90000', 'color': 'white', **tyre_style_base},
                     {'if': {'column_id': 'Tyre', 'filter_query': '{Tyre} contains "M " || {Tyre} = "M"'},
@@ -325,7 +314,7 @@ def define_dashboard_layout():
                         'color': 'grey',
                         'textAlign': 'center',
                         'fontWeight': 'bold' 
-                     },
+                       },
                     {'if': {'column_id': 'Pos'}, 'textAlign': 'center', 'fontWeight': 'bold',
                         'width': '35px', 'minWidth': '35px', 'maxWidth': '40px'},
                     {'if': {'column_id': 'No.'}, 'textAlign': 'right', 'width': '35px',
@@ -333,19 +322,19 @@ def define_dashboard_layout():
                     {'if': {'column_id': 'Car'}, 'textAlign': 'left',
                         'width': '45px', 'minWidth': '45px', 'maxWidth': '55px'},
                     {'if': {'column_id': 'Pits'},
-                     'width': '80px',
-                     'minWidth': '70px',
-                     'maxWidth': '100px',
-                     'textAlign': 'center',
-                     'whiteSpace': 'nowrap'
-                     },
+                       'width': '80px',
+                       'minWidth': '70px',
+                       'maxWidth': '100px',
+                       'textAlign': 'center',
+                       'whiteSpace': 'nowrap'
+                       },
                     {'if': {'column_id': 'IntervalGap'},
                         'width': '75px',
                         'minWidth': '70px',
                         'maxWidth': '90px',
                         'textAlign': 'right',
                         'paddingRight': '5px'
-                     },
+                       },
                     {'if': {'column_id': 'Best Lap', 'filter_query': '{IsOverallBestLap_Str} = "TRUE" && {Best Lap} != "-"'}, **OVERALL_BEST_STYLE},
                     {'if': {'column_id': 'Last Lap', 'filter_query': '{IsLastLapEventOverallBest_Str} = "TRUE" && {Last Lap} != "-"'}, **OVERALL_BEST_STYLE},
                     {'if': {'column_id': 'S1', 'filter_query': '{IsS1EventOverallBest_Str} = "TRUE" && {S1} != "-"'}, **OVERALL_BEST_STYLE},
@@ -360,15 +349,15 @@ def define_dashboard_layout():
                     {'if': {'column_id': 'S2', 'filter_query': '{IsPersonalBestS2_Str} = "FALSE" && {IsS2EventOverallBest_Str} = "FALSE" && {S2} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
                     {'if': {'column_id': 'S3', 'filter_query': '{IsPersonalBestS3_Str} = "FALSE" && {IsS3EventOverallBest_Str} = "FALSE" && {S3} != "-"'}, **REGULAR_LAP_SECTOR_STYLE},
                     {'if': {'column_id': 'Pits',
-                            'filter_query': '{PitDisplayState_Str} = "IN_PIT_LIVE"'}, **IN_PIT_STYLE},
+                             'filter_query': '{PitDisplayState_Str} = "IN_PIT_LIVE"'}, **IN_PIT_STYLE},
                     {'if': {'column_id': 'Pits',
-                            'filter_query': '{PitDisplayState_Str} = "SHOW_COMPLETED_DURATION"'}, **PIT_DURATION_STYLE},
+                             'filter_query': '{PitDisplayState_Str} = "SHOW_COMPLETED_DURATION"'}, **PIT_DURATION_STYLE},
                     {'if': {'column_id': ['Pos', 'No.', 'Car', 'IntervalGap', 'Pits', 'Status'], 
-                            'filter_query': '{QualiHighlight_Str} = "RED_DANGER"'},
-                     **config.QUALIFYING_DANGER_RED_STYLE},
+                             'filter_query': '{QualiHighlight_Str} = "RED_DANGER"'},
+                       **config.QUALIFYING_DANGER_RED_STYLE},
                     {'if': {'column_id': ['Pos', 'No.', 'Car', 'Tyre', 'Last Lap', 'IntervalGap', 'Best Lap', 'S1', 'S2', 'S3', 'Pits', 'Status'], 
-                            'filter_query': '{QualiHighlight_Str} = "GREY_ELIMINATED"'},
-                     **config.QUALIFYING_ELIMINATED_STYLE},
+                             'filter_query': '{QualiHighlight_Str} = "GREY_ELIMINATED"'},
+                       **config.QUALIFYING_ELIMINATED_STYLE},
                     {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px',
                         'maxWidth': '85px', 'textAlign': 'right', 'paddingRight': '5px'},
                     {'if': {'column_id': 'Best Lap'}, 'width': '70px', 'minWidth': '70px',
@@ -387,10 +376,10 @@ def define_dashboard_layout():
             dbc.Accordion([
                 dbc.AccordionItem(
                     children=[dcc.Textarea(id='race-control-log-display', value=config.TEXT_RC_WAITING,
-                                 style={'width': '100%', 'height': '140px',
-                                        'backgroundColor': '#2B2B2B', 'color': '#E0E0E0',
-                                        'border': '1px solid #444', 'fontFamily': 'monospace',
-                                        'fontSize':'0.75rem'}, readOnly=True)],
+                                            style={'width': '100%', 'height': '140px',
+                                                   'backgroundColor': '#2B2B2B', 'color': '#E0E0E0',
+                                                   'border': '1px solid #444', 'fontFamily': 'monospace',
+                                                   'fontSize':'0.75rem'}, readOnly=True)],
                     title="Race Control Messages", item_id="rcm-accordion"
                 ),
                 dbc.AccordionItem( 
@@ -441,11 +430,11 @@ def define_dashboard_layout():
                                     'margin': config.TRACK_MAP_MARGINS, 
                                     'plot_bgcolor': 'rgb(30,30,30)',
                                     'paper_bgcolor': 'rgba(0,0,0,0)',
-                                    'dragmode': False
+                                    'dragmode': False # Disable all drag modes
                                 }),
                                 config={
                                     'displayModeBar': False,
-                                    'scrollZoom': False,
+                                    'scrollZoom': False, # Explicitly disable scroll zoom
                                     'autosizable': True,
                                     'responsive': True
                                 }
@@ -454,29 +443,28 @@ def define_dashboard_layout():
                     )
                 ]), className="mb-2"
             ),
-            # MODIFIED: Driver Focus Card
             dbc.Card(
                 dbc.CardBody([
                     html.H5("Driver Focus", className="card-title mb-2"),
                     dcc.Dropdown(
-                        id='driver-select-dropdown', options=[], placeholder=config.TEXT_DRIVER_SELECT, # Use constant
+                        id='driver-select-dropdown', options=[], placeholder=config.TEXT_DRIVER_SELECT,
                         style={'color': '#333', 'marginBottom':'10px', 'fontSize': '0.9rem'}
                     ),
-                    html.Div(id='driver-details-output', # Basic driver name/team will go here
+                    html.Div(id='driver-details-output',
                              style={'marginBottom':'10px', 'fontSize': '0.8rem', 'minHeight': '40px'}),
                     dbc.Tabs(
                         id="driver-focus-tabs",
-                        active_tab="tab-telemetry", # Default active tab
+                        active_tab="tab-telemetry", 
                         children=[
                             dbc.Tab(label="Telemetry", tab_id="tab-telemetry", children=[
                                 dbc.Row([
                                      dbc.Col(html.Label("Lap:", style={'fontSize':'0.85rem'}), width="auto",
                                              className="pe-0 align-self-center"),
                                      dbc.Col(dcc.Dropdown(
-                                                 id='lap-selector-dropdown', options=[], placeholder="Lap",
-                                                 style={'minWidth': '70px', 'color': '#333', 'fontSize':'0.85rem'},
-                                                 clearable=False, searchable=False, disabled=True
-                                             ), className="ps-1", width=True)
+                                             id='lap-selector-dropdown', options=[], placeholder="Lap",
+                                             style={'minWidth': '70px', 'color': '#333', 'fontSize':'0.85rem'},
+                                             clearable=False, searchable=False, disabled=True
+                                         ), className="ps-1", width=True)
                                 ], className="mb-2 align-items-center g-1"),
                                 html.Div(
                                     style={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px'}, 
@@ -496,22 +484,22 @@ def define_dashboard_layout():
                                         )
                                     ]
                                 )
-                            ]), # End Telemetry Tab
+                            ]), 
                             dbc.Tab(label="Stint History", tab_id="tab-stint-history", children=[
-                                html.Div( # Container for the stint history table
+                                html.Div( 
                                     dash_table.DataTable(
                                         id='stint-history-table',
-                                        columns=[ # Define columns for stint history
+                                        columns=[ 
                                             {'name': 'Stint', 'id': 'stint_number'},
                                             {'name': 'Lap In', 'id': 'start_lap'},
                                             {'name': 'Compound', 'id': 'compound'},
-                                            {'name': 'New', 'id': 'is_new_tyre_display'}, # For 'Y'/'N' display
+                                            {'name': 'New', 'id': 'is_new_tyre_display'},
                                             {'name': 'Age (Start)', 'id': 'tyre_age_at_stint_start'},
                                             {'name': 'Lap Out', 'id': 'end_lap'},
                                             {'name': 'Stint Laps', 'id': 'total_laps_on_tyre_in_stint'},
                                             {'name': 'Total Tyre Age', 'id': 'tyre_total_laps_at_stint_end'},
                                         ],
-                                        style_table={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px', 'overflowY': 'auto', 'marginTop': '10px'}, # Match telemetry height for now
+                                        style_table={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px', 'overflowY': 'auto', 'marginTop': '10px'},
                                         style_cell={
                                             'textAlign': 'center', 'padding': '3px', 'fontSize':'0.75rem',
                                             'backgroundColor': 'rgb(60, 60, 60)', 'color': 'white',
@@ -526,17 +514,15 @@ def define_dashboard_layout():
                                         style_data_conditional=[
                                             {'if': {'row_index': 'odd'},
                                              'backgroundColor': 'rgb(50, 50, 50)'},
-                                            # Conditional styling for tyre compounds can be added here later
                                         ]
                                     ),
-                                    # Use a similar height as the telemetry graph for now
                                     style={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px', 'marginTop': '5px'}
                                 )
-                            ]) # End Stint History Tab
-                        ] # End Tabs children
-                    ) # End dbc.Tabs
-                ]) # End CardBody
-            ) # End Driver Focus Card
+                            ]) 
+                        ] 
+                    ) 
+                ]) 
+            ) 
         ], lg=5, md=12, id='contextual-info-col',
            style={'display': 'flex', 'flexDirection': 'column'}
         ),
@@ -548,23 +534,23 @@ def define_dashboard_layout():
                 html.H5("Lap Time Progression", className="card-title mb-2"),
                 dcc.Dropdown(
                     id='lap-time-driver-selector', options=[], value=[], multi=True,
-                    placeholder=config.TEXT_LAP_CHART_SELECT_DRIVERS_PLACEHOLDER, # Use constant
+                    placeholder=config.TEXT_LAP_CHART_SELECT_DRIVERS_PLACEHOLDER,
                     style={'marginBottom': '10px', 'color': '#333'}
                 ),
                 html.Div(
-                    style={'height': f'{config.LAP_PROG_WRAPPER_HEIGHT}px'}, #
+                    style={'height': f'{config.LAP_PROG_WRAPPER_HEIGHT}px'}, 
                     children=[
                         dcc.Graph(
                             id='lap-time-progression-graph',
                             style={'height': '100%', 'width': '100%'},
                             figure=go.Figure(layout={
                                 'template': 'plotly_dark',
-                                'uirevision': config.INITIAL_LAP_PROG_UIREVISION, # Use constant
-                                'annotations': [{'text': config.TEXT_LAP_PROG_SELECT_DRIVERS, 'xref': 'paper', # Use constant
+                                'uirevision': config.INITIAL_LAP_PROG_UIREVISION, 
+                                'annotations': [{'text': config.TEXT_LAP_PROG_SELECT_DRIVERS, 'xref': 'paper', 
                                                  'yref': 'paper', 'showarrow': False, 'font': {'size': 12}}],
                                 'xaxis': {'visible': False, 'range': [0,1]},
                                 'yaxis': {'visible': False, 'range': [0,1]},
-                                'margin': config.LAP_PROG_MARGINS_EMPTY # Use constant
+                                'margin': config.LAP_PROG_MARGINS_EMPTY 
                             }),
                             config={'autosizable': True, 'responsive': True}
                         )
@@ -597,38 +583,8 @@ def define_dashboard_layout():
         main_data_zone,
         analysis_zone,
         app_footer
-    ], fluid=True, className="dbc dbc-slate p-2")
+    ], fluid=True, className="dbc dbc-slate p-2") # Assuming dbc-slate is your theme class
 
-    # logger.info("Layout created.") #
     return dashboard_page_content
     
 dashboard_content_layout = define_dashboard_layout()
-
-# --- Callback for Sidebar Toggle ---
-@app.callback(
-    [Output("sidebar", "style"),
-     Output("page-content", "style"),
-     Output("sidebar-state-store", "data"),
-     Output("sidebar-toggle-signal", "data")], # <<< ADDED OUTPUT
-    [Input("sidebar-toggle", "n_clicks")],
-    [State("sidebar-state-store", "data")]
-)
-def toggle_sidebar(n_clicks, sidebar_state_data):
-    is_open_currently = sidebar_state_data.get('is_open', False) if sidebar_state_data else False
-
-    if n_clicks is None or n_clicks == 0: 
-        new_is_open_state = is_open_currently 
-    else: 
-        new_is_open_state = not is_open_currently
-
-    if new_is_open_state:
-        sidebar_style_to_apply = SIDEBAR_STYLE_VISIBLE
-        content_style_to_apply = CONTENT_STYLE_WITH_SIDEBAR
-    else:
-        sidebar_style_to_apply = SIDEBAR_STYLE_HIDDEN
-        content_style_to_apply = CONTENT_STYLE_FULL_WIDTH
-
-    current_store_val = {'is_open': new_is_open_state}
-
-    # Update the sidebar-toggle-signal store with the current time
-    return sidebar_style_to_apply, content_style_to_apply, current_store_val, time.time() # <<< ADDED time.time()

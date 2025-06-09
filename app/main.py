@@ -1,520 +1,250 @@
 # main.py
 import logging
 import sys
-import os 
+import os
 import threading
 import time
-import faulthandler # Already in your file
-import datetime # Add this
-import pytz     # Add this
+import faulthandler
+import datetime
+import pytz
 import atexit
+import uuid  # For session IDs if needed, though app_state handles Flask session ID
 
 import dash
-from dash import Input, Output, html, dcc # dcc needed for Location
+from dash import Input, Output, State, html, dcc
 import dash_bootstrap_components as dbc
 
 # --- Local Module Imports ---
-import app_state
-import config 
+import app_state  # Uses the new multi-session structure from Response #14
+import config
 import utils
-from app_instance import app, server # Import app AND server from app_instance
+from app_instance import app, server  # Import app AND server
 import fastf1
 
-# Import the new main_app_layout and the specific page layouts
-from layout import main_app_layout, dashboard_content_layout # dashboard_content_layout is your original dashboard content
-from schedule_page import schedule_page_layout, get_current_year_schedule_with_sessions # Import the function
+# Import layout components
+from layout import main_app_layout, dashboard_content_layout
+# Import the cached schedule function
+from schedule_page import get_current_year_schedule_with_sessions, schedule_page_layout
 
 # Import callbacks so they are registered
-import callbacks  # Your existing dashboard callbacks
-# schedule_page.py also contains its own callbacks, they are registered when schedule_page is imported above.
-import signalr_client # Keep if it has setup logic, though usually just functions
-import data_processing # Your existing data_processing
-import replay # Your existing replay
+import callbacks
+# These modules will be refactored to be session-aware in subsequent steps
+import signalr_client
+import data_processing
+import replay
 
-# --- Logging Setup (from your existing main.py) ---
-# raw_message_formatter is defined but seems unused later, can be removed if so.
-# raw_message_formatter = logging.Formatter(config.LOG_FORMAT_RAW_MESSAGE) 
+# --- Logging Setup (from your previous main.py) ---
+
 def setup_logging():
     log_formatter = logging.Formatter(config.LOG_FORMAT_DEFAULT)
     actual_root_logger = logging.getLogger()
-    actual_root_logger.setLevel(logging.INFO) 
+    actual_root_logger.setLevel(logging.INFO)
     if actual_root_logger.hasHandlers():
-        # print(f"Root logger initially has handlers: {actual_root_logger.handlers}. Clearing them.", file=sys.stderr) # DEBUG
         actual_root_logger.handlers.clear()
     root_console_handler = logging.StreamHandler(sys.stdout)
     root_console_handler.setFormatter(log_formatter)
     actual_root_logger.addHandler(root_console_handler)
-    # print(f"Root logger configured with handler: {actual_root_logger.handlers}", file=sys.stderr) # DEBUG
 
     f1_app_logger = logging.getLogger("F1App")
-    f1_app_logger.setLevel(logging.INFO) 
-    f1_app_logger.propagate = True 
-    
+    f1_app_logger.setLevel(logging.INFO)
+    f1_app_logger.propagate = True
+
+    # Logger for per-session auto-connect (will be dynamically named)
+    # For general auto-connect config/module logging:
     logging.getLogger("F1App.AutoConnect").setLevel(logging.DEBUG)
-    # f1_app_logger.info("F1App application logger level set. Will use root handler.") # DEBUG
+    logging.getLogger("F1App.SessionID").setLevel(logging.INFO)
 
     logging.getLogger("SignalRCoreClient").setLevel(logging.WARNING)
     logging.getLogger("signalrcore").setLevel(logging.WARNING)
-    
+
     werkzeug_logger = logging.getLogger('werkzeug')
-    werkzeug_logger.setLevel(logging.ERROR if not config.DASH_DEBUG_MODE else logging.INFO)
-    werkzeug_logger.propagate = True 
+    werkzeug_logger.setLevel(
+        logging.ERROR if not config.DASH_DEBUG_MODE else logging.INFO)
+    werkzeug_logger.propagate = True
     if werkzeug_logger.hasHandlers():
-        # module_logger_temp = logging.getLogger("F1App") 
-        # module_logger_temp.info(f"Werkzeug logger has handlers: {werkzeug_logger.handlers}. Clearing them.") # DEBUG
         werkzeug_logger.handlers.clear()
-    # f1_app_logger.info(f"Werkzeug logger level set to {logging.getLevelName(werkzeug_logger.getEffectiveLevel())}. Will use root handler.") # DEBUG
 
     logging.getLogger('requests').setLevel(logging.WARNING)
     logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('fastf1').setLevel(logging.INFO) # Keep FastF1 INFO for useful messages
-    # actual_root_logger.info("Root logger configured. Specific loggers will propagate to it.") # DEBUG
+    logging.getLogger('fastf1').setLevel(logging.INFO)
 
-# --- Initialize FastF1 Cache ---
-# This is good to do early. config.FASTF1_CACHE_DIR should be a Path object from your config.
+
+# --- Initialize FastF1 Cache (from your previous main.py) ---
 if hasattr(config, 'FASTF1_CACHE_DIR') and config.FASTF1_CACHE_DIR:
     try:
-        config.FASTF1_CACHE_DIR.mkdir(parents=True, exist_ok=True) # Ensure it exists
+        config.FASTF1_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         fastf1.Cache.enable_cache(config.FASTF1_CACHE_DIR)
-        # print(f"FastF1 Cache enabled at: {config.FASTF1_CACHE_DIR}") # DEBUG
+        # print(f"FastF1 Cache enabled at: {config.FASTF1_CACHE_DIR}")
     except Exception as e:
         print(f"Error enabling FastF1 cache at {config.FASTF1_CACHE_DIR}: {e}")
 else:
     print("Warning: FASTF1_CACHE_DIR not defined in config.py as a Path object or is None.")
 
-
 # --- Assign Main App Layout ---
-app.layout = main_app_layout # This now includes the sidebar and the content area
+app.layout = main_app_layout
 
-# --- Callback to Update Page Content Based on URL ---
+# --- Callback to Update Page Content Based on URL (from your previous main.py) ---
+
+
 @app.callback(
     Output("page-content", "children"),
     [Input("url", "pathname")]
 )
 def display_page(pathname):
     if pathname == "/schedule":
-        return schedule_page_layout
-    elif pathname == "/": # Default to dashboard
-        return dashboard_content_layout
-    else: # Handle 404 Not Found
+        return schedule_page_layout  # Already imported
+    elif pathname == "/":
+        return dashboard_content_layout  # Already imported
+    else:
         return dbc.Container([
             html.H1("404: Not found", className="text-danger display-3 mt-5"),
             html.Hr(),
-            html.P(f"The pathname {pathname} was not recognised.", className="lead"),
+            html.P(
+                f"The pathname {pathname} was not recognised.", className="lead"),
             dbc.Button("Go to Dashboard", href="/", color="primary", size="lg")
         ], fluid=True, className="py-5 text-center bg-dark text-light vh-100")
-        
-        
+
+
+# --- Clientside Timezone Callback (from your previous main.py) ---
 app.clientside_callback(
     dash.ClientsideFunction(
         namespace='clientside',
-        function_name='getTimezone' # This JS function must exist in assets/custom_script.js
+        function_name='getTimezone'
     ),
-    Output('user-timezone-store-data', 'data'), # This store MUST be in your main_app_layout
-    Input('url', 'pathname') # Triggered on page load/navigation
+    Output('user-timezone-store-data', 'data'),
+    Input('url', 'pathname'),
 )
 
-AUTO_CONNECT_POLL_INTERVAL_SECONDS = 60
-AUTO_CONNECT_LEAD_TIME_MINUTES = 5
-INITIAL_AUTO_CONNECT_DELAY_SECONDS = 5  # Short delay on startup
-AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES = 10  # New constant
+# --- Target function for per-session auto-connect threads ---
 
-
-def auto_connect_monitor():
-    logger_auto_connect = logging.getLogger("F1App.AutoConnect")
-    logger_auto_connect.info("Auto-connect monitor thread started.")
-
-    if app_state.stop_event.wait(timeout=INITIAL_AUTO_CONNECT_DELAY_SECONDS):
-        logger_auto_connect.info(
-            "Auto-connect monitor: Stop event received during initial delay. Exiting.")
-        return
-
-    while not app_state.stop_event.is_set():
-        try:
-            current_app_s = "Unknown"
-            auto_connect_attempted_for = None
-            # Renamed to avoid conflict with datetime module
-            auto_session_end_detected_utc_val = None
-            current_live_session_unique_id = None
-
-            with app_state.app_state_lock:
-                current_app_s = app_state.app_status["state"]
-                auto_connect_attempted_for = app_state.app_status.get(
-                    "auto_connect_attempted_for_session")
-                auto_session_end_detected_utc_val = app_state.app_status.get(
-                    "auto_connected_session_end_detected_utc")
-
-                if current_app_s == "Live":
-                    live_year = app_state.session_details.get('Year')
-                    live_event_name = app_state.session_details.get(
-                        'EventName')
-                    live_session_name = app_state.session_details.get(
-                        'SessionName')
-                    if live_year and live_event_name and live_session_name:
-                        current_live_session_unique_id = f"{live_year}_{live_event_name}_{live_session_name}"
-                    else:
-                        logger_auto_connect.debug(
-                            "Could not form unique ID for current live session from session_details.")
-
-            # --- Auto-disconnection logic for finished auto-connected sessions ---
-            if current_app_s == "Live" and \
-               auto_connect_attempted_for and \
-               current_live_session_unique_id == auto_connect_attempted_for:
-
-                current_session_feed_status = "Unknown"
-                with app_state.app_state_lock:
-                    current_session_feed_status = app_state.session_details.get(
-                        'SessionStatus', 'Unknown')
-
-                # Consider session statuses that indicate a definitive end or prolonged inactivity
-                ended_statuses = ["Finished", "Ends", "Aborted", "Inactive"]
-                if current_session_feed_status in ended_statuses:
-                    if auto_session_end_detected_utc_val is None:
-                        finished_time = datetime.datetime.now(pytz.utc)
-                        logger_auto_connect.info(
-                            f"Auto-connected session '{auto_connect_attempted_for}' status is '{current_session_feed_status}' at {finished_time}. "
-                            f"Starting {AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES}-min disconnect countdown."
-                        )
-                        with app_state.app_state_lock:
-                            app_state.app_status["auto_connected_session_end_detected_utc"] = finished_time
-                    else:
-                        # auto_session_end_detected_utc_val is already set (it's a datetime object)
-                        if datetime.datetime.now(pytz.utc) >= (auto_session_end_detected_utc_val + datetime.timedelta(minutes=AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES)):
-                            logger_auto_connect.info(
-                                f"{AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES}-minute post-session timer expired for auto-connected session '{auto_connect_attempted_for}'. Disconnecting."
-                            )
-                            signalr_client.stop_connection()  # This will change app state
-                            with app_state.app_state_lock:
-                                app_state.app_status["auto_connect_attempted_for_session"] = None
-                                app_state.app_status["auto_connected_session_end_detected_utc"] = None
-
-                            logger_auto_connect.info(
-                                f"Auto-disconnected session {auto_connect_attempted_for}. Monitor will pause and then re-scan.")
-                            if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS):
-                                break
-                            continue  # Next iteration of the monitor loop
-                else:  # Session is live and running (not in ended_statuses)
-                    if auto_session_end_detected_utc_val is not None:
-                        logger_auto_connect.info(
-                            f"Auto-connected session '{auto_connect_attempted_for}' is active again (status: {current_session_feed_status}). Clearing end timer.")
-                        with app_state.app_state_lock:
-                            app_state.app_status["auto_connected_session_end_detected_utc"] = None
-            # --- End of auto-disconnection logic ---
-
-            # If app is not in a state to scan for new sessions, sleep and continue
-            if current_app_s not in ["Idle", "Stopped", "Error", "Playback Complete"]:
-                logger_auto_connect.debug(
-                    f"Auto-connect: App state is '{current_app_s}', monitor will sleep.")
-                if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS):
-                    break
-                continue
-
-            logger_auto_connect.debug(
-                "Auto-connect: Attempting to fetch schedule...")
-            full_schedule_data = get_current_year_schedule_with_sessions()
-
-            if app_state.stop_event.is_set():
-                logger_auto_connect.info(
-                    "Auto-connect: Stop event detected after schedule fetch. Exiting.")
-                break
-
-            if not full_schedule_data:
-                logger_auto_connect.info(
-                    "Auto-connect: No schedule data returned. Will retry.")
-                if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS * 2):
-                    break
-                continue
-
-            now_utc = datetime.datetime.now(pytz.utc)
-            next_session_to_connect = None
-            min_future_start_time = datetime.datetime.max.replace(
-                tzinfo=pytz.utc)
-
-            for event in full_schedule_data:
-                if app_state.stop_event.is_set():
-                    break
-                event_official_name = event.get(
-                    'OfficialEventName', event.get('EventName', 'Unknown Event'))
-                event_circuit_name = event.get('Location', 'Unknown Circuit')
-                event_date_str = event.get('EventDate')
-                event_year = now_utc.year
-                if event_date_str:
-                    parsed_event_date = utils.parse_iso_timestamp_safe(
-                        event_date_str)
-                    if parsed_event_date:
-                        event_year = parsed_event_date.year
-                    else:
-                        logger_auto_connect.warning(
-                            f"Could not parse EventDate string '{event_date_str}' for event '{event_official_name}' to get year. Using current year {event_year}.")
-                else:
-                    logger_auto_connect.debug(
-                        f"Event '{event_official_name}' missing 'EventDate'. Using current year {event_year}.")
-
-                for session in event.get('Sessions', []):
-                    if app_state.stop_event.is_set():
-                        break
-                    session_name = session.get('SessionName')
-                    session_date_utc_str = session.get('SessionDateUTC')
-                    if session_date_utc_str and session_name:
-                        try:
-                            session_dt_utc = datetime.datetime.fromisoformat(
-                                session_date_utc_str.replace('Z', '+00:00'))
-                            session_dt_utc = session_dt_utc.astimezone(
-                                pytz.utc) if session_dt_utc.tzinfo else pytz.utc.localize(session_dt_utc)
-                            if session_dt_utc > now_utc and session_dt_utc < min_future_start_time:
-                                min_future_start_time = session_dt_utc
-                                session_type_auto = "Unknown"
-                                s_name_lower = session_name.lower()
-                                if "practice" in s_name_lower:
-                                    session_type_auto = config.SESSION_TYPE_PRACTICE
-                                elif "qualifying" in s_name_lower:
-                                    session_type_auto = config.SESSION_TYPE_QUALI
-                                elif "sprint" in s_name_lower and "qualifying" not in s_name_lower:
-                                    session_type_auto = config.SESSION_TYPE_SPRINT
-                                elif "race" in s_name_lower and "pre-race" not in s_name_lower:
-                                    session_type_auto = config.SESSION_TYPE_RACE
-                                next_session_to_connect = {
-                                    'event_name': event_official_name, 'session_name': session_name,
-                                    'start_time_utc': session_dt_utc, 'year': event_year,
-                                    'circuit_name': event_circuit_name, 'circuit_key': event.get('CircuitKey'),
-                                    'session_type': session_type_auto,
-                                    'unique_id': f"{event_year}_{event_official_name}_{session_name}"
-                                }
-                        except ValueError as e_parse:
-                            logger_auto_connect.warning(
-                                f"Auto-connect: Error parsing session date '{session_date_utc_str}' for '{session_name}' in '{event_official_name}': {e_parse}")
-                            continue
-                if app_state.stop_event.is_set():
-                    break
-
-            if app_state.stop_event.is_set():
-                break
-
-            if next_session_to_connect:
-                session_unique_id = next_session_to_connect['unique_id']
-                time_to_session = next_session_to_connect['start_time_utc'] - now_utc
-                logger_auto_connect.debug(
-                    f"Next session for auto-connect: {next_session_to_connect['event_name']} - {next_session_to_connect['session_name']} "
-                    f"starts in {time_to_session}. Attempted for this ID: {session_unique_id == auto_connect_attempted_for}"
-                )
-
-                if time_to_session.total_seconds() <= (AUTO_CONNECT_LEAD_TIME_MINUTES * 60) and \
-                   time_to_session.total_seconds() > -300:  # Session is due or started very recently
-                    if auto_connect_attempted_for == session_unique_id:
-                        logger_auto_connect.info(
-                            f"Auto-connect already handled (attempted or finished) for {session_unique_id}. Skipping.")
-                    else:
-                        logger_auto_connect.info(
-                            f"Auto-connecting for: {next_session_to_connect['event_name']} - {next_session_to_connect['session_name']}"
-                        )
-                        app_state.update_target_session_details(
-                            year=next_session_to_connect['year'], circuit_key=next_session_to_connect.get(
-                                'circuit_key'),
-                            circuit_name=next_session_to_connect[
-                                'circuit_name'], event_name=next_session_to_connect['event_name'],
-                            session_name=next_session_to_connect['session_name'], session_start_time_utc=next_session_to_connect['start_time_utc'].isoformat(
-                            ),
-                            session_type=next_session_to_connect['session_type']
-                        )
-                        should_record_live = False
-                        with app_state.app_state_lock:
-                            should_record_live = app_state.record_live_data
-                            if app_state.stop_event.is_set():
-                                logger_auto_connect.info(
-                                    "Auto-connect: Clearing pre-existing stop_event prior to connection attempt.")
-                            app_state.stop_event.clear()
-                            app_state.app_status["auto_connect_attempted_for_session"] = session_unique_id
-                            # Reset for new session
-                            app_state.app_status["auto_connected_session_end_detected_utc"] = None
-
-                        websocket_url, ws_headers = None, None
-                        try:
-                            with app_state.app_state_lock:
-                                app_state.app_status.update(
-                                    {"state": "Initializing", "connection": config.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS})
-                            websocket_url, ws_headers = signalr_client.build_connection_url(
-                                config.NEGOTIATE_URL_BASE, config.HUB_NAME)
-                            if not websocket_url or not ws_headers:
-                                raise ConnectionError(
-                                    "Negotiation failed for auto-connect.")
-                        except Exception as e_neg:
-                            logger_auto_connect.error(
-                                f"Auto-connect: Negotiation error: {e_neg}", exc_info=True)
-                            with app_state.app_state_lock:
-                                app_state.app_status.update(
-                                    {"state": "Error", "connection": config.TEXT_SIGNALR_NEGOTIATION_ERROR_PREFIX + str(type(e_neg).__name__)})
-
-                        if app_state.stop_event.is_set():
-                            logger_auto_connect.info(
-                                "Auto-connect: Stop event detected after negotiation. Aborting connection thread start.")
-                        elif websocket_url and ws_headers:
-                            if should_record_live:
-                                if not replay.init_live_file():
-                                    logger_auto_connect.error(
-                                        "Auto-connect: Failed to init recording file.")
-                            else:
-                                replay.close_live_file()
-                            connect_thread = threading.Thread(
-                                target=signalr_client.run_connection_manual_neg, args=(
-                                    websocket_url, ws_headers),
-                                name="SignalRAutoConnectionThread", daemon=True
-                            )
-                            signalr_client.connection_thread = connect_thread
-                            connect_thread.start()
-                            logger_auto_connect.info(
-                                "Auto-connect: SignalR connection thread initiated.")
-                            if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS * AUTO_CONNECT_LEAD_TIME_MINUTES):
-                                break
-            else:
-                logger_auto_connect.info(
-                    "Auto-connect: No upcoming sessions identified in the schedule for connection.")
-
-        except Exception as e_monitor:
-            logger_auto_connect.error(
-                f"Error in auto-connect monitor loop: {e_monitor}", exc_info=True)
-            if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS * 5):
-                break
-
-        if app_state.stop_event.is_set():
-            break
-
-        logger_auto_connect.debug(
-            f"Auto-connect: loop finished, sleeping for {AUTO_CONNECT_POLL_INTERVAL_SECONDS}s.")
-        if app_state.stop_event.wait(timeout=AUTO_CONNECT_POLL_INTERVAL_SECONDS):
-            break
-
-    logger_auto_connect.info("Auto-connect monitor thread stopped.")
-
-# --- Global variables for threads (moved from if __name__ == '__main__') ---
-processing_thread = None
-auto_connect_thread = None
-
-
-def start_background_tasks():
-    global processing_thread, auto_connect_thread
-    # Logger for this specific part
-    logger = logging.getLogger("F1App.Main.BackgroundTasks")
-
-    if processing_thread is None or not processing_thread.is_alive():
-        logger.info("Starting background data processing thread...")
-        app_state.stop_event.clear()  # Ensure stop_event is clear before starting
-        processing_thread = threading.Thread(
-            target=data_processing.data_processing_loop,
-            name="DataProcessingThread", daemon=True)
-        processing_thread.start()
-        logger.info("Data processing thread started.")
-    else:
-        logger.info("Data processing thread already running.")
-
-    if auto_connect_thread is None or not auto_connect_thread.is_alive():
-        logger.info("Starting auto-connect monitor thread...")
-        # stop_event should already be cleared by data_processing_loop start, or ensure it here too if needed
-        auto_connect_thread = threading.Thread(
-            # auto_connect_monitor should be defined before this point
-            target=auto_connect_monitor,
-            name="AutoConnectMonitorThread", daemon=True
-        )
-        auto_connect_thread.start()
-        logger.info("Auto-connect monitor thread started.")
-    else:
-        logger.info("Auto-connect monitor thread already running.")
+# --- Shutdown Hook (Updated for per-session auto_connect_thread) ---
 
 
 def shutdown_application():
-    logger = logging.getLogger("F1App.Main.Shutdown")
-    logger.info("Initiating application shutdown sequence via atexit...")
-    if not app_state.stop_event.is_set():
-        logger.info("Setting global stop event.")
-        app_state.stop_event.set()
+    logger_shutdown = logging.getLogger("F1App.Main.Shutdown")
+    logger_shutdown.info(
+        "Initiating application shutdown sequence via atexit...")
 
-    # This logic is similar to your original finally block
-    with app_state.app_state_lock:
-        current_app_mode = app_state.app_status.get("state", "Unknown").lower()
+    active_session_ids = []
+    with app_state.SESSIONS_STORE_LOCK:
+        active_session_ids = list(app_state.SESSIONS_STORE.keys())
+    logger_shutdown.info(
+        f"Found {len(active_session_ids)} active session(s) to clean up.")
 
-    if "live" in current_app_mode or "connecting" in current_app_mode or "initializing" in current_app_mode:
-        logger.info("Shutdown: Stopping SignalR connection...")
-        signalr_client.stop_connection()  # Ensure this is thread-safe and idempotent
+    for session_id in active_session_ids:
+        session_state = app_state.get_session_state(session_id)
+        if session_state:
+            logger_shutdown.info(f"Cleaning up session: {session_id}...")
+            with session_state.lock:
+                session_state.stop_event.set()  # Signal all threads for this session
 
-    logger.info("Shutdown: Stopping Replay (if running)...")
-    replay.stop_replay()  # Ensure this is thread-safe and idempotent
+                threads_to_join = []
+                if session_state.connection_thread and session_state.connection_thread.is_alive():
+                    threads_to_join.append(
+                        ("SignalR Connection", session_state.connection_thread))
+                if session_state.replay_thread and session_state.replay_thread.is_alive():
+                    threads_to_join.append(
+                        ("Replay", session_state.replay_thread))
+                if session_state.data_processing_thread and session_state.data_processing_thread.is_alive():
+                    threads_to_join.append(
+                        ("Data Processing", session_state.data_processing_thread))
+                if session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive():  # ADDED
+                    threads_to_join.append(
+                        ("Auto-Connect Monitor", session_state.auto_connect_thread))
+                if session_state.track_data_fetch_thread and session_state.track_data_fetch_thread.is_alive(): # NEW
+                    threads_to_join.append(
+                        ("Track Data Fetch", session_state.track_data_fetch_thread))
+                if session_state.hub_connection:  # Attempt to stop hub directly if part of this session's state
+                    try:
+                        logger_shutdown.debug(
+                            f"Session {session_id}: Attempting to stop session's hub_connection directly.")
+                        session_state.hub_connection.stop()
+                    except Exception as e_hub_stop:
+                        logger_shutdown.error(
+                            f"Session {session_id}: Error stopping session's hub_connection: {e_hub_stop}")
 
-    global processing_thread, auto_connect_thread  # Refer to global thread variables
+            for thread_name, thread_obj in threads_to_join:
+                logger_shutdown.info(
+                    f"Session {session_id}: Waiting for {thread_name} thread ({thread_obj.name}) to join...")
+                thread_obj.join(timeout=5.0)  # Standard timeout
+                if thread_obj.is_alive():
+                    logger_shutdown.warning(
+                        f"Session {session_id}: Thread {thread_obj.name} did not exit cleanly.")
+                else:
+                    logger_shutdown.info(
+                        f"Session {session_id}: Thread {thread_obj.name} joined successfully.")
 
-    if processing_thread and processing_thread.is_alive():
-        logger.info("Shutdown: Waiting for Data Processing thread to join...")
-        processing_thread.join(timeout=5.0)
-        if processing_thread.is_alive():
-            logger.warning("Data Processing thread did not exit cleanly.")
+            with session_state.lock:  # Re-acquire lock to nullify handles and close files
+                session_state.connection_thread = None
+                session_state.replay_thread = None
+                session_state.data_processing_thread = None
+                session_state.auto_connect_thread = None
+                session_state.hub_connection = None
+                session_state.track_data_fetch_thread = None #
+
+                if session_state.live_data_file and not session_state.live_data_file.closed:
+                    try:
+                        session_state.live_data_file.close()
+                        logger_shutdown.info(
+                            f"Session {session_id}: Closed live_data_file.")
+                    except Exception as e:
+                        logger_shutdown.error(
+                            f"Session {session_id}: Error closing live_data_file: {e}")
+                session_state.live_data_file = None  # Ensure it's cleared
+
+    with app_state.SESSIONS_STORE_LOCK:
+        if app_state.SESSIONS_STORE:  # Only log if there was something to clear
+            app_state.SESSIONS_STORE.clear()
+            logger_shutdown.info("Cleared all sessions from SESSIONS_STORE.")
         else:
-            logger.info("Data Processing thread joined successfully.")
+            logger_shutdown.info("SESSIONS_STORE was already empty.")
 
-    if auto_connect_thread and auto_connect_thread.is_alive():
-        logger.info(
-            "Shutdown: Waiting for Auto-Connect Monitor thread to join...")
-        # Give auto_connect_monitor time to exit its loop
-        auto_connect_thread.join(timeout=5.0)
-        if auto_connect_thread.is_alive():
-            logger.warning("Auto-Connect Monitor thread did not exit cleanly.")
-        else:
-            logger.info("Auto-Connect Monitor thread joined successfully.")
-
-    logger.info("Shutdown sequence via atexit complete.")
+    logger_shutdown.info("Application shutdown sequence complete.")
 
 
-# --- MODULE LEVEL EXECUTION (This will run when Gunicorn imports main.py) ---
+# --- Module Level Execution ---
 faulthandler.enable()
-setup_logging()  # Setup logging first
+setup_logging()  # Call your logging setup
 logger_main_module = logging.getLogger("F1App.Main.ModuleLevel")
+logger_main_module.info(
+    "main.py (multi-session structure) module loaded. Initializing...")
 
-logger_main_module.info("main.py module loaded. Performing initial setups.")
-logger_main_module.info("Checking/Creating replay directory...")
-replay.ensure_replay_dir_exists()  # (assuming this function exists)
+if hasattr(config, 'REPLAY_DIR') and config.REPLAY_DIR:
+    try:
+        config.REPLAY_DIR.mkdir(parents=True, exist_ok=True)
+        logger_main_module.info(
+            f"Replay directory checked/created: {config.REPLAY_DIR}")
+    except Exception as e:
+        logger_main_module.error(
+            f"Could not create replay directory {config.REPLAY_DIR}: {e}")
 
-# Assign layout after app object is created and imported
-app.layout = main_app_layout
-logger_main_module.info("Dash layout structure assigned.")
-
-# Start background tasks when the module is loaded
-start_background_tasks()
-
-# Register the shutdown function to be called on exit
 atexit.register(shutdown_application)
+logger_main_module.info("Session-aware shutdown handler registered.")
 logger_main_module.info(
-    "Shutdown handler registered. Background tasks initiated.")
-logger_main_module.info(
-    f"Waitress should target this 'server' object: {server}")
+    f"To run with Waitress/Gunicorn, target this 'server' object: app_instance.server")
 
 
 # --- Main Execution Logic (for direct `python main.py` run) ---
 if __name__ == '__main__':
-    # The module-level code above will have already run.
-    # setup_logging(), replay.ensure_replay_dir_exists(), start_background_tasks(), atexit.register()
-    # are already done.
-
     logger_main_module.info(
         f"Running Dash development server on http://{config.DASH_HOST}:{config.DASH_PORT}")
     logger_main_module.warning(
-        "REMINDER: Background threads are already started at module level.")
-    logger_main_module.warning(
-        "This mode is for development. For production, use Gunicorn pointing to main:server.")
+        "This development mode is for testing. For production, use a WSGI server like Waitress or Gunicorn.")
 
-    # Keep app.run for development convenience, but background tasks are now started at module level.
-    # The `atexit` handler will manage shutdown for this mode too.
     try:
+        # use_reloader=False is critical when managing threads at the module/application level
+        # or per-session threads that should persist across Dash's internal reloads.
         app.run(
             host=config.DASH_HOST,
             port=config.DASH_PORT,
             debug=config.DASH_DEBUG_MODE,
-            use_reloader=False  # MUST be False if threads are started at module level
+            use_reloader=False
         )
     except KeyboardInterrupt:
         logger_main_module.info(
-            "KeyboardInterrupt detected in development server run. Shutdown will be handled by atexit.")
+            "KeyboardInterrupt detected in development server. Shutdown will be handled by atexit.")
     except Exception as main_err:
         logger_main_module.error(
-            f"Critical error in development server run: {main_err}", exc_info=True)
-    # The atexit handler will take care of the cleanup defined in shutdown_application()
-    # No need for the extensive finally block here anymore if atexit handles it.
-    logger_main_module.info(
-        "Development server finished. --- App Exited (dev mode) ---")
-    
+            f"Critical error during development server run: {main_err}", exc_info=True)
+
+    logger_main_module.info("Development server has finished.")
