@@ -223,6 +223,7 @@ SESSION_TYPE_RACE = "Race"
 SESSION_TYPE_SPRINT = "Sprint" # Assuming "Sprint" is the exact string used for Sprint sessions. Adjust if necessary.
 SESSION_TYPE_QUALI = "Qualifying"
 SESSION_TYPE_PRACTICE = "Practice"
+SESSION_TYPE_SPRINT_SHOOTOUT = "sprint shootout"
  
  # Track Map Element Styling
 TRACK_LINE_WIDTH = 2
