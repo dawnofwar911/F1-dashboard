@@ -71,6 +71,7 @@ main_app_layout = html.Div([
     # --- Dummy Divs for callbacks without direct UI outputs on the main layout ---
     html.Div(id='dummy-output-for-controls', style={'display': 'none'}),
     html.Div(id='js-click-data-holder', children=None, style={'display': 'none'}),
+    html.Div(id='dummy-output-for-autostart-thread', style={'display': 'none'}),
 ])
 
 def define_dashboard_layout():
@@ -143,6 +144,13 @@ def define_dashboard_layout():
         ],className="justify-content-start justify-content-md-start mt-2")
     ]
     # --- END MODIFIED control_card_content_list ---
+    
+    status_alert = dbc.Alert(
+    id="status-alert",
+    is_open=False,
+    duration=4000, # Alert will disappear after 4 seconds
+    fade=True,
+    )
 
     control_zone = html.Div([
         # ... (control_zone structure remains unchanged, uses control_card_content_list) ...
@@ -501,8 +509,18 @@ def define_dashboard_layout():
                                             'padding': '5px'
                                         },
                                         style_data_conditional=[
-                                            {'if': {'row_index': 'odd'},
-                                             'backgroundColor': 'rgb(50, 50, 50)'},
+                                            {'if': {'row_index': 'odd'}, 'backgroundColor': 'rgb(50, 50, 50)'},
+                                            # Add rules for compounds
+                                            {'if': {'column_id': 'compound', 'filter_query': '{compound} = "SOFT"'},
+                                             'backgroundColor': '#D90000', 'color': 'white', 'fontWeight': 'bold'},
+                                            {'if': {'column_id': 'compound', 'filter_query': '{compound} = "MEDIUM"'},
+                                             'backgroundColor': '#EBC000', 'color': '#383838', 'fontWeight': 'bold'},
+                                            {'if': {'column_id': 'compound', 'filter_query': '{compound} = "HARD"'},
+                                             'backgroundColor': '#E0E0E0', 'color': '#383838', 'fontWeight': 'bold'},
+                                            {'if': {'column_id': 'compound', 'filter_query': '{compound} = "INTERMEDIATE"'},
+                                             'backgroundColor': '#00A300', 'color': 'white', 'fontWeight': 'bold'},
+                                            {'if': {'column_id': 'compound', 'filter_query': '{compound} = "WET"'},
+                                             'backgroundColor': '#0077FF', 'color': 'white', 'fontWeight': 'bold'},
                                         ]
                                     ),
                                     style={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px', 'marginTop': '5px'}
@@ -566,6 +584,7 @@ def define_dashboard_layout():
 
     dashboard_page_content = dbc.Container([
         stores_and_intervals,
+        status_alert,
         header_zone,
         control_zone,
         status_weather_bar,

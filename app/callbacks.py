@@ -68,10 +68,11 @@ def display_page(pathname: str):
 @app.callback(
     Output('hide-retired-drivers-switch', 'value'),
     Output('use-mph-switch', 'value'),
-    Output('record-data-switch', 'value'), # ADDED
-    Input('session-preferences-store', 'data')
+    Output('record-data-switch', 'value'),
+    Input('session-preferences-store', 'data'),
+    Input('user-session-id', 'data')  # <-- ADD THIS INPUT
 )
-def load_display_preferences_from_store(store_data: Optional[dict]):
+def load_display_preferences_from_store(store_data: Optional[dict], session_id: Optional[str]): # <-- ADD THIS ARGUMENT
     """
     Runs on app load to read preferences from dcc.Store
     and set the initial state of the switches.
@@ -82,7 +83,7 @@ def load_display_preferences_from_store(store_data: Optional[dict]):
     record_data = store_data.get('record_data', False) # ADDED
 
     # Also update the in-memory session state for recording
-    session_state = app_state.get_or_create_session_state()
+    session_state = app_state.get_session_state(session_id)
     if session_state:
         with session_state.lock:
             session_state.record_live_data = record_data
@@ -108,6 +109,53 @@ def save_display_preferences_to_store(hide_retired_val: bool, use_mph_val: bool,
     return patched_prefs
 
 # --- Auto-Connect Feature Callbacks ---
+
+@app.callback(
+    Output('dummy-output-for-autostart-thread', 'children'),
+    Input('user-session-id', 'data'),
+    State('session-preferences-store', 'data'),
+    prevent_initial_call=True # Only run when session ID is created
+)
+def manage_auto_connect_thread_on_load(session_id, store_data):
+    """
+    This callback runs once when a new session is created. It reads the
+    user's stored auto-connect preference and starts the background
+    monitoring thread if needed. This is decoupled from any specific page UI.
+    """
+    if not session_id:
+        return dash.no_update
+
+    logger.info("Running auto-connect thread manager on session load.")
+    
+    store_data = store_data or {}
+    auto_connect_pref = store_data.get('auto_connect_f1mv', False)
+
+    session_state = app_state.get_session_state(session_id)
+    if not session_state:
+        logger.error(f"Could not find session state for {session_id} in thread manager.")
+        return dash.no_update
+
+    with session_state.lock:
+        session_state.auto_connect_enabled = auto_connect_pref
+        thread_is_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
+
+        if auto_connect_pref and not thread_is_running:
+            logger.info(f"Sess {session_state.session_id[:8]}: Stored preference is ON. Starting auto-connect monitor thread on app load.")
+            session_state.stop_event.clear()
+            thread = threading.Thread(
+                target=auto_connect_monitor_session_actual_target,
+                args=(session_state,),
+                name=f"AutoConnectMon_Load_{session_state.session_id[:8]}",
+                daemon=True
+            )
+            session_state.auto_connect_thread = thread
+            thread.start()
+        elif not auto_connect_pref and thread_is_running:
+            # This is a safety check, unlikely to happen on initial load
+            logger.info(f"Sess {session_state.session_id[:8]}: Stored preference is OFF. Stopping auto-connect monitor thread on app load.")
+            session_state.stop_event.set()
+    
+    return f"Auto-connect thread managed for session {session_id}"
 
 # This is the target function for the auto-connect background thread. It remains unchanged.
 def auto_connect_monitor_session_actual_target(session_state: app_state.SessionState):
@@ -325,46 +373,22 @@ def auto_connect_monitor_session_actual_target(session_state: app_state.SessionS
 # This callback loads the auto-connect preference and initializes the thread state on page load.
 @app.callback(
     Output('session-auto-connect-switch', 'value'),
-    Input('session-preferences-store', 'data')
+    Input('session-preferences-store', 'data'),
+    Input('url', 'pathname') # Trigger when the page changes
 )
-def update_auto_connect_switch_from_store(store_data: Optional[dict]):
+def update_auto_connect_switch_from_store(store_data, pathname):
     """
-    This runs on page load. It sets the auto-connect switch to match the
-    stored value and, crucially, starts/stops the background monitoring thread
-    to match the preference.
+    This callback's ONLY job is to visually update the toggle switch
+    on the settings page to match the user's stored preference.
+    It does NOT manage the background thread.
     """
-    ctx_triggered_id = dash.callback_context.triggered_id
-    logger.debug(f"Callback 'update_auto_connect_switch_from_store' triggered. Store data: {store_data}. Trigger ID: {ctx_triggered_id}")
-
-    auto_connect_pref: bool
+    if pathname != '/settings':
+        # Don't do anything if the settings page is not visible.
+        return dash.no_update
+    
+    logger.debug("Settings page loaded. Updating auto-connect switch to match stored preference.")
     store_data = store_data or {}
     auto_connect_pref = store_data.get('auto_connect_f1mv', False)
-
-    logger.info(f"Auto-connect switch: Setting from store. Preference is {auto_connect_pref}.")
-
-    session_state = app_state.get_or_create_session_state()
-    if session_state:
-        with session_state.lock:
-            if session_state.auto_connect_enabled != auto_connect_pref:
-                logger.info(f"Sess {session_state.session_id[:8]}: Syncing in-memory auto_connect_enabled ({session_state.auto_connect_enabled}) to stored pref ({auto_connect_pref}) on load.")
-                session_state.auto_connect_enabled = auto_connect_pref
-
-                thread_is_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
-
-                if auto_connect_pref and not thread_is_running:
-                    logger.info(f"Sess {session_state.session_id[:8]}: Stored preference is ON. Starting auto-connect monitor thread.")
-                    session_state.stop_event.clear()
-                    thread = threading.Thread(
-                        target=auto_connect_monitor_session_actual_target,
-                        args=(session_state,),
-                        name=f"AutoConnectMon_Load_{session_state.session_id[:8]}",
-                        daemon=True
-                    )
-                    session_state.auto_connect_thread = thread
-                    thread.start()
-                elif not auto_connect_pref and thread_is_running:
-                    logger.info(f"Sess {session_state.session_id[:8]}: Stored preference is OFF. Signalling auto-connect monitor thread to stop.")
-                    session_state.stop_event.set()
     return auto_connect_pref
 
 # This callback handles the user TOGGLING the auto-connect switch.
@@ -425,6 +449,33 @@ def toggle_session_auto_connect(switch_is_on: Optional[bool]) -> Patch:
     logger.info(f"Sess {sess_id_log}: Updating 'session-preferences-store' with auto_connect_f1mv: {new_enabled_state}")
 
     return patched_session_prefs
+    
+@app.callback(
+    Output('user-session-id', 'data'),
+    Input('url', 'pathname'), # This input ensures the callback runs once on any page load
+)
+def initialize_user_session(pathname):
+    """
+    This is the PRIMARY callback for session creation and reconciliation.
+    It runs on every page load to establish a valid session state on the
+    server and sync the ID back to the client, solving stale ID issues
+    after server restarts.
+    """
+    # This function is now the single source of truth for session creation.
+    # It will create a Flask session if one doesn't exist for the request.
+    # It will then create a SessionState object if one doesn't exist for that ID.
+    session_state = app_state.get_or_create_session_state()
+    
+    if session_state:
+        # We always return the valid, current session_id from the server.
+        # This will overwrite any stale ID the client might have had in its
+        # dcc.Store from a previous server instance.
+        logger.info(f"Session reconciled. Active server session ID: {session_state.session_id}")
+        return session_state.session_id
+    
+    # This should ideally never happen
+    logger.critical("CRITICAL: Could not get or create a session state. App may not function.")
+    return dash.no_update
 
 @app.callback(  # If app is not defined here, this will error. Move to callbacks.py if needed.
     [Output("sidebar", "style"),
@@ -719,7 +770,7 @@ def update_lap_and_session_info(n_intervals):
             else:
                 session_time_str = "Awaiting Status"
 
-        elif session_type_lower in ["qualifying", "sprint shootout"]: #
+        elif session_type_lower in [config.SESSION_TYPE_QUALI, config.SESSION_TYPE_SPRINT_SHOOTOUT]: #
             lap_counter_div_style = {'display': 'none'} #
             session_timer_div_style = {'display': 'inline-block'} #
             segment_label = q_state_live_anchor.get("current_segment", "") # Current segment from q_state #
@@ -2901,6 +2952,80 @@ def update_lap_chart_driver_selection_from_map_click(click_data_json_str, lap_ch
     except Exception as e:
         logger.error(f"update_lap_chart_driver_selection_from_map_click: Error: {e}")
     return dash.no_update
+    
+@app.callback(
+    [Output('status-alert', 'is_open'),
+     Output('status-alert', 'children'),
+     Output('status-alert', 'color')],
+    [Input('connect-button', 'n_clicks'),
+     Input('replay-button', 'n_clicks'),
+     Input('stop-reset-button', 'n_clicks'),
+     Input('connection-status', 'children')], # Listen to the text output of the status
+    [State('replay-file-selector', 'value')],
+    prevent_initial_call=True
+)
+def update_status_alert(connect_clicks, replay_clicks, stop_reset_clicks,
+                        connection_status_text, selected_replay_file):
+    """
+    Shows a temporary alert to the user based on their actions or changes
+    in the application's connection status.
+    """
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update, dash.no_update, dash.no_update
+
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    # Default outputs
+    is_open = False
+    message = ""
+    color = "info"
+
+    # --- Handle Button Clicks for Immediate Feedback ---
+    if triggered_id == 'connect-button':
+        is_open = True
+        message = "Attempting to connect to live feed..."
+        color = "info"
+        return is_open, message, color
+
+    if triggered_id == 'replay-button':
+        if not selected_replay_file:
+            is_open = True
+            message = "Please select a replay file first!"
+            color = "warning"
+        else:
+            is_open = True
+            message = f"Starting replay for {selected_replay_file}..."
+            color = "info"
+        return is_open, message, color
+
+    if triggered_id == 'stop-reset-button':
+        is_open = True
+        message = "Session stopped and reset."
+        color = "secondary"
+        return is_open, message, color
+
+    # --- Handle Status Changes for Asynchronous Events ---
+    if triggered_id == 'connection-status':
+        status_text = connection_status_text.lower()
+        if "error" in status_text or "fail" in status_text or "file not found" in status_text:
+            is_open = True
+            # We can use the text from the connection-status component directly
+            message = f"Error: {connection_status_text}"
+            color = "danger"
+        elif "playback complete" in status_text:
+            is_open = True
+            message = "Replay has finished."
+            color = "success"
+        elif "subscribed" in status_text and "live" in status_text:
+            is_open = True
+            message = "Live connection established."
+            color = "success"
+        
+        if is_open:
+            return is_open, message, color
+
+    return dash.no_update, dash.no_update, dash.no_update
 
 
 app.clientside_callback(

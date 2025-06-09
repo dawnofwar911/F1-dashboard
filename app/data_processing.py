@@ -123,7 +123,7 @@ def _process_extrapolated_clock(session_state: app_state.SessionState, data_payl
         q_state = session_state.qualifying_segment_state
         q_current_segment = q_state.get("current_segment")
 
-        if q_state.get("just_resumed_flag", False) and session_type in ["qualifying", "sprint shootout"]:
+        if q_state.get("just_resumed_flag", False) and session_type in [config.SESSION_TYPE_QUALI, config.SESSION_TYPE_SPRINT_SHOOTOUT]:
             if msg_dt:
                 q_state["last_official_time_capture_utc"] = msg_dt
             q_state["last_capture_replay_speed"] = session_state.replay_speed

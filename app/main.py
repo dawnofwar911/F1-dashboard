@@ -27,6 +27,7 @@ import callbacks
 import signalr_client
 import data_processing
 import replay
+import schedule_page
 
 from layout import main_app_layout
 
@@ -79,6 +80,21 @@ else:
 
 # --- Assign Main App Layout ---
 app.layout = main_app_layout
+
+
+def warm_up_schedule_cache():
+    """
+    A simple target for a thread that fetches the F1 schedule on startup
+    to ensure it's cached for other parts of the application, like auto-connect.
+    """
+    logger_cache_warmup = logging.getLogger("F1App.Main.CacheWarmer")
+    logger_cache_warmup.info("Initiating background schedule cache warm-up...")
+    try:
+        # This will fetch and cache the data. Subsequent calls will be fast.
+        schedule_page.get_current_year_schedule_with_sessions()
+        logger_cache_warmup.info("Background schedule cache warm-up completed successfully.")
+    except Exception as e:
+        logger_cache_warmup.error(f"Background schedule cache warm-up failed: {e}", exc_info=True)
 
 
 # --- Clientside Timezone Callback (from your previous main.py) ---
@@ -195,6 +211,9 @@ if hasattr(config, 'REPLAY_DIR') and config.REPLAY_DIR:
             f"Could not create replay directory {config.REPLAY_DIR}: {e}")
 
 atexit.register(shutdown_application)
+
+threading.Thread(target=warm_up_schedule_cache, daemon=True, name="ScheduleCacheWarmer").start()
+
 logger_main_module.info("Session-aware shutdown handler registered.")
 logger_main_module.info(
     f"To run with Waitress/Gunicorn, target this 'server' object: app_instance.server")
