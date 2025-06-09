@@ -28,22 +28,88 @@ from app_instance import app  # Dash app instance
 import app_state  # For get_or_create_session_state and SessionState type hint
 import config
 import utils
+from layout import main_app_layout, dashboard_content_layout
+# Import the cached schedule function
+import schedule_page
+from schedule_page import get_current_year_schedule_with_sessions, schedule_page_layout
+from settings_layout import create_settings_layout # Import the new layout function
 
 # These modules now contain session-aware functions
 import signalr_client
 import replay
 import data_processing  # For starting session-specific data processing loop
-import schedule_page
 
 
 logger = logging.getLogger("F1App.Callbacks")
 
-# Note: UI revision, height, and margin constants are now in config.py
-# Note: TRACK_STATUS_STYLES and WEATHER_ICON_MAP are now in config.py
+# --- Callback to Update Page Content Based on URL (from your previous main.py) ---
 
-# --- Per-User Auto-Connect Toggle Callback ---
+@app.callback(
+    Output("page-content", "children"),
+    Input("url", "pathname")
+)
+def display_page(pathname: str):
+    if pathname == "/":
+        return dashboard_content_layout
+    elif pathname == "/schedule":
+        return schedule_page_layout
+    elif pathname == "/settings": # ADD THIS
+        return create_settings_layout() # ADD THIS
+    else:
+        return dbc.Container([
+            html.H1("404: Not found", className="text-danger"),
+            html.Hr(),
+            html.P(f"The pathname {pathname} was not recognised..."),
+        ])
+        
+# --- CALLBACKS FOR SETTINGS PAGE (REFACTORED) ---
 
-# --- Target function for per-session auto-connect threads (MOVED HERE) ---
+# This callback loads the simple display preferences from the store.
+@app.callback(
+    Output('hide-retired-drivers-switch', 'value'),
+    Output('use-mph-switch', 'value'),
+    Output('record-data-switch', 'value'), # ADDED
+    Input('session-preferences-store', 'data')
+)
+def load_display_preferences_from_store(store_data: Optional[dict]):
+    """
+    Runs on app load to read preferences from dcc.Store
+    and set the initial state of the switches.
+    """
+    store_data = store_data or {}
+    hide_retired = store_data.get('hide_retired', config.HIDE_RETIRED_DRIVERS)
+    use_mph = store_data.get('use_mph', config.USE_MPH)
+    record_data = store_data.get('record_data', False) # ADDED
+
+    # Also update the in-memory session state for recording
+    session_state = app_state.get_or_create_session_state()
+    if session_state:
+        with session_state.lock:
+            session_state.record_live_data = record_data
+            
+    return hide_retired, use_mph, record_data # ADDED
+
+# Replace save_display_preferences_to_store with this new version
+@app.callback(
+    Output('session-preferences-store', 'data', allow_duplicate=True),
+    Input('hide-retired-drivers-switch', 'value'),
+    Input('use-mph-switch', 'value'),
+    Input('record-data-switch', 'value'), # ADDED
+    prevent_initial_call=True
+)
+def save_display_preferences_to_store(hide_retired_val: bool, use_mph_val: bool, record_data_val: bool) -> Patch:
+    """
+    Runs when the user toggles settings switches and saves the new values.
+    """
+    patched_prefs = Patch()
+    patched_prefs['hide_retired'] = bool(hide_retired_val)
+    patched_prefs['use_mph'] = bool(use_mph_val)
+    patched_prefs['record_data'] = bool(record_data_val) # ADDED
+    return patched_prefs
+
+# --- Auto-Connect Feature Callbacks ---
+
+# This is the target function for the auto-connect background thread. It remains unchanged.
 def auto_connect_monitor_session_actual_target(session_state: app_state.SessionState):
     logger_s_auto_connect = logging.getLogger(
         f"F1App.AutoConnect.Sess_{session_state.session_id[:8]}") # Ensure logging is imported
@@ -93,13 +159,13 @@ def auto_connect_monitor_session_actual_target(session_state: app_state.SessionS
                                       "Ends", "Aborted", "Inactive"]
                     if s_current_session_feed_status in ended_statuses:
                         if s_auto_session_end_detected_utc is None:
-                            finished_time = datetime.datetime.now(pytz.utc) # Ensure datetime and pytz imported
+                            finished_time = datetime.now(pytz.utc) # Ensure datetime and pytz imported
                             logger_s_auto_connect.info(
                                 f"Auto-connected F1 session '{s_auto_connected_event_id}' status is '{s_current_session_feed_status}' at {finished_time}. Starting disconnect countdown.")
                             with session_state.lock:
                                 session_state.app_status["auto_connected_session_end_detected_utc"] = finished_time
-                        elif isinstance(s_auto_session_end_detected_utc, datetime.datetime) and \
-                                datetime.datetime.now(pytz.utc) >= (s_auto_session_end_detected_utc + datetime.timedelta(minutes=config.AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES)): # Use config
+                        elif isinstance(s_auto_session_end_detected_utc, datetime) and \
+                                datetime.now(pytz.utc) >= (s_auto_session_end_detected_utc + timedelta(minutes=config.AUTO_DISCONNECT_AFTER_SESSION_END_MINUTES)): # Use config
                             logger_s_auto_connect.info(
                                 f"Disconnect timer expired for F1 session '{s_auto_connected_event_id}'. Disconnecting user session.")
                             signalr_client.stop_connection_session(
@@ -136,9 +202,9 @@ def auto_connect_monitor_session_actual_target(session_state: app_state.SessionS
                     break
                 continue
 
-            now_utc = datetime.datetime.now(pytz.utc)
+            now_utc = datetime.now(pytz.utc)
             next_f1_session_to_connect = None
-            min_future_start_time = datetime.datetime.max.replace(
+            min_future_start_time = datetime.max.replace(
                 tzinfo=pytz.utc)
             for event in full_schedule_data:
                 if session_state.stop_event.is_set():
@@ -209,7 +275,7 @@ def auto_connect_monitor_session_actual_target(session_state: app_state.SessionS
                             if not replay.init_live_file_session(session_state): # Ensure replay is imported
                                 logger_s_auto_connect.error(
                                     f"Failed to initialize live recording file for session {session_state.session_id}.")
-                        
+
                         sess_id_log = session_state.session_id[:8]
                         conn_thread = threading.Thread( # Ensure threading is imported
                             target=signalr_client.run_connection_session,
@@ -255,149 +321,110 @@ def auto_connect_monitor_session_actual_target(session_state: app_state.SessionS
         f"Session auto-connect monitor thread stopped for session {session_state.session_id}.")
     with session_state.lock:
         session_state.auto_connect_thread = None
-        
+
+# This callback loads the auto-connect preference and initializes the thread state on page load.
 @app.callback(
     Output('session-auto-connect-switch', 'value'),
-    # No Output to 'session-preferences-store' here, as this callback only READS from it to set the switch
     Input('session-preferences-store', 'data')
-    # prevent_initial_call=False (this is the default and is correct)
 )
 def update_auto_connect_switch_from_store(store_data: Optional[dict]):
+    """
+    This runs on page load. It sets the auto-connect switch to match the
+    stored value and, crucially, starts/stops the background monitoring thread
+    to match the preference.
+    """
     ctx_triggered_id = dash.callback_context.triggered_id
     logger.debug(f"Callback 'update_auto_connect_switch_from_store' triggered. Store data: {store_data}. Trigger ID: {ctx_triggered_id}")
 
     auto_connect_pref: bool
-    if store_data is None:
-        logger.info("Auto-connect switch: 'session-preferences-store' is None. Defaulting switch to OFF.")
-        auto_connect_pref = False
-    else:
-        auto_connect_pref = store_data.get('auto_connect_f1mv', False)
+    store_data = store_data or {}
+    auto_connect_pref = store_data.get('auto_connect_f1mv', False)
 
-    logger.info(f"Auto-connect switch: Setting from store. Preference 'auto_connect_f1mv' is {auto_connect_pref}. Switch value will be set to: {auto_connect_pref}")
+    logger.info(f"Auto-connect switch: Setting from store. Preference is {auto_connect_pref}.")
 
     session_state = app_state.get_or_create_session_state()
-    thread_to_join_on_load_stop: Optional[threading.Thread] = None # Initialize to None
-
     if session_state:
-        with session_state.lock: # RLock
+        with session_state.lock:
             if session_state.auto_connect_enabled != auto_connect_pref:
                 logger.info(f"Sess {session_state.session_id[:8]}: Syncing in-memory auto_connect_enabled ({session_state.auto_connect_enabled}) to stored pref ({auto_connect_pref}) on load.")
                 session_state.auto_connect_enabled = auto_connect_pref
-                
-                thread_is_currently_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
 
-                if auto_connect_pref:
-                    if not thread_is_currently_running:
-                        logger.info(f"Sess {session_state.session_id[:8]}: Stored preference is ON. Starting auto-connect monitor thread from store load.")
-                        session_state.stop_event.clear() 
-                        thread = threading.Thread(
-                            target=auto_connect_monitor_session_actual_target,
-                            args=(session_state,),
-                            name=f"AutoConnectMon_Load_{session_state.session_id[:8]}",
-                            daemon=True
-                        )
-                        session_state.auto_connect_thread = thread
-                        thread.start()
-                else: 
-                     if thread_is_currently_running and session_state.auto_connect_thread:
-                        logger.info(f"Sess {session_state.session_id[:8]}: Stored preference is OFF. Signalling auto-connect monitor thread to stop from store load.")
-                        session_state.stop_event.set()
-                        thread_to_join_on_load_stop = session_state.auto_connect_thread # Assigned here
-            else:
-                logger.debug(f"Sess {session_state.session_id[:8]}: In-memory auto_connect_enabled already matches stored pref ({auto_connect_pref}).")
-        
-        if thread_to_join_on_load_stop: # Now this check is safe
-            logger.info(f"Sess {session_state.session_id[:8]}: (From Store Load) Attempting to join auto-connect thread {thread_to_join_on_load_stop.name}...")
-            thread_to_join_on_load_stop.join(timeout=3.0)
-            with session_state.lock:
-                if thread_to_join_on_load_stop.is_alive():
-                    logger.warning(f"Sess {session_state.session_id[:8]}: (From Store Load) Auto-connect thread {thread_to_join_on_load_stop.name} did not join cleanly.")
-                if session_state.auto_connect_thread is thread_to_join_on_load_stop:
-                    session_state.auto_connect_thread = None
-    
-    return auto_connect_pref
+                thread_is_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
 
-@app.callback(
-    [Output('session-auto-connect-switch', 'value', allow_duplicate=True),
-     Output('session-preferences-store', 'data', allow_duplicate=True)], # ADDED THIS OUTPUT
-    Input('session-auto-connect-switch', 'value'),
-    State('session-preferences-store', 'data'), # Keep this State to patch existing prefs if any
-    prevent_initial_call=True
-)
-def toggle_session_auto_connect(switch_is_on: Optional[bool], current_prefs_data: Optional[dict]) -> tuple[bool, Patch]: # Return type changed
-    # Logging and session_state retrieval
-    callback_name = "toggle_session_auto_connect"
-    session_state = app_state.get_or_create_session_state()
-    if not session_state:
-        logger.error(f"Callback '{callback_name}': Could not get/create session state.")
-        return False, dash.no_update # Default switch to off, don't update store
-
-    sess_id_log = session_state.session_id[:8]
-    
-    # Determine the new state from the switch input
-    new_enabled_state = bool(switch_is_on) if switch_is_on is not None else False
-    logger.info(
-        f"Callback '{callback_name}' for Sess {sess_id_log}. User toggled. Desired state: {new_enabled_state}. Current store: {current_prefs_data}")
-
-    # Update in-memory session_state for current browser session behavior
-    # and manage the auto_connect_monitor_session_actual_target thread
-    thread_to_join = None
-    with session_state.lock: # RLock
-        # Only proceed if the new state is different from current state or if thread status is inconsistent
-        # This prevents re-starting/re-stopping if callback is somehow triggered without actual change.
-        current_in_memory_auto_connect_enabled = session_state.auto_connect_enabled
-        thread_is_actually_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
-
-        if new_enabled_state == current_in_memory_auto_connect_enabled and new_enabled_state == thread_is_actually_running:
-            logger.info(
-                f"Sess {sess_id_log}: Auto-connect already in desired state ({new_enabled_state}) and thread status consistent. No action.")
-        else:
-            session_state.auto_connect_enabled = new_enabled_state
-            logger.info(
-                f"Sess {sess_id_log}: In-memory auto_connect_enabled set to {new_enabled_state}")
-
-            if new_enabled_state: # If switch is toggled ON
-                if not thread_is_actually_running:
-                    logger.info(f"Sess {sess_id_log}: Starting auto-connect monitor thread...")
-                    # Ensure stop_event is clear if the monitor thread uses it
-                    session_state.stop_event.clear() 
+                if auto_connect_pref and not thread_is_running:
+                    logger.info(f"Sess {session_state.session_id[:8]}: Stored preference is ON. Starting auto-connect monitor thread.")
+                    session_state.stop_event.clear()
                     thread = threading.Thread(
-                        target=auto_connect_monitor_session_actual_target, 
+                        target=auto_connect_monitor_session_actual_target,
                         args=(session_state,),
-                        name=f"AutoConnectMon_Sess_{sess_id_log}",
+                        name=f"AutoConnectMon_Load_{session_state.session_id[:8]}",
                         daemon=True
                     )
                     session_state.auto_connect_thread = thread
                     thread.start()
-                else:
-                    logger.info(f"Sess {sess_id_log}: Auto-connect enabled, monitor thread already running.")
-            else: # If switch is toggled OFF
-                if thread_is_actually_running and session_state.auto_connect_thread:
-                    logger.info(f"Sess {sess_id_log}: Signalling auto-connect monitor thread to stop...")
-                    session_state.stop_event.set() # Signal the thread to stop
-                    thread_to_join = session_state.auto_connect_thread
-                else:
-                    logger.info(f"Sess {sess_id_log}: Auto-connect disabled, no active monitor thread to stop or already stopped.")
-    
-    # Join thread outside the lock if necessary
+                elif not auto_connect_pref and thread_is_running:
+                    logger.info(f"Sess {session_state.session_id[:8]}: Stored preference is OFF. Signalling auto-connect monitor thread to stop.")
+                    session_state.stop_event.set()
+    return auto_connect_pref
+
+# This callback handles the user TOGGLING the auto-connect switch.
+@app.callback(
+    Output('session-preferences-store', 'data', allow_duplicate=True),
+    Input('session-auto-connect-switch', 'value'),
+    prevent_initial_call=True
+)
+def toggle_session_auto_connect(switch_is_on: Optional[bool]) -> Patch:
+    """
+    This callback is for user interaction only. It starts/stops the background
+    thread and then saves the new state to the dcc.Store.
+    """
+    session_state = app_state.get_or_create_session_state()
+    if not session_state:
+        logger.error("Callback 'toggle_session_auto_connect': Could not get/create session state.")
+        return dash.no_update
+
+    sess_id_log = session_state.session_id[:8]
+    new_enabled_state = bool(switch_is_on)
+    logger.info(f"Callback 'toggle_session_auto_connect' for Sess {sess_id_log}. User toggled. Desired state: {new_enabled_state}.")
+
+    thread_to_join = None
+    with session_state.lock:
+        if new_enabled_state != session_state.auto_connect_enabled:
+            session_state.auto_connect_enabled = new_enabled_state
+            logger.info(f"Sess {sess_id_log}: In-memory auto_connect_enabled set to {new_enabled_state}")
+
+            thread_is_running = session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive()
+
+            if new_enabled_state and not thread_is_running:
+                logger.info(f"Sess {sess_id_log}: Starting auto-connect monitor thread...")
+                session_state.stop_event.clear()
+                thread = threading.Thread(
+                    target=auto_connect_monitor_session_actual_target,
+                    args=(session_state,),
+                    name=f"AutoConnectMon_Sess_{sess_id_log}",
+                    daemon=True
+                )
+                session_state.auto_connect_thread = thread
+                thread.start()
+            elif not new_enabled_state and thread_is_running:
+                logger.info(f"Sess {sess_id_log}: Signalling auto-connect monitor thread to stop...")
+                session_state.stop_event.set()
+                thread_to_join = session_state.auto_connect_thread
+
     if thread_to_join:
         logger.info(f"Sess {sess_id_log}: Attempting to join auto-connect thread {thread_to_join.name}...")
-        thread_to_join.join(timeout=7.0) 
-        with session_state.lock: # Re-acquire lock to safely clear handle
+        thread_to_join.join(timeout=7.0)
+        with session_state.lock:
             if thread_to_join.is_alive():
                 logger.warning(f"Sess {sess_id_log}: Auto-connect thread {thread_to_join.name} did not join cleanly.")
             if session_state.auto_connect_thread is thread_to_join:
                 session_state.auto_connect_thread = None
-                logger.info(f"Sess {sess_id_log}: Cleared auto_connect_thread handle from session_state.")
 
-    # Persist the preference to dcc.Store
     patched_session_prefs = Patch()
-    patched_session_prefs['auto_connect_f1mv'] = new_enabled_state # Use a consistent key
+    patched_session_prefs['auto_connect_f1mv'] = new_enabled_state
     logger.info(f"Sess {sess_id_log}: Updating 'session-preferences-store' with auto_connect_f1mv: {new_enabled_state}")
-    
-    # The first element returned updates 'session-auto-connect-switch.value'
-    # The second element updates 'session-preferences-store.data'
-    return new_enabled_state, patched_session_prefs
+
+    return patched_session_prefs
 
 @app.callback(  # If app is not defined here, this will error. Move to callbacks.py if needed.
     [Output("sidebar", "style"),
@@ -1062,15 +1089,15 @@ def update_prominent_track_status(n):
 
 
 @app.callback(
-    Output('other-data-display', 'children'),
-    Output('timing-data-actual-table', 'data'),
-    Output('timing-data-timestamp', 'children'),
+    [Output('other-data-display', 'children'),
+     Output('timing-data-actual-table', 'data'),
+     Output('timing-data-timestamp', 'children')],
     Input('interval-component-timing', 'n_intervals'),
-    # MODIFICATION: Added State for debug mode
-    State("debug-mode-switch", "value")
+    [State("debug-mode-switch", "value"),
+     State('session-preferences-store', 'data')]
 )
 # MODIFICATION: Added debug_mode_enabled
-def update_main_data_displays(n, debug_mode_enabled):
+def update_main_data_displays(n, debug_mode_enabled: bool, session_prefs: Optional[dict]):
     session_state = app_state.get_or_create_session_state()
     overall_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
@@ -1080,6 +1107,10 @@ def update_main_data_displays(n, debug_mode_enabled):
     timestamp_text = config.TEXT_WAITING_FOR_DATA
     current_time_for_callbacks = time.time()
     callback_start_time = time.perf_counter()  # For performance logging
+    if session_prefs is None:
+        session_prefs = {} # Handle case where store is empty on first load
+    
+    hide_retired_pref = session_prefs.get('hide_retired', config.HIDE_RETIRED_DRIVERS)
 
     try:
         current_q_segment_from_state = None
@@ -1287,6 +1318,9 @@ def update_main_data_displays(n, debug_mode_enabled):
             TERMINAL_RACING_STATUSES = [
                 "retired", "crashed", "disqualified", "out of race", "out", "accident"]
             for car_num, driver_state in timing_state_copy.items():
+                is_retired = driver_state.get('Status', '').lower() in TERMINAL_RACING_STATUSES
+                if hide_retired_pref and is_retired:
+                    continue # Skip this driver
                 racing_no = driver_state.get("RacingNumber", car_num)
                 tla = driver_state.get("Tla", "N/A")
                 pos = driver_state.get('Position', '-')
@@ -1494,116 +1528,127 @@ def update_main_data_displays(n, debug_mode_enabled):
 
 
 @app.callback(
-    Output('dummy-output-for-controls', 'children', allow_duplicate=True),
+    Output('session-preferences-store', 'data', allow_duplicate=True),
     Input('replay-speed-slider', 'value'),
     prevent_initial_call=True
 )
-def update_replay_speed_state(new_speed_value): # Removed session_info_children_trigger, get from session_state
+def update_replay_speed_state(new_speed_value: Optional[float]) -> Patch:
+    """
+    This callback fires when the user changes the replay speed slider.
+    It performs two actions:
+    1. Updates the in-memory session state, re-anchoring the session timer
+       to account for the new speed.
+    2. Saves the new speed value to the persistent dcc.Store.
+    """
     session_state = app_state.get_or_create_session_state()
-    callback_start_time = time.monotonic()
-    func_name = inspect.currentframe().f_code.co_name
-    logger.debug(f"Callback '{func_name}' START")
     if new_speed_value is None:
-        return no_update
+        return dash.no_update
 
     try:
         new_speed = float(new_speed_value)
-        if not (0.1 <= new_speed <= 100.0): # Example validation for speed range
-            logger.warning(f"Invalid replay speed requested: {new_speed}. Clamping or ignoring.")
-            # Clamp or return no_update, e.g., new_speed = max(0.1, min(new_speed, 100.0))
-            # For now, let's assume valid input based on slider range or simply ignore if too extreme.
-            if new_speed <= 0: return no_update # Definitely ignore non-positive
+        if not (0.1 <= new_speed <= 100.0):
+            return dash.no_update
     except (ValueError, TypeError):
-        logger.warning(f"Could not convert replay speed slider value '{new_speed_value}' to float.")
-        return no_update
-
+        return dash.no_update
 
     with session_state.lock:
-        old_speed = session_state.replay_speed # Speed active *before* this change
+        old_speed = session_state.replay_speed
+        if abs(old_speed - new_speed) < 0.01:
+            # If the value hasn't meaningfully changed, just save and exit.
+            patched_prefs = Patch()
+            patched_prefs['replay_speed'] = new_speed
+            return patched_prefs
 
-        # If speed hasn't actually changed, do nothing to avoid potential float precision issues
-        if abs(old_speed - new_speed) < 0.01: # Tolerance for float comparison
-            # Still update session_state.replay_speed to the precise new_speed_value if slider was just wiggled
-            session_state.replay_speed = new_speed
-            return no_update
-
-        session_type = session_state.session_details.get('Type', "Unknown").lower() #
-        q_state = session_state.qualifying_segment_state # Primary timing state dictionary
-
-        current_official_remaining_s_at_anchor = q_state.get("official_segment_remaining_seconds") #
-        last_capture_utc_anchor = q_state.get("last_official_time_capture_utc") #
-
-        now_utc = datetime.now(timezone.utc) #
+        # Perform the re-anchoring logic for live timers
+        session_type = session_state.session_details.get('Type', "Unknown").lower()
+        q_state = session_state.qualifying_segment_state
+        current_official_remaining_s_at_anchor = q_state.get("official_segment_remaining_seconds")
+        last_capture_utc_anchor = q_state.get("last_official_time_capture_utc")
+        now_utc = datetime.now(timezone.utc)
         calculated_current_true_remaining_s = None
 
-        # --- This block calculates the true current remaining time based on OLD speed ---
         if session_type.startswith("practice"):
-            # For practice, use its continuous model to find current true remaining time
-            practice_start_utc = session_state.practice_session_actual_start_utc #
-            practice_duration_s = session_state.practice_session_scheduled_duration_seconds #
+            practice_start_utc = session_state.practice_session_actual_start_utc
+            practice_duration_s = session_state.practice_session_scheduled_duration_seconds
             if practice_start_utc and practice_duration_s is not None:
-                wall_time_elapsed_practice = (now_utc - practice_start_utc).total_seconds() #
+                wall_time_elapsed_practice = (now_utc - practice_start_utc).total_seconds()
                 session_time_elapsed_practice = wall_time_elapsed_practice * old_speed
                 calculated_current_true_remaining_s = practice_duration_s - session_time_elapsed_practice
-
-        # For Qualifying (or if Practice didn't have its continuous model vars set yet)
-        # Use the q_state anchor point.
-        if calculated_current_true_remaining_s is None and \
-           last_capture_utc_anchor and current_official_remaining_s_at_anchor is not None:
-            wall_time_since_last_anchor = (now_utc - last_capture_utc_anchor).total_seconds() #
+        
+        if calculated_current_true_remaining_s is None and last_capture_utc_anchor and current_official_remaining_s_at_anchor is not None:
+            wall_time_since_last_anchor = (now_utc - last_capture_utc_anchor).total_seconds()
             session_time_elapsed_since_anchor = wall_time_since_last_anchor * old_speed
             calculated_current_true_remaining_s = current_official_remaining_s_at_anchor - session_time_elapsed_since_anchor
 
-        # --- Now, re-anchor using this calculated_current_true_remaining_s ---
         if calculated_current_true_remaining_s is not None:
             new_anchor_remaining_s = max(0, calculated_current_true_remaining_s)
+            q_state["official_segment_remaining_seconds"] = new_anchor_remaining_s
+            q_state["last_official_time_capture_utc"] = now_utc
+            q_state["last_capture_replay_speed"] = new_speed
+            logger.info(f"Re-anchored session timer for new replay speed {new_speed:.2f}x.")
 
-            # Update the main anchor point (q_state)
-            q_state["official_segment_remaining_seconds"] = new_anchor_remaining_s #
-            q_state["last_official_time_capture_utc"] = now_utc #
-            # last_capture_replay_speed will be effectively the new_speed for next extrapolation
-            # session_status_at_capture might need an update if relevant, but for re-speed, it's less critical
-            q_state["last_capture_replay_speed"] = new_speed # Reflect that this anchor is for the new speed
+        # Update the in-memory state and prepare the patch for the store
+        session_state.replay_speed = new_speed
+        patched_prefs = Patch()
+        patched_prefs['replay_speed'] = new_speed
+        logger.debug(f"Replay speed updated in session_state and store to: {new_speed}")
 
-            logger.info(
-                f"Replay speed changing from {old_speed:.2f}x to {new_speed:.2f}x. "
-                f"Original anchor: {current_official_remaining_s_at_anchor:.2f}s at {last_capture_utc_anchor}. "
-                f"Calculated true current remaining: {calculated_current_true_remaining_s:.2f}s. "
-                f"New anchor set: {new_anchor_remaining_s:.2f}s at {now_utc}."
-            )
-
-            # If it was a Practice session using its continuous model, adjust its effective start time
-            # so its formula yields the new_anchor_remaining_s with the new_speed.
-            if session_type.startswith("practice") and \
-               session_state.practice_session_actual_start_utc and \
-               session_state.practice_session_scheduled_duration_seconds is not None:
-
-                duration_s = session_state.practice_session_scheduled_duration_seconds #
-                if new_speed > 0: # Avoid division by zero
-                    # We want: new_anchor_remaining_s = duration_s - (now_utc - new_practice_start_utc) * new_speed
-                    # (now_utc - new_practice_start_utc) * new_speed = duration_s - new_anchor_remaining_s
-                    # (now_utc - new_practice_start_utc) = (duration_s - new_anchor_remaining_s) / new_speed
-                    # new_practice_start_utc = now_utc - timedelta(seconds = (duration_s - new_anchor_remaining_s) / new_speed)
-
-                    wall_time_offset_for_new_start = (duration_s - new_anchor_remaining_s) / new_speed
-                    session_state.practice_session_actual_start_utc = now_utc - timedelta(seconds=wall_time_offset_for_new_start) #
-                    logger.info(
-                        f"Adjusted practice_session_actual_start_utc to {session_state.practice_session_actual_start_utc} " #
-                        f"to maintain {new_anchor_remaining_s:.2f}s remaining at {new_speed:.2f}x."
-                    )
-        else:
-            logger.warning(
-                f"Could not re-anchor timer on speed change: insufficient data. "
-                f"Old speed: {old_speed}, New speed: {new_speed}. "
-                f"Current official remaining: {current_official_remaining_s_at_anchor}, Last capture: {last_capture_utc_anchor}"
-            )
-
-        # Finally, update the global replay speed
-        session_state.replay_speed = new_speed #
-        logger.debug(f"Replay speed updated in session_state to: {session_state.replay_speed}") #
+    return patched_prefs
     
-    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
-    return no_update
+@app.callback(
+    Output('replay-speed-slider', 'value'),
+    Input('session-preferences-store', 'data'),
+    State('url', 'pathname')
+)
+def load_replay_speed_from_store(store_data: Optional[dict], pathname: str):
+    """
+    When the dashboard page loads, this sets the replay speed slider to its
+    last saved value. It does nothing on other pages.
+    """
+    if pathname != '/':
+        return dash.no_update
+
+    store_data = store_data or {}
+    # Default to 1.0 if the setting isn't in the store yet
+    speed = store_data.get('replay_speed', 1.0)
+    return speed
+    
+@app.callback(
+    Output('session-preferences-store', 'data', allow_duplicate=True),
+    Input('replay-file-selector', 'value'),
+    prevent_initial_call=True
+)
+def save_replay_file_to_store(selected_file: Optional[str]) -> Patch:
+    """
+    Fires when the user selects a file from the replay dropdown.
+    Saves the filename to the persistent dcc.Store.
+    """
+    if not selected_file:
+        return dash.no_update # Don't save if the dropdown is cleared
+        
+    patched_prefs = Patch()
+    patched_prefs['replay_file'] = selected_file
+    logger.info(f"Saved replay file preference to store: {selected_file}")
+    return patched_prefs
+
+# This callback loads the last selected replay file from the store when the page loads
+@app.callback(
+    Output('replay-file-selector', 'value'),
+    Input('session-preferences-store', 'data'),
+    State('url', 'pathname')
+)
+def load_replay_file_from_store(store_data: Optional[dict], pathname: str):
+    """
+    When the dashboard page loads, this sets the replay file dropdown
+    to its last saved value. It does nothing on other pages.
+    """
+    if pathname != '/':
+        return dash.no_update
+
+    store_data = store_data or {}
+    # Return the saved filename, or None to show the placeholder
+    return store_data.get('replay_file', None)
+
 
 @app.callback(
     [Output('dummy-output-for-controls', 'children', allow_duplicate=True),
@@ -1614,19 +1659,37 @@ def update_replay_speed_state(new_speed_value): # Removed session_info_children_
      Input('stop-reset-button', 'n_clicks')],
     [State('replay-file-selector', 'value'),
      State('replay-speed-slider', 'value'),
-     State('record-data-checkbox', 'value')],
+     State('session-preferences-store', 'data')], # CHANGED
     prevent_initial_call=True
 )
-def handle_control_clicks(connect_clicks: Optional[int], replay_clicks: Optional[int], stop_reset_clicks: Optional[int],
-                          selected_replay_file: Optional[str], replay_speed_value: Optional[float],
-                          record_checkbox_input: Any) -> Tuple[Any, Any, Any]:
+def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
+                          selected_replay_file, replay_speed_value,
+                          session_prefs: Optional[dict]): # CHANGED
+    ctx = dash.callback_context
+    if not ctx.triggered or ctx.triggered[0]['value'] is None or ctx.triggered[0]['value'] < 1:
+        return dash.no_update, dash.no_update, dash.no_update
     
     session_state = app_state.get_or_create_session_state()
     if not session_state:
-        logger.error("handle_control_clicks: Critical - Could not get/create session state!")
         return dash.no_update, dash.no_update, dash.no_update
 
-    ctx = dash.callback_context
+    # --- Read record preference from the store ---
+    session_prefs = session_prefs or {}
+    record_pref = session_prefs.get('record_data', False)
+    with session_state.lock:
+        session_state.record_live_data = record_pref
+    # ---
+
+    button_id = ctx.triggered_id
+
+    # --- FIXED: Robust Guard Clause ---
+    # This check prevents the callback from running on initial page load,
+    # even if `prevent_initial_call=True` is behaving unexpectedly.
+    # It ensures a button has been physically clicked (n_clicks >= 1).
+    if not ctx.triggered or ctx.triggered[0]['value'] is None or ctx.triggered[0]['value'] < 1:
+        logger.info(f"Control callback fired for '{ctx.triggered_id}' but it was not a user click (n_clicks={ctx.triggered[0]['value']}). Ignoring.")
+        return dash.no_update, dash.no_update, dash.no_update
+    # --- END OF FIX ---
     button_id = ctx.triggered_id if ctx.triggered else None
     sess_id_log = session_state.session_id[:8]
     logger.info(f"Session {sess_id_log}: Control button clicked: {button_id}")
@@ -1635,17 +1698,6 @@ def handle_control_clicks(connect_clicks: Optional[int], replay_clicks: Optional
     dummy_output = dash.no_update
     track_map_output = dash.no_update # Use specific map reset when needed
     car_pos_store_output = dash.no_update
-
-    # Update session's record_live_data preference from checkbox
-    # dbc.Switch value is boolean, dcc.Checklist is a list
-    if isinstance(record_checkbox_input, list): # Handles Checklist
-        session_record_pref = bool(record_checkbox_input and record_checkbox_input[0])
-    else: # Handles Switch or direct boolean
-        session_record_pref = bool(record_checkbox_input)
-    
-    with session_state.lock:
-        session_state.record_live_data = session_record_pref
-        logger.debug(f"Session {sess_id_log}: record_live_data preference set to {session_state.record_live_data}")
 
     if button_id == 'connect-button':
         logger.info(f"LiveConnSess {sess_id_log}: 'connect-button' pressed by user.")
@@ -1863,23 +1915,6 @@ def handle_control_clicks(connect_clicks: Optional[int], replay_clicks: Optional
     
     return dummy_output, track_map_output, car_pos_store_output
     
-@app.callback(
-    Output('record-data-checkbox', 'id', allow_duplicate=True), # Keep id as string
-    Input('record-data-checkbox', 'value'),
-    prevent_initial_call=True
-)
-def record_checkbox_callback(checked_value):
-    session_state = app_state.get_or_create_session_state()
-    callback_start_time = time.monotonic()
-    func_name = inspect.currentframe().f_code.co_name
-    logger.debug(f"Callback '{func_name}' START")
-    if checked_value is None: return 'record-data-checkbox' # Return existing ID string
-    new_state = bool(checked_value)
-    logger.debug(f"Record Live Data checkbox set to: {new_state}")
-    with session_state.lock: session_state.record_live_data = new_state
-    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
-    return 'record-data-checkbox' # Return existing ID string
-
 
 @app.callback(
     Output('replay-file-selector', 'options'),
@@ -1912,15 +1947,24 @@ def toggle_controls_collapse(n, is_open):
      Input('driver-focus-tabs', 'active_tab'),         # Which tab is active
      Input('lap-selector-dropdown', 'value')],         # Lap selected for telemetry (if telemetry tab is active)
     [State('telemetry-graph', 'figure'),               # Current telemetry figure state
-     State('stint-history-table', 'columns')]          # Current columns for stint table (if needed)
+     State('stint-history-table', 'columns'),          # Current columns for stint table (if needed)
+     State('session-preferences-store', 'data'),
+    ]
 )
 def update_driver_focus_content(selected_driver_number, active_tab_id, 
                                 selected_lap_for_telemetry, 
-                                current_telemetry_figure, current_stint_table_columns):
+                                current_telemetry_figure, current_stint_table_columns, session_prefs: Optional[dict]):
     session_state = app_state.get_or_create_session_state()
-    overall_callback_start_time = time.monotonic() # For overall timing
+    overall_callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
-    logger.debug(f"Callback '{func_name}' START_OVERALL") # Overall start
+    logger.debug(f"Callback '{func_name}' START_OVERALL")
+
+    # --- FIXED ---
+    # Load the 'use_mph' preference from the session preferences store.
+    # Fallback to the default value from the config if it's not set.
+    session_prefs = session_prefs or {}
+    use_mph_pref = session_prefs.get('use_mph', config.USE_MPH)
+    # --- END FIX ---
     
     ctx = dash.callback_context
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered and ctx.triggered[0] else 'N/A'
@@ -1942,13 +1986,11 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
     stint_history_columns_output = no_update 
 
     if not selected_driver_number:
-        # logger.info(f"Callback '{func_name}' END_OVERALL. No driver. Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
-        # fig_telemetry is already set to the initial empty one. Return it if it wasn't already the initial.
         if current_telemetry_figure and \
            current_telemetry_figure.get('layout', {}).get('uirevision') == config.INITIAL_TELEMETRY_UIREVISION:
             fig_telemetry_output = no_update
         else:
-            fig_telemetry_output = fig_telemetry # Return the newly created empty figure
+            fig_telemetry_output = fig_telemetry
         
         logger.debug(f"Callback '{func_name}' END_OVERALL (No Driver). Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
         return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry_output,
@@ -1967,15 +2009,14 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
         critical_section_start_time = time.monotonic()
         
         driver_info_state = session_state.timing_state.get(driver_num_str, {}).copy()
-        all_stints_for_driver = copy.deepcopy(session_state.driver_stint_data.get(driver_num_str, [])) # Deepcopy if modified later, or if sub-elements are complex
-        available_telemetry_laps = sorted(list(session_state.telemetry_data.get(driver_num_str, {}).keys())) # Get keys (lap numbers)
+        all_stints_for_driver = copy.deepcopy(session_state.driver_stint_data.get(driver_num_str, []))
+        available_telemetry_laps = sorted(list(session_state.telemetry_data.get(driver_num_str, {}).keys()))
         
         logger.debug(f"Lock in '{func_name}' (Initial Fetch) - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
 
     # --- Driver Basic Details ---
     if driver_info_state:
         tla = driver_info_state.get('Tla', '?')
-        # ... (rest of your driver_basic_details_children setup) ...
         driver_basic_details_children = [
             html.H6(f"#{driver_info_state.get('RacingNumber', driver_num_str)} {tla} - {driver_info_state.get('FullName', 'Unknown')}", 
                     style={'marginTop': '0px', 'marginBottom':'2px', 'fontSize':'0.9rem'}),
@@ -1984,54 +2025,35 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
         ]
     else:
         driver_basic_details_children = [html.P(f"Details for driver {driver_num_str} not found.", style={'color':'orange'})]
-        tla = driver_num_str # Fallback for uirevision
+        tla = driver_num_str
 
     # --- Tab Specific Logic ---
     if active_tab_id == "tab-telemetry":
-        driver_selected_uirevision_telemetry = f"telemetry_driver_{driver_num_str}_pendinglap" # For "no laps" or "select lap" states
-        
         if available_telemetry_laps:
             telemetry_lap_options = [{'label': f'Lap {l}', 'value': l} for l in available_telemetry_laps]
             telemetry_lap_disabled = False
             
-            # Determine the lap to plot
-            if triggered_id == 'driver-select-dropdown' or \
-               triggered_id == 'driver-focus-tabs' or \
+            if triggered_id in ['driver-select-dropdown', 'driver-focus-tabs'] or \
                not selected_lap_for_telemetry or \
                selected_lap_for_telemetry not in available_telemetry_laps:
-                telemetry_lap_value = available_telemetry_laps[-1] 
+                telemetry_lap_value = available_telemetry_laps[-1]
             else:
                 telemetry_lap_value = selected_lap_for_telemetry
         
-            # If telemetry_lap_value is now set (meaning we have a lap to plot)
             if telemetry_lap_value:
-                data_plot_uirevision_telemetry = f"telemetry_data_{driver_num_str}_{telemetry_lap_value}" # uirevision for specific data
+                data_plot_uirevision_telemetry = f"telemetry_data_{driver_num_str}_{telemetry_lap_value}"
 
-                # Check if we really need to update the figure
-                # (e.g., if only active_tab_id changed to telemetry but figure for this driver/lap already shown)
                 if current_telemetry_figure and \
                    current_telemetry_figure.get('layout',{}).get('uirevision') == data_plot_uirevision_telemetry and \
-                   triggered_id == 'driver-focus-tabs': # Only no_update if it was just a tab switch to an already rendered exact figure
+                   triggered_id == 'driver-focus-tabs':
                     logger.debug(f"'{func_name}': Telemetry figure for {driver_num_str} Lap {telemetry_lap_value} already rendered, no_update on tab switch.")
                     fig_telemetry = no_update
                 else:
-                    # Fetch specific lap_data for plotting
-                    lap_data_fetch_start_time = time.monotonic()
                     lap_data = {}
-                    with session_state.lock: # Second, brief lock for specific lap data
-                        lap_data_lock_acquired_time = time.monotonic()
-                        logger.debug(f"Lock2 in '{func_name}' (Telemetry-LapData) - ACQUIRED. Wait: {lap_data_lock_acquired_time - lap_data_fetch_start_time:.4f}s")
-                        lap_data_critical_start_time = time.monotonic()
+                    with session_state.lock:
                         lap_data = copy.deepcopy(session_state.telemetry_data.get(driver_num_str, {}).get(telemetry_lap_value, {}))
-                        logger.debug(f"Lock2 in '{func_name}' (Telemetry-LapData) - HELD for lap_data: {time.monotonic() - lap_data_critical_start_time:.4f}s")
-                    
-                    logger.debug(f"'{func_name}' (Telemetry Tab) - Specific lap_data fetch for {driver_num_str} Lap {telemetry_lap_value} took: {time.monotonic() - lap_data_fetch_start_time:.4f}s (incl. wait & hold)")
 
-                    # Plotting logic
                     if lap_data:
-                        logger.debug(f"'{func_name}' (Telemetry Tab) - Starting Plotly figure generation for driver {driver_num_str}, lap {telemetry_lap_value}.")
-                        plotly_render_actual_start_time = time.monotonic()
-                        
                         timestamps_str = lap_data.get('Timestamps', [])
                         timestamps_dt = [utils.parse_iso_timestamp_safe(ts) for ts in timestamps_str]
                         valid_indices = [i for i, dt_obj in enumerate(timestamps_dt) if dt_obj is not None]
@@ -2039,11 +2061,27 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
                         if valid_indices:
                             timestamps_plot = [timestamps_dt[i] for i in valid_indices]
                             channels = ['Speed', 'RPM', 'Throttle', 'Brake', 'Gear', 'DRS']
-                            fig_telemetry = make_subplots(rows=len(channels), cols=1, shared_xaxes=True,
-                                                          subplot_titles=[c[:10] for c in channels], vertical_spacing=0.06)
+                            
+                            subplot_titles = list(channels)
+                            if use_mph_pref:
+                                try:
+                                    speed_index = subplot_titles.index('Speed')
+                                    subplot_titles[speed_index] = 'Speed (MPH)'
+                                except ValueError:
+                                    pass # 'Speed' not in channels, ignore
+
+                            fig_telemetry = make_subplots(
+                                rows=len(channels), cols=1, shared_xaxes=True,
+                                subplot_titles=subplot_titles, vertical_spacing=0.06
+                            )
+
                             for i, channel in enumerate(channels):
                                 y_data_raw = lap_data.get(channel, [])
                                 y_data_plot = [(y_data_raw[idx] if idx < len(y_data_raw) else None) for idx in valid_indices]
+                                
+                                if channel == 'Speed' and use_mph_pref:
+                                    y_data_plot = utils.convert_kph_to_mph(y_data_plot)
+
                                 if channel == 'DRS':
                                     drs_plot = [1 if val in [10, 12, 14] else 0 for val in y_data_plot]
                                     fig_telemetry.add_trace(go.Scattergl(x=timestamps_plot, y=drs_plot, mode='lines', name=channel, line_shape='hv', connectgaps=False), row=i+1, col=1)
@@ -2057,74 +2095,28 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
                                 hovermode="x unified", showlegend=False, margin=config.TELEMETRY_MARGINS_DATA,
                                 title_text=f"<b>{tla} - Lap {telemetry_lap_value} Telemetry</b>",
                                 title_x=0.5, title_y=0.98, title_font_size=12,
-                                uirevision=data_plot_uirevision_telemetry, # CRITICAL for performance
+                                uirevision=data_plot_uirevision_telemetry,
                                 annotations=[] 
                             )
-                            # ... (your axes updates) ...
-                        else: # No valid plot data for this lap
-                            fig_telemetry = utils.create_empty_figure_with_message(
-                                config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
-                                config.TEXT_TELEMETRY_NO_PLOT_DATA_FOR_LAP_PREFIX + str(telemetry_lap_value) + ".",
-                                config.TELEMETRY_MARGINS_EMPTY
-                            )
-                        logger.debug(f"'{func_name}' (Telemetry Tab) - Plotly Figure Generation actual took: {time.monotonic() - plotly_render_actual_start_time:.4f}s")
-                    else: # lap_data was empty
-                        fig_telemetry = utils.create_empty_figure_with_message(
-                            config.TELEMETRY_WRAPPER_HEIGHT, data_plot_uirevision_telemetry,
-                            config.TEXT_TELEMETRY_NO_PLOT_DATA_FOR_LAP_PREFIX +
-                            str(telemetry_lap_value) + ".",
-                            config.TELEMETRY_MARGINS_EMPTY
-                        )
-            else: # No available_telemetry_laps or telemetry_lap_value could not be set
-                no_laps_message = config.TEXT_DRIVER_NO_LAP_DATA_PREFIX + tla + "."
-                fig_telemetry = utils.create_empty_figure_with_message(
-                    config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision_telemetry, 
-                    no_laps_message, config.TELEMETRY_MARGINS_EMPTY
-                )
-        else: # No available_telemetry_laps
-             no_laps_message = config.TEXT_DRIVER_NO_LAP_DATA_PREFIX + tla + "."
-             fig_telemetry = utils.create_empty_figure_with_message(
-                config.TELEMETRY_WRAPPER_HEIGHT, driver_selected_uirevision_telemetry, 
-                no_laps_message, config.TELEMETRY_MARGINS_EMPTY
-            )
-        stint_history_data = no_update # Stint history not visible on this tab
 
     elif active_tab_id == "tab-stint-history":
-        # ... (your existing stint history logic - ensure it's efficient if it becomes an issue) ...
-        # For now, assuming it's okay.
-        # The fig_telemetry should be an empty placeholder for this tab.
-        fig_telemetry = utils.create_empty_figure_with_message(
-            config.TELEMETRY_WRAPPER_HEIGHT, config.INITIAL_TELEMETRY_UIREVISION, # Use initial uirevision
-            "Select Telemetry tab to view lap data.", config.TELEMETRY_MARGINS_EMPTY
-        )
-        telemetry_lap_options = config.DROPDOWN_NO_LAPS_OPTIONS # Reset telemetry dropdown
-        telemetry_lap_value = None
-        telemetry_lap_disabled = True
-        
-        # Process stint data (from your code, seems reasonable)
+        fig_telemetry = no_update
         if all_stints_for_driver:
-            stint_history_data = [] # Clear previous before reprocessing
+            stint_history_data = []
             for stint_entry in all_stints_for_driver:
                 processed_entry = stint_entry.copy()
                 processed_entry['is_new_tyre_display'] = 'Y' if stint_entry.get('is_new_tyre') else 'N'
                 stint_history_data.append(processed_entry)
         else:
-            stint_history_data = [{ # Placeholder for no data
+            stint_history_data = [{
                 'stint_number': "No stint data available.", 'start_lap': '-', 'compound': '-', 
                 'is_new_tyre_display': '-', 'tyre_age_at_stint_start': '-', 
                 'end_lap': '-', 'total_laps_on_tyre_in_stint': '-', 
                 'tyre_total_laps_at_stint_end': '-'
             }]
 
-    else: # Unknown tab
-        logger.warning(f"'{func_name}': Unknown active tab ID: {active_tab_id}")
-        # Return all defaults, including the initial empty telemetry figure
-        fig_telemetry = utils.create_empty_figure_with_message(
-            config.TELEMETRY_WRAPPER_HEIGHT, config.INITIAL_TELEMETRY_UIREVISION,
-            config.TEXT_DRIVER_SELECT_LAP, config.TELEMETRY_MARGINS_EMPTY
-        )
-        # telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled already default
-        # stint_history_data, stint_history_columns_output already default/no_update
+    else: # Unknown or default tab
+        fig_telemetry = no_update
 
     logger.debug(f"Callback '{func_name}' END_OVERALL. Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
     return (driver_basic_details_children, telemetry_lap_options, telemetry_lap_value, telemetry_lap_disabled, fig_telemetry,
@@ -2176,11 +2168,15 @@ def update_current_session_id_for_map(n_intervals, existing_session_id_in_store)
      Input('stop-reset-button', 'n_clicks'),
      Input('interval-component-fast', 'n_intervals')],
     [State('clientside-update-interval', 'disabled'),
-     State('replay-file-selector', 'value')]
+     State('replay-file-selector', 'value'),
+     State("url", "pathname")]  # <<< ADDED: Get the current page's URL
 )
 def toggle_clientside_interval(connect_clicks, replay_clicks,
                                stop_reset_clicks,
-                               fast_interval_tick, currently_disabled, selected_replay_file):
+                               fast_interval_tick, currently_disabled, selected_replay_file, current_pathname: str):
+    if current_pathname != '/':
+        # If the interval is not already disabled, disable it. Otherwise, do nothing.
+        return True if not currently_disabled else dash.no_update
     session_state = app_state.get_or_create_session_state()
     ctx = dash.callback_context
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered and ctx.triggered[0] else None
@@ -2326,16 +2322,19 @@ def update_clientside_interval_speed(replay_speed, interval_disabled):
     Output('track-map-yellow-key-store', 'data'),
     [Input('interval-component-medium', 'n_intervals'),
      Input('current-track-layout-cache-key-store', 'data'),
-     Input('sidebar-toggle-signal', 'data')], # <<< ADDED INPUT
+     Input('sidebar-toggle-signal', 'data')],
     [State('track-map-graph', 'figure'),
      State('track-map-figure-version-store', 'data'),
-     State('track-map-yellow-key-store', 'data')],
+     State('track-map-yellow-key-store', 'data'),
+     State("url", "pathname")], # <<< ADDED: Get the current page's URL
     prevent_initial_call='initial_duplicate'
 )
 def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signal, # <<< ADDED ARGUMENT
                          current_track_map_figure_state,
                          current_figure_version_in_store_state,
-                         previous_rendered_yellow_key_from_store):
+                         previous_rendered_yellow_key_from_store, current_pathname: str):
+    if current_pathname != '/':
+        return dash.no_update, dash.no_update, dash.no_update
     session_state = app_state.get_or_create_session_state()
     overall_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name

@@ -26,6 +26,10 @@ sidebar = html.Div([
             [html.I(className="fas fa-calendar-alt me-2"), "Race Schedule"],
             href="/schedule", active="exact", className="nav-link-custom mb-1"
         ),
+        dbc.NavLink(
+            [html.I(className="fas fa-cog me-2"), "Settings"],
+            href="/settings", active="exact", className="nav-link-custom mb-1"
+        )
     ], vertical=True, pills=True, className="flex-grow-1"),
     html.Div([
         html.Small("F1 Dashboard v0.2.1", className="text-muted") 
@@ -47,18 +51,27 @@ sidebar_toggle_button = dbc.Button(
 content_area = html.Div(id="page-content", style=config.CONTENT_STYLE_FULL_WIDTH)
 
 
-# --- Main App Layout Definition ---
+# --- Main App Layout Definition (CORRECTED) ---
 main_app_layout = html.Div([
     dcc.Location(id="url", refresh=False),
-    dcc.Store(id='user-session-id', storage_type='session'), # <<< ESSENTIAL: ADDED THIS FOR SESSION ID
-    dcc.Store(id='user-timezone-store-data', storage_type='session'), # Suggested: add storage_type
-    dcc.Store(id='sidebar-state-store', data={'is_open': False}, storage_type='local'), # Suggested: storage_type (local or session)
-    dcc.Store(id='sidebar-toggle-signal', data=None), # This is a signal, no storage needed
+    
+    # --- Globally Shared Stores ---
+    # Only stores that need to be accessed across multiple pages go here.
+    dcc.Store(id='session-preferences-store', storage_type='local'),
+    dcc.Store(id='sidebar-state-store', data={'is_open': False}, storage_type='local'),
+    dcc.Store(id='sidebar-toggle-signal', data=None),
+    dcc.Store(id='user-session-id', storage_type='session'),
+    dcc.Store(id='user-timezone-store-data', storage_type='session'),
+    
+    # --- Main Page Components ---
     sidebar_toggle_button,
     sidebar,
     content_area,
+    
+    # --- Dummy Divs for callbacks without direct UI outputs on the main layout ---
+    html.Div(id='dummy-output-for-controls', style={'display': 'none'}),
+    html.Div(id='js-click-data-holder', children=None, style={'display': 'none'}),
 ])
-
 
 def define_dashboard_layout():
     logger = logging.getLogger("F1App.Layout")
@@ -70,26 +83,14 @@ def define_dashboard_layout():
     except Exception as e:
         logger.error(f"Failed to get replay files during layout creation: {e}")
         replay_file_options = []
-
-    tyre_style_base = {'textAlign': 'center', 'fontWeight': 'bold'}
-    # ... (Your style definitions: PERSONAL_BEST_STYLE, OVERALL_BEST_STYLE, etc. remain unchanged) ...
-    PERSONAL_BEST_STYLE = {'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold'} 
-    OVERALL_BEST_STYLE = {'backgroundColor': '#6f42c1', 'color': 'white', 'fontWeight': 'bold'}  
-    REGULAR_LAP_SECTOR_STYLE = {'backgroundColor': '#ffc107', 'color': '#343a40', 'fontWeight': 'normal'}
-    IN_PIT_STYLE = {'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'}
-    PIT_DURATION_STYLE = {'backgroundColor': '#007bff', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'}
-
-
+        
     stores_and_intervals = html.Div([
-        # ... (all your existing dcc.Interval and dcc.Store components remain here) ...
         dcc.Interval(id='interval-component-map-animation', interval=100, n_intervals=0),
         dcc.Interval(id='interval-component-timing', interval=350, n_intervals=0),
         dcc.Interval(id='interval-component-fast', interval=500, n_intervals=0),
         dcc.Interval(id='interval-component-medium', interval=1000, n_intervals=0),
         dcc.Interval(id='interval-component-slow', interval=5000, n_intervals=0),
         dcc.Interval(id='interval-component-real-slow', interval=10000, n_intervals=0),
-        html.Div(id='dummy-output-for-controls', style={'display': 'none'}),
-        html.Div(id='js-click-data-holder', children=None, style={'display': 'none'}),
         dcc.Store(id='car-positions-store'),
         dcc.Store(id='current-track-layout-cache-key-store'),
         dcc.Store(id='track-map-figure-version-store'),
@@ -98,6 +99,14 @@ def define_dashboard_layout():
         dcc.Interval(id='clientside-click-poll-interval', interval=100, n_intervals=0), 
         dcc.Interval(id='clientside-update-interval', interval=1250, n_intervals=0, disabled=True)
     ])
+
+    tyre_style_base = {'textAlign': 'center', 'fontWeight': 'bold'}
+    # ... (Your style definitions: PERSONAL_BEST_STYLE, OVERALL_BEST_STYLE, etc. remain unchanged) ...
+    PERSONAL_BEST_STYLE = {'backgroundColor': '#28a745', 'color': 'white', 'fontWeight': 'bold'} 
+    OVERALL_BEST_STYLE = {'backgroundColor': '#6f42c1', 'color': 'white', 'fontWeight': 'bold'}  
+    REGULAR_LAP_SECTOR_STYLE = {'backgroundColor': '#ffc107', 'color': '#343a40', 'fontWeight': 'normal'}
+    IN_PIT_STYLE = {'backgroundColor': '#dc3545', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'}
+    PIT_DURATION_STYLE = {'backgroundColor': '#007bff', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'}
 
     header_zone = dbc.Row([
         # ... (header_zone remains unchanged) ...
@@ -112,27 +121,7 @@ def define_dashboard_layout():
     control_card_content_list = [
         dbc.Row([
             dbc.Col(dbc.Button("Connect Live", id="connect-button", color="success", size="sm"), width="auto", className="me-1"),
-            dbc.Col(dbc.Checkbox(
-                id='record-data-checkbox', 
-                label="Record Live Data", 
-                value=False,
-                persistence=True, # ADDED: For UI state persistence
-                persistence_type='session', # ADDED: Store in session storage
-                className="form-check-inline ms-md-2"
-            ), width="auto", className="align-self-center mt-2 mt-md-0"),
         ], className="mb-2 justify-content-start justify-content-md-start"),
-        
-        # --- ADDED: Row for Auto-Connect Switch ---
-        dbc.Row([
-            dbc.Col(html.Label("Enable Auto-Connect:", className="me-2", style={'color': 'white'}), width="auto", # Assuming dark theme
-                    className="align-self-center"), # Align label vertically
-            dbc.Col(dbc.Switch(
-                id='session-auto-connect-switch', 
-                value=False, # Default to off
-                persistence=True, 
-                persistence_type='session'
-            ), width="auto", className="align-self-center") # Align switch vertically
-        ], className="mb-3 mt-2 justify-content-start justify-content-md-start", align="center"), # Added align="center" to row
 
         html.Hr(style={'marginTop': '15px', 'marginBottom': '15px'}), # Separator
 

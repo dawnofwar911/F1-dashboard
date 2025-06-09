@@ -7,6 +7,12 @@ import os
 from pathlib import Path
 import logging
 
+# --- User Settings ---
+USE_MPH = False
+HIDE_RETIRED_DRIVERS = False
+KPH_TO_MPH_FACTOR = 0.621371
+
+
 # --- Core Application & Server ---
 DASH_ENV = os.environ.get('DASH_ENV', 'development')
 IS_PRODUCTION = DASH_ENV == 'production'
