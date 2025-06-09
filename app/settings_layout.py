@@ -42,21 +42,29 @@ def create_settings_layout():
                 className="mb-5"
             ),
             
-            # --- Auto-Connect Settings (Moved from sidebar) ---
+            # --- Live Session Settings ---
             dbc.Row(
                 [
                     dbc.Col(
                         [
-                            html.H5("Live Session Auto-Connect"),
+                            html.H5("Live Session Preferences"),
                             html.P(
-                                "Automatically connect to the F1 live timing feed when a session is about to start.",
+                                "These settings control live session connections and data handling.",
                                 className="text-muted small"
                             ),
                             html.Hr(),
                             dbc.Switch(
                                 id="session-auto-connect-switch",
                                 label="Enable Auto-Connect",
-                                value=False, # This will be set by a callback from storage
+                                value=False,
+                                className="mb-3"
+                            ),
+                            # --- ADDED THIS SWITCH ---
+                            dbc.Switch(
+                                id="record-data-switch",
+                                label="Record Live Session Data",
+                                value=False, # Default to off
+                                className="mb-3"
                             ),
                         ],
                         width=12,
@@ -66,6 +74,6 @@ def create_settings_layout():
             )
         ],
         fluid=True,
-        className="py-4" # Add some padding
+        className="py-4"
     )
     return layout
