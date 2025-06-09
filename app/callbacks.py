@@ -33,7 +33,8 @@ from layout import main_app_layout, dashboard_content_layout
 import schedule_page
 from schedule_page import get_current_year_schedule_with_sessions, schedule_page_layout
 from settings_layout import create_settings_layout # Import the new layout function
-
+from standings_page import standings_page_layout # <-- Import the new layout
+from schedule_page import get_championship_standings, get_constructor_standings
 # These modules now contain session-aware functions
 import signalr_client
 import replay
@@ -53,8 +54,10 @@ def display_page(pathname: str):
         return dashboard_content_layout
     elif pathname == "/schedule":
         return schedule_page_layout
-    elif pathname == "/settings": # ADD THIS
-        return create_settings_layout() # ADD THIS
+    elif pathname == "/standings": # <-- ADD THIS ROUTE
+        return standings_page_layout
+    elif pathname == "/settings":
+        return create_settings_layout()
     else:
         return dbc.Container([
             html.H1("404: Not found", className="text-danger"),
@@ -3026,8 +3029,35 @@ def update_status_alert(connect_clicks, replay_clicks, stop_reset_clicks,
             return is_open, message, color
 
     return dash.no_update, dash.no_update, dash.no_update
+    
+@app.callback(
+    Output('driver-standings-table', 'data'),
+    Output('constructor-standings-table', 'data'),
+    Input('url', 'pathname'),
+    Input('standings-tabs', 'active_tab')
+)
+def update_standings_tables(pathname, active_tab):
+    """
+    This single callback populates the correct standings table for both
+    initial page load and for tab switching.
+    """
+    logger.info(f"Standings callback fired! Pathname: '{pathname}', Active Tab: '{active_tab}'")
 
+    if pathname != '/standings':
+        return [], []
 
+    current_year = datetime.now().year
+    
+    if active_tab == 'tab-drivers':
+        driver_data = get_championship_standings(year=current_year)
+        return driver_data, [] 
+    
+    elif active_tab == 'tab-constructors':
+        constructor_data = get_constructor_standings(year=current_year)
+        return [], constructor_data
+
+    return [], []
+    
 app.clientside_callback(
     ClientsideFunction(
         namespace='clientside',

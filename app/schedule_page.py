@@ -8,13 +8,12 @@ from dash import dcc, html, Input, Output, State, callback
 import dash_bootstrap_components as dbc
 import pandas as pd
 import fastf1
+from fastf1.ergast import Ergast
 import datetime  # Use datetime directly
 import pytz  # For timezone handling
 import logging
 from typing import List, Dict, Any, Optional  # For type hinting
 
-# Import caching utilities
-from cachetools import cached, TTLCache
 
 from app_instance import app  # Assuming app is imported for callbacks
 import config
@@ -24,11 +23,57 @@ import utils  # For parse_iso_timestamp_safe
 # --- Setup Logger for this Module ---
 logger = logging.getLogger("F1App.SchedulePage")
 
-# Create a cache that stores schedule results for 15 minutes (900 seconds)
-schedule_api_cache = TTLCache(maxsize=5, ttl=900)
+def get_championship_standings(year: int) -> list:
+    """
+    Fetches the latest driver championship standings for a given year using Ergast.
+    """
+    logger.info(f"Fetching DRIVER standings for year: {year}")
+    try:
+        ergast = Ergast()
+        results_list = ergast.get_driver_standings(season=year).content
+        if not results_list: return []
+        
+        standings_df = results_list[0]
+        standings_df['driver_name'] = standings_df['givenName'] + ' ' + standings_df['familyName']
+        standings_df['constructor_name'] = standings_df['constructorNames'].str[0]
+        output_columns = ['position', 'driverNumber', 'driverCode', 'driver_name', 'constructor_name', 'points', 'wins']
+        
+        for col in ['driverNumber', 'driverCode']:
+            if col in standings_df.columns:
+                standings_df[col] = standings_df[col].fillna('-')
+        
+        return standings_df[output_columns].to_dict('records')
+    except Exception as e:
+        logger.error(f"Failed to fetch driver standings: {e}", exc_info=True)
+        return []
 
+def get_constructor_standings(year: int) -> list:
+    """
+    Fetches the latest constructor championship standings for a given year using Ergast.
+    """
+    logger.info(f"Fetching CONSTRUCTOR standings for year: {year}")
+    try:
+        ergast = Ergast()
+        # The data is a list containing one DataFrame
+        results_list = ergast.get_constructor_standings(season=year).content
+        if not results_list:
+            logger.warning(f"No constructor standings data returned from Ergast for {year}.")
+            return []
+        
+        standings_df = results_list[0]
+        
+        # The required column names from your standings_page.py layout
+        output_columns = ['position', 'constructorName', 'constructorNationality', 'points', 'wins']
+        
+        # Create a new DataFrame with only the columns we need
+        final_df = standings_df[output_columns].copy()
+        
+        return final_df.to_dict('records')
 
-@cached(schedule_api_cache)  # Apply the cache decorator
+    except Exception as e:
+        logger.error(f"Failed to fetch or process constructor standings: {e}", exc_info=True)
+        return []
+
 def get_current_year_schedule_with_sessions(year: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Fetches the F1 schedule for a given year (defaults to current year) 
