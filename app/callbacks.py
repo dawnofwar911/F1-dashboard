@@ -853,9 +853,10 @@ def update_lap_and_session_info(n_intervals):
 @app.callback(
     Output('connection-status', 'children'),
     Output('connection-status', 'style'),
-    Input('interval-component-fast', 'n_intervals')
+    Input('interval-component-fast', 'n_intervals'),
+    State('connection-status', 'children')
 )
-def update_connection_status(n):
+def update_connection_status(n, existing_status_text):
     """Updates the connection status indicator."""
     session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
@@ -891,6 +892,9 @@ def update_connection_status(n):
              except Exception as path_e: logger.warning(f"Could not get filename from rep_file '{rep_file}': {path_e}")
 
         status_style = {'color': color, 'fontWeight': 'bold'}
+        
+        if status_text == existing_status_text:
+            return dash.no_update, dash.no_update
 
     except Exception as e:
         logger.error(f"Error in update_connection_status: {e}", exc_info=True)
@@ -1784,7 +1788,7 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
             session_state.reset_state_variables() # Reset data stores, queues, and sets thread handles to None
             
             # Set user's preference for recording for this new live session
-            session_state.record_live_data = session_record_pref 
+            session_state.record_live_data = record_pref 
     
             session_state.app_status.update({
                 "state": "Initializing", 
@@ -1810,14 +1814,14 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
             
             # Check recording preference again, as it might be based on checkbox state not yet reflected if reset cleared it without re-reading
             # The `session_record_pref` from the callback State should be reliable here.
-            if session_record_pref: # Use the state of the checkbox when the button was clicked
-                logger.info(f"LiveConnSess {sess_id_log}: Initializing live recording file based on checkbox state ({session_record_pref}).")
+            if record_pref: # Use the state of the checkbox when the button was clicked
+                logger.info(f"LiveConnSess {sess_id_log}: Initializing live recording file based on checkbox state ({record_pref:}).")
                 if not replay.init_live_file_session(session_state): # init_live_file_session uses session_state.record_live_data
                     logger.error(f"LiveConnSess {sess_id_log}: Failed to initialize live recording file.")
                 else:
                     logger.info(f"LiveConnSess {sess_id_log}: Live recording file initialized successfully.")
             else:
-                logger.info(f"LiveConnSess {sess_id_log}: Live recording not requested ({session_record_pref}).")
+                logger.info(f"LiveConnSess {sess_id_log}: Live recording not requested ({record_pref}).")
     
             logger.info(f"LiveConnSess {sess_id_log}: Creating SignalR connection and Data Processing threads for live session.")
             conn_thread = threading.Thread(
@@ -3036,12 +3040,12 @@ def update_status_alert(connect_clicks, replay_clicks, stop_reset_clicks,
     Output('standings-title-badge', 'children'),
     Input('url', 'pathname'),
     Input('standings-tabs', 'active_tab'),
-    Input('standings-interval-component', 'n_intervals') # New Input
+    Input('standings-interval-component', 'n_intervals')
 )
 def update_standings_tables(pathname, active_tab, n_intervals):
     """
     This single callback populates the standings tables, prioritizing
-    live prediction data when available.
+    live prediction data when a session is active.
     """
     if pathname != '/standings':
         return [], [], None
@@ -3050,49 +3054,18 @@ def update_standings_tables(pathname, active_tab, n_intervals):
     if not session_state:
         return [], [], None
 
-    badge = None
-    live_data = session_state.live_standings
-    
-    # --- Live Data Logic ---
-    if live_data and isinstance(live_data, dict):
+    is_live_session = session_state.app_status.get("state") == "Live"
+    live_standings_data = session_state.live_standings
+
+    # --- Use Live Data if session is active AND live data has been received ---
+    if is_live_session and live_standings_data:
         badge = dbc.Badge("Live Projection", color="danger", className="ms-2")
-        driver_standings, constructor_standings = [], []
-        
-        # Parse live driver standings
-        live_drivers = live_data.get('Driver', [])
-        if active_tab == 'tab-drivers' and live_drivers:
-            # We need to merge live data with timing_state to get full driver details
-            with session_state.lock:
-                timing_state = session_state.timing_state
-            
-            for entry in live_drivers:
-                r_num = entry.get('RacingNumber')
-                driver_details = timing_state.get(r_num, {})
-                driver_standings.append({
-                    'position': entry.get('Position', '-'),
-                    'driverNumber': r_num,
-                    'driverCode': driver_details.get('Tla', 'N/A'),
-                    'driver_name': driver_details.get('FullName', 'N/A'),
-                    'constructor_name': driver_details.get('TeamName', 'N/A'),
-                    'points': entry.get('Points', 0),
-                    'wins': entry.get('NumberOfWins', 0)
-                })
-            return driver_standings, [], badge
-
-        # Parse live constructor standings
-        live_constructors = live_data.get('Constructor', [])
-        if active_tab == 'tab-constructors' and live_constructors:
-            for entry in live_constructors:
-                constructor_standings.append({
-                    'position': entry.get('Position', '-'),
-                    'constructorName': entry.get('Name', 'N/A'),
-                    'constructorNationality': entry.get('Nationality', 'N/A'),
-                    'points': entry.get('Points', 0),
-                    'wins': entry.get('NumberOfWins', 0)
-                })
-            return [], constructor_standings, badge
-
-    # --- Fallback to Official Standings ---
+        if active_tab == 'tab-drivers':
+            return live_standings_data.get('drivers', []), [], badge
+        elif active_tab == 'tab-constructors':
+            return [], live_standings_data.get('teams', []), badge
+    
+    # --- Fallback to Official Standings for all other cases ---
     badge = dbc.Badge("Official", color="success", className="ms-2")
     current_year = datetime.now().year
     
@@ -3102,7 +3075,7 @@ def update_standings_tables(pathname, active_tab, n_intervals):
     elif active_tab == 'tab-constructors':
         constructor_data = get_constructor_standings(year=current_year)
         return [], constructor_data, badge
-
+            
     return [], [], None
     
 app.clientside_callback(
