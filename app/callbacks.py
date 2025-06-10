@@ -22,7 +22,7 @@ from dash import dcc, html, dash_table, no_update, Patch
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-# import numpy as np # Uncomment if complex numpy operations are re-introduced
+import pandas as pd
 
 from app_instance import app  # Dash app instance
 import app_state  # For get_or_create_session_state and SessionState type hint
@@ -3096,6 +3096,56 @@ def update_tyre_strategy_chart(n_intervals):
     # Pass the snapshots to the figure generation function
     return utils.create_tyre_strategy_figure(stint_data_snapshot, timing_state_snapshot)
 
+@app.callback(
+    Output("download-timing-data-csv", "data"),
+    Input("export-csv-button", "n_clicks"),
+    prevent_initial_call=True,
+)
+def export_timing_data_to_csv(n_clicks):
+    """
+    Handles the click event for the export button.
+    Gathers the current timing data, formats it as a CSV, and sends it for download.
+    """
+    session_state = app_state.get_or_create_session_state()
+    if not session_state:
+        return dash.no_update
+
+    with session_state.lock:
+        # Create a snapshot of the timing state to avoid holding the lock
+        timing_state_snapshot = dict(session_state.timing_state)
+
+    if not timing_state_snapshot:
+        logger.warning("Export to CSV clicked, but no timing data is available.")
+        return dash.no_update
+
+    # Convert the dictionary of driver data into a list
+    data_list = list(timing_state_snapshot.values())
+    
+    # Create a pandas DataFrame
+    df = pd.DataFrame(data_list)
+
+    # Clean up complex columns (like dictionaries) into simple text
+    if 'LastLapTime' in df.columns:
+        df['LastLapTime'] = df['LastLapTime'].apply(lambda x: x.get('Value') if isinstance(x, dict) else x)
+    if 'BestLapTime' in df.columns:
+        df['BestLapTime'] = df['BestLapTime'].apply(lambda x: x.get('Value') if isinstance(x, dict) else x)
+    
+    # Select and reorder columns for a clean output
+    columns_to_export = [
+        'Position', 'RacingNumber', 'Tla', 'FullName', 'TeamName',
+        'Time', 'GapToLeader', 'LastLapTime', 'BestLapTime',
+        'TyreCompound', 'TyreAge', 'NumberOfPitStops', 'Status'
+    ]
+    
+    # Filter the DataFrame to only include columns that actually exist
+    df_export = df[[col for col in columns_to_export if col in df.columns]]
+
+    # Generate a dynamic filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"f1_dashboard_timing_{timestamp}.csv"
+
+    # Use dcc.send_data_frame to send the CSV to the browser
+    return dcc.send_data_frame(df_export.to_csv, filename, index=False)
     
 app.clientside_callback(
     ClientsideFunction(
