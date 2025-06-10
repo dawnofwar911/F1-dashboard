@@ -32,6 +32,15 @@ QUALIFYING_ELIMINATION_COUNT = {
     "Q3": 0, "SQ3": 0
 }
 
+TYRE_COMPOUND_COLORS = {
+    "SOFT": "#D90000",        # Red
+    "MEDIUM": "#EBC000",      # Yellow
+    "HARD": "#E0E0E0",        # White/Light Grey
+    "INTERMEDIATE": "#00A300", # Green
+    "WET": "#0077FF",         # Blue
+    "UNKNOWN": "#808080"      # Grey for unknown compounds
+}
+
 QUALIFYING_DANGER_RED_STYLE = {
     'backgroundColor': '#DC143C', 'color': 'white'}  # Crimson Red
 # Darker grey for already out

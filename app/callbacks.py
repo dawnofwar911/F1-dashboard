@@ -3078,6 +3078,25 @@ def update_standings_tables(pathname, active_tab, n_intervals):
             
     return [], [], None
     
+@app.callback(
+    Output('tyre-strategy-graph', 'figure'),
+    Input('interval-component-slow', 'n_intervals') # Update every 5 seconds
+)
+def update_tyre_strategy_chart(n_intervals):
+    """Periodically updates the tyre strategy chart."""
+    session_state = app_state.get_or_create_session_state()
+    if not session_state:
+        return dash.no_update
+
+    with session_state.lock:
+        # Take a snapshot of the necessary data under lock
+        stint_data_snapshot = dict(session_state.driver_stint_data)
+        timing_state_snapshot = {k: {'Tla': v.get('Tla')} for k, v in session_state.timing_state.items()}
+
+    # Pass the snapshots to the figure generation function
+    return utils.create_tyre_strategy_figure(stint_data_snapshot, timing_state_snapshot)
+
+    
 app.clientside_callback(
     ClientsideFunction(
         namespace='clientside',

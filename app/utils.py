@@ -44,6 +44,102 @@ logger = logging.getLogger("F1App.Utils")
 
 # --- Utility Functions (Many can remain as is if they are pure or use config) ---
 
+def create_tyre_strategy_figure(driver_stint_data: dict, timing_state: dict):
+    """
+    Creates a Gantt chart figure visualizing the tyre strategy for all drivers
+    using go.Bar for robustness.
+    """
+    if not driver_stint_data:
+        return go.Figure(layout={
+            'template': 'plotly_dark', 'xaxis': {'visible': False}, 'yaxis': {'visible': False},
+            'annotations': [{'text': 'No stint data available yet.', 'showarrow': False, 'font': {'size': 12}}]
+        })
+
+    # --- START: Corrected driver sorting logic ---
+    # Create a list of drivers from the timing_state, getting their sortable position
+    drivers_with_pos = [
+        {'id': num, 'pos': pos_sort_key(data)} 
+        for num, data in timing_state.items()
+    ]
+    # Filter out any drivers that don't have a valid position and sort them
+    sorted_drivers = sorted([d for d in drivers_with_pos if d['pos'] != float('inf')], key=lambda x: x['pos'])
+    sorted_driver_nums = [d['id'] for d in sorted_drivers]
+    # --- END: Corrected driver sorting logic ---
+
+    chart_data = []
+    max_lap = 0
+    
+    for driver_num in sorted_driver_nums:
+        stints = driver_stint_data.get(str(driver_num))
+        if not stints:
+            continue
+
+        driver_tla = timing_state.get(str(driver_num), {}).get('Tla', f'#{driver_num}')
+        for stint in stints:
+            start_lap = stint.get('start_lap')
+            end_lap = stint.get('end_lap')
+
+            if start_lap is None or end_lap is None:
+                continue
+            
+            duration = (end_lap - start_lap) + 1
+            if end_lap > max_lap:
+                max_lap = end_lap
+            
+            chart_data.append(dict(
+                Driver=driver_tla,
+                Start=start_lap,
+                Duration=duration,
+                Compound=stint.get('compound', 'UNKNOWN').upper()
+            ))
+
+    if not chart_data:
+        return go.Figure(layout={
+            'template': 'plotly_dark', 'xaxis': {'visible': False}, 'yaxis': {'visible': False},
+            'annotations': [{'text': 'Processing stint data...', 'showarrow': False, 'font': {'size': 12}}]
+        })
+
+    df = pd.DataFrame(chart_data)
+    fig = go.Figure()
+
+    # Add a separate Bar trace for each tyre compound
+    for compound_name, color in config.TYRE_COMPOUND_COLORS.items():
+        df_compound = df[df["Compound"] == compound_name]
+        if not df_compound.empty:
+            fig.add_trace(go.Bar(
+                y=df_compound["Driver"],
+                x=df_compound["Duration"],
+                base=df_compound["Start"],
+                orientation='h',
+                name=compound_name,
+                marker_color=color,
+                text=compound_name[0] if len(compound_name) > 0 else '',
+                textposition='inside',
+                insidetextanchor='middle',
+                width=0.6
+            ))
+    
+    # Update the layout for a stacked Gantt chart appearance
+    fig.update_layout(
+        template='plotly_dark',
+        xaxis_title="Lap Number",
+        yaxis_title=None,
+        barmode='stack',
+        yaxis_autorange="reversed",
+        xaxis=dict(range=[0, max_lap + 2]),
+        margin=dict(l=40, r=20, t=20, b=30),
+        legend=dict(
+            traceorder="normal",
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
+    )
+
+    return fig
+
 def convert_kph_to_mph(kph_values: list[float]) -> list[float]:
     """Converts a list of speed values from KPH to MPH."""
     if not kph_values:

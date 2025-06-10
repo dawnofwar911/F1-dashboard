@@ -36,7 +36,7 @@ from layout import main_app_layout
 def setup_logging():
     log_formatter = logging.Formatter(config.LOG_FORMAT_DEFAULT)
     actual_root_logger = logging.getLogger()
-    actual_root_logger.setLevel(logging.INFO)
+    actual_root_logger.setLevel(logging.DEBUG)
     if actual_root_logger.hasHandlers():
         actual_root_logger.handlers.clear()
     root_console_handler = logging.StreamHandler(sys.stdout)
