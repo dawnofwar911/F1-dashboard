@@ -911,6 +911,22 @@ def _process_session_info(session_state: app_state.SessionState, data: Dict[str,
         logger.error(
             f"Session {sess_id_log}: Error processing SessionInfo: {e}", exc_info=True)
 
+def _process_championship_prediction(session_state: app_state.SessionState, data: Dict[str, Any]):
+    """
+    Processes the live ChampionshipPrediction stream.
+    The data format is an educated guess and may need adjustment.
+    """
+    sess_id_log = session_state.session_id[:8]
+    logger.debug(f"Session {sess_id_log}: Received ChampionshipPrediction data: {data}")
+
+    # We expect the data to be a dict with keys like "Driver" and "Constructor"
+    if not isinstance(data, dict):
+        logger.warning(f"Session {sess_id_log}: ChampionshipPrediction data is not a dict.")
+        return
+
+    # Store the raw data for now. We will parse it in the callback.
+    session_state.live_standings = data
+
 # --- Main Processing Loop (Session-Aware) ---
 
 
@@ -971,6 +987,8 @@ def data_processing_loop_session(session_state: app_state.SessionState):
                         _process_race_control(session_state, actual_data)  # type: ignore
                     elif stream_name == "TeamRadio":
                         _process_team_radio(session_state, actual_data) # type: ignore
+                    elif stream_name == "ChampionshipPrediction":
+                            _process_championship_prediction(session_state, actual_data)
                     elif stream_name == "ExtrapolatedClock":
                         _process_extrapolated_clock(session_state, actual_data, timestamp)  # type: ignore
                     elif stream_name == "Position":

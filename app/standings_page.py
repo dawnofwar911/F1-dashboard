@@ -37,9 +37,17 @@ def create_standings_layout():
     }
     
     layout = dbc.Container([
-        dbc.Row(
-            dbc.Col(html.H2("Championship Standings", className="my-4 text-center"), width=12)
+        dcc.Store(id='live-standings-data-store'), # To hold processed live data
+        dcc.Interval(
+            id='standings-interval-component',
+            interval=5*1000, # 5 seconds
+            n_intervals=0
         ),
+        dbc.Row([
+            dbc.Col(html.H2("Championship Standings", className="my-4"), width="auto"),
+            # ADD THIS MISSING COLUMN AND DIV
+            dbc.Col(html.Div(id='standings-title-badge'), className="d-flex align-items-center")
+        ], justify="center", align="center"),
         
         # --- TABS FOR DRIVERS AND CONSTRUCTORS ---
         dbc.Tabs(

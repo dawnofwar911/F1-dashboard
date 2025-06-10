@@ -3033,30 +3033,77 @@ def update_status_alert(connect_clicks, replay_clicks, stop_reset_clicks,
 @app.callback(
     Output('driver-standings-table', 'data'),
     Output('constructor-standings-table', 'data'),
+    Output('standings-title-badge', 'children'),
     Input('url', 'pathname'),
-    Input('standings-tabs', 'active_tab')
+    Input('standings-tabs', 'active_tab'),
+    Input('standings-interval-component', 'n_intervals') # New Input
 )
-def update_standings_tables(pathname, active_tab):
+def update_standings_tables(pathname, active_tab, n_intervals):
     """
-    This single callback populates the correct standings table for both
-    initial page load and for tab switching.
+    This single callback populates the standings tables, prioritizing
+    live prediction data when available.
     """
-    logger.info(f"Standings callback fired! Pathname: '{pathname}', Active Tab: '{active_tab}'")
-
     if pathname != '/standings':
-        return [], []
+        return [], [], None
 
+    session_state = app_state.get_or_create_session_state()
+    if not session_state:
+        return [], [], None
+
+    badge = None
+    live_data = session_state.live_standings
+    
+    # --- Live Data Logic ---
+    if live_data and isinstance(live_data, dict):
+        badge = dbc.Badge("Live Projection", color="danger", className="ms-2")
+        driver_standings, constructor_standings = [], []
+        
+        # Parse live driver standings
+        live_drivers = live_data.get('Driver', [])
+        if active_tab == 'tab-drivers' and live_drivers:
+            # We need to merge live data with timing_state to get full driver details
+            with session_state.lock:
+                timing_state = session_state.timing_state
+            
+            for entry in live_drivers:
+                r_num = entry.get('RacingNumber')
+                driver_details = timing_state.get(r_num, {})
+                driver_standings.append({
+                    'position': entry.get('Position', '-'),
+                    'driverNumber': r_num,
+                    'driverCode': driver_details.get('Tla', 'N/A'),
+                    'driver_name': driver_details.get('FullName', 'N/A'),
+                    'constructor_name': driver_details.get('TeamName', 'N/A'),
+                    'points': entry.get('Points', 0),
+                    'wins': entry.get('NumberOfWins', 0)
+                })
+            return driver_standings, [], badge
+
+        # Parse live constructor standings
+        live_constructors = live_data.get('Constructor', [])
+        if active_tab == 'tab-constructors' and live_constructors:
+            for entry in live_constructors:
+                constructor_standings.append({
+                    'position': entry.get('Position', '-'),
+                    'constructorName': entry.get('Name', 'N/A'),
+                    'constructorNationality': entry.get('Nationality', 'N/A'),
+                    'points': entry.get('Points', 0),
+                    'wins': entry.get('NumberOfWins', 0)
+                })
+            return [], constructor_standings, badge
+
+    # --- Fallback to Official Standings ---
+    badge = dbc.Badge("Official", color="success", className="ms-2")
     current_year = datetime.now().year
     
     if active_tab == 'tab-drivers':
         driver_data = get_championship_standings(year=current_year)
-        return driver_data, [] 
-    
+        return driver_data, [], badge
     elif active_tab == 'tab-constructors':
         constructor_data = get_constructor_standings(year=current_year)
-        return [], constructor_data
+        return [], constructor_data, badge
 
-    return [], []
+    return [], [], None
     
 app.clientside_callback(
     ClientsideFunction(
