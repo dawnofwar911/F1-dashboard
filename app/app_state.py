@@ -142,6 +142,7 @@ class SessionState:
         self.auto_connect_enabled: bool = False
         # CORRECTED
         self.auto_connect_thread: Optional[threading.Thread] = None
+        self.live_standings: Optional[dict] = None # <-- ADD THIS LINE
         self.track_data_fetch_thread: Optional[threading.Thread] = None # ADD THIS LINE
 
         logger.info(
@@ -209,6 +210,7 @@ class SessionState:
             self.last_known_rainfall_val = None
             self.selected_driver_for_map_and_lap_chart = None
             self.auto_connect_thread = None
+            self.live_standings = None
             self.track_data_fetch_thread = None # ADD THIS LINE
             logger.info(
                 f"Session {self.session_id}: State variables have been reset to defaults.")

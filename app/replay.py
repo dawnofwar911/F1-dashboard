@@ -36,12 +36,16 @@ def generate_live_filename_session(session_state: 'app_state.SessionState') -> s
     Generates a filename for live recording based on the given session's details.
     Format: {year}-{circuit}-{session}.data.txt
     """
-    # Access session_details from the passed session_state object
     with session_state.lock:
         s_details = session_state.session_details
         year = s_details.get('Year')
-        circuit_name = s_details.get('CircuitName')
-        session_name = s_details.get('SessionName')
+        
+        # --- START: CORRECTED KEY ACCESS ---
+        # Get the circuit name from the 'Meeting' dictionary
+        circuit_name = s_details.get('Meeting', {}).get('Name')
+        # Get the session name from the 'Name' key
+        session_name = s_details.get('Name')
+        # --- END: CORRECTED KEY ACCESS ---
 
     sess_id_log = session_state.session_id[:8]
 
@@ -58,9 +62,7 @@ def generate_live_filename_session(session_state: 'app_state.SessionState') -> s
     s_year = str(year)
     s_circuit = utils.sanitize_filename(str(circuit_name))
     s_session = utils.sanitize_filename(str(session_name))
-
-    # Add timestamp to make filenames unique even if session details are identical for some reason
-    # (e.g. quick stop/start of recording for the same conceptual session)
+    
     timestamp_suffix = datetime.datetime.now(
         timezone.utc).strftime("%Y%m%d_%H%M%S%Z")
     final_filename = f"{s_year}-{s_circuit}-{s_session}_{timestamp_suffix}.data.txt"
@@ -111,52 +113,38 @@ def get_replay_files(directory: str) -> list:
 
 
 def init_live_file_session(session_state: 'app_state.SessionState') -> bool:
-    """Initializes the live data recording file for the given session."""
+    """Initializes the live data recording file for the given session using a temporary name."""
     sess_id_log = session_state.session_id[:8]
     with session_state.lock:
-        # User's preference for this session
         should_record = session_state.record_live_data
 
     if not should_record:
         logger.info(
             f"Session {sess_id_log}: Live recording is disabled by preference. No file will be created.")
-        # Ensure any previous file for this session is closed if state is inconsistent
-        with session_state.lock:
-            if session_state.live_data_file and not session_state.live_data_file.closed:
-                try:
-                    session_state.live_data_file.close()
-                except Exception as e:
-                    logger.error(
-                        f"Session {sess_id_log}: Error closing pre-existing live data file when recording disabled: {e}")
-            session_state.live_data_file = None
-            session_state.is_saving_active = False
-            session_state.current_recording_filename = None
         return False
 
-    ensure_replay_dir_exists()  # Ensure target directory exists
-    filename = generate_live_filename_session(
-        session_state)  # Generate session-specific filename
-    filepath = Path(config.TARGET_SAVE_DIRECTORY) / filename
+    ensure_replay_dir_exists()
+    
+    # Generate a temporary filename based on the unique session ID
+    temp_filename = f"recording_temp_{session_state.session_id}.data.txt"
+    filepath = Path(config.TARGET_SAVE_DIRECTORY) / temp_filename
 
     try:
-        with session_state.lock:  # Protect access to session_state attributes
-            # Close any existing open file for this session first
+        with session_state.lock:
             if session_state.live_data_file and not session_state.live_data_file.closed:
                 logger.warning(
                     f"Session {sess_id_log}: Closing previously open live data file: {session_state.current_recording_filename}")
                 session_state.live_data_file.close()
 
-            # Open in append mode ('a') to allow continuation or prevent overwrite if filename wasn't perfectly unique
-            session_state.live_data_file = open(
-                filepath, 'a', encoding='utf-8')
+            session_state.live_data_file = open(filepath, 'a', encoding='utf-8')
             session_state.is_saving_active = True
-            session_state.current_recording_filename = filepath.name
+            session_state.current_recording_filename = temp_filename # Store the temp name
 
             start_time_str = datetime.datetime.now(timezone.utc).strftime(
                 config.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
             header_msg = f"{config.LOG_REPLAY_FILE_START_MSG_PREFIX}{start_time_str}\n"
 
-            s_details = session_state.session_details  # Already under lock
+            s_details = session_state.session_details
             s_details_for_header = {
                 'Year': s_details.get('Year'), 'CircuitName': s_details.get('CircuitName'),
                 'EventName': s_details.get('EventName'), 'SessionName': s_details.get('SessionName'),
@@ -167,7 +155,7 @@ def init_live_file_session(session_state: 'app_state.SessionState') -> bool:
             session_state.live_data_file.flush()
 
         logger.info(
-            f"Session {sess_id_log}: Live data recording started. Saving to: {filepath.name}")
+            f"Session {sess_id_log}: Live data recording started. Saving to temporary file: {temp_filename}")
         return True
     except Exception as e:
         logger.error(
@@ -177,6 +165,57 @@ def init_live_file_session(session_state: 'app_state.SessionState') -> bool:
             session_state.is_saving_active = False
             session_state.current_recording_filename = None
         return False
+
+def rename_live_file_session(session_state: 'app_state.SessionState'):
+    """
+    Renames an active temporary recording file to its final, descriptive name
+    after session information has been received. It will not rename if details
+    are still incomplete.
+    """
+    sess_id_log = session_state.session_id[:8]
+    logger.info(f"Session {sess_id_log}: Checking if recording file needs renaming.")
+    
+    with session_state.lock:
+        temp_filename = session_state.current_recording_filename
+        live_file = session_state.live_data_file
+
+    # Generate the new, descriptive filename now that we have session info
+    final_filename = generate_live_filename_session(session_state)
+    
+    # --- THIS IS THE NEW LOGIC ---
+    # If the generator returned a fallback name, it means we still don't have
+    # all the details. Abort the rename for now and wait for the next trigger.
+    if config.LIVE_DATA_FILENAME_FALLBACK_PREFIX in final_filename:
+        logger.debug(f"Session {sess_id_log}: Deferring rename, full session details not yet available.")
+        return
+    # --- END OF NEW LOGIC ---
+
+    temp_filepath = Path(config.TARGET_SAVE_DIRECTORY) / temp_filename
+    final_filepath = Path(config.TARGET_SAVE_DIRECTORY) / final_filename
+
+    if live_file and not live_file.closed:
+        logger.debug(f"Session {sess_id_log}: Closing file handle for renaming.")
+        live_file.close()
+        with session_state.lock:
+            session_state.live_data_file = None
+
+    try:
+        os.rename(temp_filepath, final_filepath)
+        logger.info(f"Session {sess_id_log}: Renamed recording from '{temp_filename}' to '{final_filename}'")
+
+        new_file_handle = open(final_filepath, 'a', encoding='utf-8')
+        with session_state.lock:
+            session_state.live_data_file = new_file_handle
+            session_state.current_recording_filename = final_filename
+            
+    except Exception as e:
+        logger.error(f"Session {sess_id_log}: CRITICAL: Failed to rename recording file '{temp_filename}'. Error: {e}", exc_info=True)
+        try:
+            old_file_handle = open(temp_filepath, 'a', encoding='utf-8')
+            with session_state.lock:
+                session_state.live_data_file = old_file_handle
+        except Exception as e_reopen:
+             logger.error(f"Session {sess_id_log}: FAILED to reopen temporary file after rename error: {e_reopen}", exc_info=True)
 
 
 def close_live_file_session(session_state: 'app_state.SessionState'):

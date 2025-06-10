@@ -71,7 +71,7 @@ def create_settings_layout():
                         lg=6
                     )
                 ]
-            )
+            ),
         ],
         fluid=True,
         className="py-4"

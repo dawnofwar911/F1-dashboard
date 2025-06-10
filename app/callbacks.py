@@ -33,7 +33,8 @@ from layout import main_app_layout, dashboard_content_layout
 import schedule_page
 from schedule_page import get_current_year_schedule_with_sessions, schedule_page_layout
 from settings_layout import create_settings_layout # Import the new layout function
-
+from standings_page import standings_page_layout # <-- Import the new layout
+from schedule_page import get_championship_standings, get_constructor_standings
 # These modules now contain session-aware functions
 import signalr_client
 import replay
@@ -53,8 +54,10 @@ def display_page(pathname: str):
         return dashboard_content_layout
     elif pathname == "/schedule":
         return schedule_page_layout
-    elif pathname == "/settings": # ADD THIS
-        return create_settings_layout() # ADD THIS
+    elif pathname == "/standings": # <-- ADD THIS ROUTE
+        return standings_page_layout
+    elif pathname == "/settings":
+        return create_settings_layout()
     else:
         return dbc.Container([
             html.H1("404: Not found", className="text-danger"),
@@ -850,9 +853,10 @@ def update_lap_and_session_info(n_intervals):
 @app.callback(
     Output('connection-status', 'children'),
     Output('connection-status', 'style'),
-    Input('interval-component-fast', 'n_intervals')
+    Input('interval-component-fast', 'n_intervals'),
+    State('connection-status', 'children')
 )
-def update_connection_status(n):
+def update_connection_status(n, existing_status_text):
     """Updates the connection status indicator."""
     session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
@@ -888,6 +892,9 @@ def update_connection_status(n):
              except Exception as path_e: logger.warning(f"Could not get filename from rep_file '{rep_file}': {path_e}")
 
         status_style = {'color': color, 'fontWeight': 'bold'}
+        
+        if status_text == existing_status_text:
+            return dash.no_update, dash.no_update
 
     except Exception as e:
         logger.error(f"Error in update_connection_status: {e}", exc_info=True)
@@ -1781,7 +1788,7 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
             session_state.reset_state_variables() # Reset data stores, queues, and sets thread handles to None
             
             # Set user's preference for recording for this new live session
-            session_state.record_live_data = session_record_pref 
+            session_state.record_live_data = record_pref 
     
             session_state.app_status.update({
                 "state": "Initializing", 
@@ -1807,14 +1814,14 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
             
             # Check recording preference again, as it might be based on checkbox state not yet reflected if reset cleared it without re-reading
             # The `session_record_pref` from the callback State should be reliable here.
-            if session_record_pref: # Use the state of the checkbox when the button was clicked
-                logger.info(f"LiveConnSess {sess_id_log}: Initializing live recording file based on checkbox state ({session_record_pref}).")
+            if record_pref: # Use the state of the checkbox when the button was clicked
+                logger.info(f"LiveConnSess {sess_id_log}: Initializing live recording file based on checkbox state ({record_pref:}).")
                 if not replay.init_live_file_session(session_state): # init_live_file_session uses session_state.record_live_data
                     logger.error(f"LiveConnSess {sess_id_log}: Failed to initialize live recording file.")
                 else:
                     logger.info(f"LiveConnSess {sess_id_log}: Live recording file initialized successfully.")
             else:
-                logger.info(f"LiveConnSess {sess_id_log}: Live recording not requested ({session_record_pref}).")
+                logger.info(f"LiveConnSess {sess_id_log}: Live recording not requested ({record_pref}).")
     
             logger.info(f"LiveConnSess {sess_id_log}: Creating SignalR connection and Data Processing threads for live session.")
             conn_thread = threading.Thread(
@@ -3026,8 +3033,51 @@ def update_status_alert(connect_clicks, replay_clicks, stop_reset_clicks,
             return is_open, message, color
 
     return dash.no_update, dash.no_update, dash.no_update
+    
+@app.callback(
+    Output('driver-standings-table', 'data'),
+    Output('constructor-standings-table', 'data'),
+    Output('standings-title-badge', 'children'),
+    Input('url', 'pathname'),
+    Input('standings-tabs', 'active_tab'),
+    Input('standings-interval-component', 'n_intervals')
+)
+def update_standings_tables(pathname, active_tab, n_intervals):
+    """
+    This single callback populates the standings tables, prioritizing
+    live prediction data when a session is active.
+    """
+    if pathname != '/standings':
+        return [], [], None
 
+    session_state = app_state.get_or_create_session_state()
+    if not session_state:
+        return [], [], None
 
+    is_live_session = session_state.app_status.get("state") == "Live"
+    live_standings_data = session_state.live_standings
+
+    # --- Use Live Data if session is active AND live data has been received ---
+    if is_live_session and live_standings_data:
+        badge = dbc.Badge("Live Projection", color="danger", className="ms-2")
+        if active_tab == 'tab-drivers':
+            return live_standings_data.get('drivers', []), [], badge
+        elif active_tab == 'tab-constructors':
+            return [], live_standings_data.get('teams', []), badge
+    
+    # --- Fallback to Official Standings for all other cases ---
+    badge = dbc.Badge("Official", color="success", className="ms-2")
+    current_year = datetime.now().year
+    
+    if active_tab == 'tab-drivers':
+        driver_data = get_championship_standings(year=current_year)
+        return driver_data, [], badge
+    elif active_tab == 'tab-constructors':
+        constructor_data = get_constructor_standings(year=current_year)
+        return [], constructor_data, badge
+            
+    return [], [], None
+    
 app.clientside_callback(
     ClientsideFunction(
         namespace='clientside',

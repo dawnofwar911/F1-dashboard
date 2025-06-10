@@ -16,9 +16,24 @@ from typing import Dict, Any, List, Tuple  # For type hints
 import app_state  # For app_state.SessionState
 import utils
 import config
+import replay
 
 # Module-level logger
 logger = logging.getLogger("F1App.DataProcessing")
+
+def _check_and_trigger_rename(session_state: app_state.SessionState):
+    """
+    Checks if a temporary recording file is active and if enough session
+    details exist to generate a final name. If so, triggers the rename.
+    """
+    with session_state.lock:
+        is_recording = session_state.is_saving_active
+        current_filename = session_state.current_recording_filename
+    
+    if is_recording and current_filename and "recording_temp_" in current_filename:
+        # This will call the rename function, which now intelligently defers
+        # renaming if the generated name is still a fallback.
+        replay.rename_live_file_session(session_state)
 
 # --- Individual Stream Processing Functions (Now Session-Aware) ---
 
@@ -555,6 +570,7 @@ def _process_driver_list(session_state: app_state.SessionState, data: Dict[str, 
     if added_count > 0 or updated_count > 0:
         logger.debug(
             f"Session {sess_id_log}: Processed DriverList. Added: {added_count}, Updated: {updated_count}. Total drivers: {len(session_state.timing_state)}")
+    _check_and_trigger_rename(session_state)
 
 
 def _process_timing_data(session_state: app_state.SessionState, data: Dict[str, Any]):
@@ -861,6 +877,7 @@ def _process_session_data(session_state: app_state.SessionState, data: Dict[str,
                                 session_state.session_start_feed_timestamp_utc_dt = None
                                 session_state.current_segment_scheduled_duration_seconds = None
                 session_state.session_details['PreviousSessionStatus'] = session_status_from_feed
+        _check_and_trigger_rename(session_state)
     except Exception as e:
         logger.error(
             f"Session {sess_id_log}: Error processing SessionData: {e}", exc_info=True)
@@ -895,6 +912,8 @@ def _process_session_info(session_state: app_state.SessionState, data: Dict[str,
 
         if practice_duration_val is not None and details_to_update.get("Type", "").lower().startswith("practice"):
             session_state.practice_session_scheduled_duration_seconds = practice_duration_val
+            
+        _check_and_trigger_rename(session_state)
 
         if reset_flags.get("clear_track_cache"):
             session_state.track_coordinates_cache = deepcopy(app_state.INITIAL_SESSION_TRACK_COORDINATES_CACHE)  # Use app_state for INITIAL
@@ -910,6 +929,62 @@ def _process_session_info(session_state: app_state.SessionState, data: Dict[str,
     except Exception as e:
         logger.error(
             f"Session {sess_id_log}: Error processing SessionInfo: {e}", exc_info=True)
+
+def _process_championship_prediction(session_state: app_state.SessionState, data: Dict[str, Any]):
+    """
+    Processes the live ChampionshipPrediction stream based on the provided data structure.
+    """
+    sess_id_log = session_state.session_id[:8]
+    logger.debug(f"Session {sess_id_log}: Processing ChampionshipPrediction data.")
+
+    if not isinstance(data, dict):
+        logger.warning(f"Session {sess_id_log}: ChampionshipPrediction data is not a dict.")
+        return
+
+    # Process Drivers Data
+    live_drivers_raw = data.get('drivers', {})
+    processed_drivers = []
+    if isinstance(live_drivers_raw, dict):
+        with session_state.lock:
+            timing_state = session_state.timing_state
+        
+        for driver_obj in live_drivers_raw.values():
+            if not isinstance(driver_obj, dict): continue
+            r_num = driver_obj.get('racingNumber')
+            driver_details = timing_state.get(r_num, {})
+            processed_drivers.append({
+                'position': driver_obj.get('predictedPosition'),
+                'points': driver_obj.get('predictedPoints'),
+                'wins': driver_details.get('wins', 0), # Wins may not be in this stream, get from official data
+                'driverNumber': r_num,
+                'driverCode': driver_details.get('Tla', 'N/A'),
+                'driver_name': driver_details.get('FullName', 'N/A'),
+                'constructor_name': driver_details.get('TeamName', 'N/A')
+            })
+
+    # Process Teams Data
+    live_teams_raw = data.get('teams', {})
+    processed_teams = []
+    if isinstance(live_teams_raw, dict):
+        for team_obj in live_teams_raw.values():
+            if not isinstance(team_obj, dict): continue
+            processed_teams.append({
+                'position': team_obj.get('predictedPosition'),
+                'points': team_obj.get('predictedPoints'),
+                'wins': team_obj.get('wins', 0), # Wins may not be in this stream
+                'constructorName': team_obj.get('teamName'),
+                'constructorNationality': team_obj.get('nationality', 'N/A') # Nationality may not be in stream
+            })
+
+    # Sort by position before storing
+    processed_drivers.sort(key=lambda x: x.get('position', 99))
+    processed_teams.sort(key=lambda x: x.get('position', 99))
+    
+    # Store the clean, processed data in the session state
+    session_state.live_standings = {
+        'drivers': processed_drivers,
+        'teams': processed_teams
+    }
 
 # --- Main Processing Loop (Session-Aware) ---
 
@@ -971,6 +1046,8 @@ def data_processing_loop_session(session_state: app_state.SessionState):
                         _process_race_control(session_state, actual_data)  # type: ignore
                     elif stream_name == "TeamRadio":
                         _process_team_radio(session_state, actual_data) # type: ignore
+                    elif stream_name == "ChampionshipPrediction":
+                            _process_championship_prediction(session_state, actual_data)
                     elif stream_name == "ExtrapolatedClock":
                         _process_extrapolated_clock(session_state, actual_data, timestamp)  # type: ignore
                     elif stream_name == "Position":

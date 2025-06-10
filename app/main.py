@@ -198,6 +198,7 @@ def shutdown_application():
 faulthandler.enable()
 setup_logging()  # Call your logging setup
 logger_main_module = logging.getLogger("F1App.Main.ModuleLevel")
+
 logger_main_module.info(
     "main.py (multi-session structure) module loaded. Initializing...")
 

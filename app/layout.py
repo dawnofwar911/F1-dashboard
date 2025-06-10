@@ -27,6 +27,10 @@ sidebar = html.Div([
             href="/schedule", active="exact", className="nav-link-custom mb-1"
         ),
         dbc.NavLink(
+            [html.I(className="fas fa-trophy me-2"), "Standings"],
+            href="/standings", active="exact", className="nav-link-custom mb-1"
+        ),
+        dbc.NavLink(
             [html.I(className="fas fa-cog me-2"), "Settings"],
             href="/settings", active="exact", className="nav-link-custom mb-1"
         )

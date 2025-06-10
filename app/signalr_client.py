@@ -12,6 +12,7 @@ import uuid
 import urllib.parse
 import time
 import datetime
+import json
 
 # SignalR Core imports
 from signalrcore.hub_connection_builder import HubConnectionBuilder
@@ -21,10 +22,9 @@ import queue  # For queue.Full exception
 
 # Local imports
 # app_state will be passed as an argument (session_state) to functions
-# import app_state
+import app_state
 import config
 import utils
-# import replay # For replay.close_live_file_session - will be a conceptual call
 
 # Module-level loggers (can still be used, but messages should include session context)
 main_logger = logging.getLogger("F1App.SignalR")  # General SignalR operations
@@ -211,13 +211,31 @@ def run_connection_session(session_state: 'app_state.SessionState', target_url: 
 
 
 def on_message_session(session_state: 'app_state.SessionState', args: list):
-    """Handles 'feed' targeted messages received for a session. Decodes if needed, puts on session's queue."""
+    """
+    Handles 'feed' messages, saves them to a file if recording is active,
+    and puts them on the session's queue for processing.
+    """
     sess_id = session_state.session_id[:8]
-    logger_s_msg = logging.getLogger(
-        f"F1App.SignalR.Msg_{sess_id}")  # Logger for messages
-    # logger_s_msg.debug(f"on_message_session called with args type: {type(args)}")
+    logger_s_msg = logging.getLogger(f"F1App.SignalR.Msg_{sess_id}")
 
     try:
+        # --- START: Session-Aware Recording Logic ---
+        with session_state.lock:
+            is_recording_active = session_state.is_saving_active
+            live_data_file = session_state.live_data_file
+
+        if is_recording_active and live_data_file and not live_data_file.closed:
+            try:
+                # Re-serialize the received message arguments into a JSON string and save.
+                # This creates a replay file with the exact same structure as a raw recording.
+                message_to_save = json.dumps(args)
+                live_data_file.write(message_to_save + "\n")
+            except Exception as e:
+                logger_s_msg.error(f"Failed to write live data to replay file: {e}")
+        # --- END: Session-Aware Recording Logic ---
+
+
+        # The rest of the function continues as before to process the data for the live view.
         if not isinstance(args, list):
             logger_s_msg.warning(
                 f"Unexpected args format: {type(args)} - Content: {args!r}")
@@ -226,10 +244,8 @@ def on_message_session(session_state: 'app_state.SessionState', args: list):
         if len(args) >= 2:
             stream_name_raw = args[0]
             data_content = args[1]
-            # F1 feed messages often have [stream_name, data, timestamp_from_feed_server]
             timestamp_for_queue_str = args[2] if len(args) > 2 else None
 
-            # Fallback if F1 doesn't provide a timestamp (unlikely for 'feed')
             if timestamp_for_queue_str is None:
                 timestamp_for_queue_str = datetime.datetime.now(
                     datetime.timezone.utc).isoformat() + 'Z'
@@ -238,30 +254,21 @@ def on_message_session(session_state: 'app_state.SessionState', args: list):
             actual_data = data_content
 
             if isinstance(stream_name_raw, str) and stream_name_raw.endswith('.z'):
-                stream_name = stream_name_raw[:-2]  # Remove .z suffix
-                actual_data = utils._decode_and_decompress(
-                    data_content)  # Assuming utils is available
+                stream_name = stream_name_raw[:-2]
+                actual_data = utils._decode_and_decompress(data_content)
                 if actual_data is None:
                     logger_s_msg.warning(
                         f"Failed to decode/decompress data for stream '{stream_name_raw}'. Skipping.")
                     return
 
-            # Ensure actual_data is not None before queuing (it could be None after failed decompression)
             if actual_data is not None:
                 try:
-                    # The queue item now includes the timestamp string from the feed or generated
                     queue_item = {
                         "stream": stream_name, "data": actual_data, "timestamp": timestamp_for_queue_str}
-                    # Use non-blocking put or short timeout
                     session_state.data_queue.put(queue_item, block=False)
                 except queue.Full:
                     logger_s_msg.warning(
                         f"Session data queue full! Discarding '{stream_name}' message.")
-                except Exception as queue_ex:
-                    logger_s_msg.error(
-                        f"Error putting message onto session data_queue: {queue_ex}", exc_info=True)
-            # else:
-                # logger_s_msg.debug(f"Skipping queue put for stream '{stream_name}' due to None data after processing.")
         else:
             logger_s_msg.warning(
                 f"'feed' received with unexpected arguments structure: {args!r}")
