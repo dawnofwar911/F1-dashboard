@@ -568,6 +568,24 @@ def define_dashboard_layout():
                     ]
                 )
             ]))
+        ], md=12, className="mb-3"), # Added mb-3 for spacing
+        dbc.Col([
+            dbc.Card(dbc.CardBody([
+                html.H5("Tyre Strategy Overview", className="card-title mb-2"),
+                dcc.Graph(
+                    id='tyre-strategy-graph',
+                    figure=go.Figure(layout={
+                        'template': 'plotly_dark',
+                        'xaxis': {'visible': False},
+                        'yaxis': {'visible': False},
+                        'annotations': [{
+                            'text': 'Awaiting session data...',
+                            'showarrow': False,
+                            'font': {'size': 12}
+                        }]
+                    })
+                )
+            ]))
         ], md=12)
     ], className="mt-2 mb-3", id='analysis-zone')
 
