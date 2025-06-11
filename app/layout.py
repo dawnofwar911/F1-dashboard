@@ -561,11 +561,20 @@ def define_dashboard_layout():
         dbc.Col([
             dbc.Card(dbc.CardBody([
                 html.H5("Lap Time Progression", className="card-title mb-2"),
-                dcc.Dropdown(
-                    id='lap-time-driver-selector', options=[], value=[], multi=True,
-                    placeholder=config.TEXT_LAP_CHART_SELECT_DRIVERS_PLACEHOLDER,
-                    style={'marginBottom': '10px', 'color': '#333'}
-                ),
+                dbc.Row([
+        dbc.Col(
+            dcc.Dropdown(
+                id='lap-time-driver-dropdown',
+                placeholder="Select Driver 1..."
+            ), md=6
+        ),
+        dbc.Col(
+            dcc.Dropdown(
+                id='lap-time-driver-dropdown-2', # New dropdown for comparison
+                placeholder="Select Driver 2..."
+            ), md=6
+        ),
+    ], className="mb-3"),
                 html.Div(
                     style={'height': f'{config.LAP_PROG_WRAPPER_HEIGHT}px'}, 
                     children=[
