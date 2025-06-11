@@ -2638,10 +2638,16 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
 
 
 @app.callback(
-    Output('driver-select-dropdown', 'options'),
-    Input('interval-component-slow', 'n_intervals')
+    [Output('lap-time-driver-dropdown', 'options'),
+     Output('lap-time-driver-dropdown-2', 'options'),
+     Output('driver-select-dropdown', 'options')], # Add second output
+    Input('interval-component-medium', 'n_intervals')
 )
 def update_driver_dropdown_options(n_intervals):
+    """
+    Periodically updates the driver dropdown options for both dropdowns
+    based on the current driver list.
+    """
     session_state = app_state.get_or_create_session_state()
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
@@ -2658,7 +2664,7 @@ def update_driver_dropdown_options(n_intervals):
          logger.error(f"Error generating driver dropdown options: {e}", exc_info=True)
          options = config.DROPDOWN_ERROR_LOADING_DRIVERS_OPTIONS # Use constant
     logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
-    return options
+    return options, options, options
 
 @app.callback(
     Output('lap-time-driver-selector', 'options'),
@@ -2675,19 +2681,29 @@ def update_lap_chart_driver_options(n_intervals):
 
 @app.callback(
     Output('lap-time-progression-graph', 'figure'),
-    Input('lap-time-driver-selector', 'value'),
+    # --- MODIFIED: Listen to the two specific dropdowns for this chart ---
+    Input('lap-time-driver-dropdown', 'value'),
+    Input('lap-time-driver-dropdown-2', 'value'),
+    # -------------------------------------------------------------------
     Input('interval-component-medium', 'n_intervals'),
-    State('lap-time-progression-graph', 'figure') # Add current figure as State
+    State('lap-time-progression-graph', 'figure')
 )
-def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals, current_figure_state):
+def update_lap_time_progression_chart(driver1_rno, driver2_rno, n_intervals, current_figure_state):
+    """
+    Updates the lap time progression chart for one or two selected drivers.
+    """
     session_state = app_state.get_or_create_session_state()
     overall_callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
-    logger.debug(f"Callback '{func_name}' START_OVERALL") # Overall start
+    logger.debug(f"Callback '{func_name}' START_OVERALL")
 
     ctx = dash.callback_context
     triggered_input_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else 'N/A'
     logger.debug(f"'{func_name}' triggered by: {triggered_input_id}")
+    
+    # --- ADDED: Combine the two driver inputs into a single list ---
+    selected_drivers_rnos = [d for d in [driver1_rno, driver2_rno] if d]
+    # -------------------------------------------------------------
 
     fig_empty_lap_prog = utils.create_empty_figure_with_message(
         config.LAP_PROG_WRAPPER_HEIGHT, config.INITIAL_LAP_PROG_UIREVISION,
@@ -2698,30 +2714,15 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals, curren
         logger.debug(f"Callback '{func_name}' END_OVERALL (No drivers selected). Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
         return fig_empty_lap_prog
 
-    if not isinstance(selected_drivers_rnos, list):
-        selected_drivers_rnos = [selected_drivers_rnos]
-
-    # uirevision based on selected drivers (good for structural identity)
+    # The rest of your code works perfectly with the new list of drivers
     sorted_selection_key = "_".join(sorted(list(set(str(rno) for rno in selected_drivers_rnos))))
     data_plot_uirevision = f"lap_prog_data_{sorted_selection_key}"
 
-    # --- Data Fetching (already timed well in your logs) ---
-    lock_acquisition_start_time = time.monotonic()
     with session_state.lock:
         lock_acquired_time = time.monotonic()
-        logger.debug(f"Lock in '{func_name}' - ACQUIRED. Wait: {lock_acquired_time - lock_acquisition_start_time:.4f}s")
-        critical_section_start_time = time.monotonic()
-        
-        # Make deep copies if you plan to modify/filter these snapshots extensively
-        # For read-only iteration, shallow copies or direct iteration (carefully) might be okay
-        lap_history_snapshot = {rno: list(session_state.lap_time_history.get(rno, [])) for rno in selected_drivers_rnos}
-        timing_state_snapshot = {rno: session_state.timing_state.get(rno, {}).copy() for rno in selected_drivers_rnos}
-        
-        logger.debug(f"Lock in '{func_name}' - HELD for data snapshot: {time.monotonic() - critical_section_start_time:.4f}s")
+        lap_history_snapshot = {str(rno): list(session_state.lap_time_history.get(str(rno), [])) for rno in selected_drivers_rnos}
+        timing_state_snapshot = {str(rno): session_state.timing_state.get(str(rno), {}).copy() for rno in selected_drivers_rnos}
 
-    # --- Python Data Preparation & Plotly Figure Building ---
-    # This combined block was timed by 'figure_building_start_time' in your previous code.
-    # Let's keep that, but be mindful of what it includes.
     python_and_plotly_prep_start_time = time.monotonic()
 
     fig_with_data = go.Figure(layout={
@@ -2737,13 +2738,9 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals, curren
     data_actually_plotted = False
     min_time_overall, max_time_overall, max_laps_overall = float('inf'), float('-inf'), 0
     
-    # --- Python Loop for preparing trace data ---
-    # This part can be significant if many drivers or many laps per driver
-    traces_to_add = [] # Prepare all trace data first
+    traces_to_add = []
 
-    for driver_rno_str_loop_key in selected_drivers_rnos: # Ensure this key matches snapshot keys
-        driver_rno_str = str(driver_rno_str_loop_key) # Ensure string key
-        
+    for driver_rno_str in selected_drivers_rnos:
         driver_laps = lap_history_snapshot.get(driver_rno_str, [])
         if not driver_laps: continue
 
@@ -2761,30 +2758,25 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals, curren
 
         if lap_numbers: max_laps_overall = max(max_laps_overall, max(lap_numbers))
         if lap_times_sec:
-            min_time_current_driver = min(lap_times_sec)
-            max_time_current_driver = max(lap_times_sec)
-            min_time_overall = min(min_time_overall, min_time_current_driver)
-            max_time_overall = max(max_time_overall, max_time_current_driver)
+            min_time_overall = min(min_time_overall, min(lap_times_sec))
+            max_time_overall = max(max_time_overall, max(lap_times_sec))
         
-        # Optimized hover text generation (pre-join list of strings)
         hover_texts_parts = []
         for lap in valid_laps:
             total_seconds = lap['lap_time_seconds']
             minutes = int(total_seconds // 60)
             seconds_part = total_seconds % 60
             time_formatted = f"{minutes}:{seconds_part:06.3f}" if minutes > 0 else f"{seconds_part:.3f}"
-            hover_texts_parts.append(f"<b>{tla}</b><br>Lap: {lap['lap_number']}<br>Time: {time_formatted}<br>Tyre: {lap['compound']}<extra></extra>")
+            hover_texts_parts.append(f"<b>{tla}</b><br>Lap: {lap['lap_number']}<br>Time: {time_formatted}<br>Tyre: {lap.get('compound', 'N/A')}<extra></extra>")
         
         traces_to_add.append(go.Scatter(
             x=lap_numbers, y=lap_times_sec, mode='lines+markers', name=tla,
             marker=dict(color=team_color_hex, size=5), line=dict(color=team_color_hex, width=1.5),
-            hovertext=hover_texts_parts, hoverinfo='text' # Assign pre-built list
+            hovertext=hover_texts_parts, hoverinfo='text'
         ))
     
-    # Add all traces at once
     if traces_to_add:
-        for trace in traces_to_add:
-            fig_with_data.add_trace(trace)
+        fig_with_data.add_traces(traces_to_add)
 
     logger.debug(f"'{func_name}' - Python Data Prep & Plotly Traces Added took: {time.monotonic() - python_and_plotly_prep_start_time:.4f}s")
 
@@ -2794,7 +2786,6 @@ def update_lap_time_progression_chart(selected_drivers_rnos, n_intervals, curren
         logger.debug(f"Callback '{func_name}' END_OVERALL (No data plotted). Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
         return fig_empty_lap_prog
 
-    # --- Update Axes (Relatively fast Plotly operations) ---
     axes_update_start_time = time.monotonic()
     if min_time_overall != float('inf') and max_time_overall != float('-inf'):
         padding = (max_time_overall - min_time_overall) * 0.05 if max_time_overall > min_time_overall else 0.5
