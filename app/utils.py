@@ -44,6 +44,81 @@ logger = logging.getLogger("F1App.Utils")
 
 # --- Utility Functions (Many can remain as is if they are pure or use config) ---
 
+def get_color_from_team_name(team_name: str) -> str:
+    """Fuzzy matches a team name to the color map in config."""
+    # First, check for an exact match
+    if team_name in config.TEAM_COLORS:
+        return config.TEAM_COLORS[team_name]
+    # If no exact match, check if a key is contained in the name
+    for key, color in config.TEAM_COLORS.items():
+        if key in team_name:
+            return color
+    # Fallback to grey if no match is found
+    return '#808080'
+
+def create_lap_position_chart(laps_df: pd.DataFrame, session_year: int):
+    """
+    Creates a line chart showing the position of each driver on every lap.
+    """
+    if laps_df.empty:
+        return go.Figure(layout={'template': 'plotly_dark', 'annotations': [{'text': 'No lap data available for this session.', 'showarrow': False}]})
+
+    fig = go.Figure()
+    
+    drivers_by_tla = laps_df.sort_values(by='Position')['Driver'].unique()
+    
+    teams_plotted = set()
+    marker_symbols = ['circle', 'cross'] # Use different markers for teammatesdriver of a team
+
+    for driver_tla in drivers_by_tla:
+        driver_laps = laps_df[laps_df['Driver'] == driver_tla]
+        
+        if driver_laps.empty:
+            continue
+            
+        team_name = driver_laps['Team'].iloc[0]
+        color = get_color_from_team_name(team_name)
+
+        # --- Determine which marker symbol to use ---
+        if team_name in teams_plotted:
+            symbol_to_use = marker_symbols[1] # Second driver gets a cross
+        else:
+            symbol_to_use = marker_symbols[0] # First driver gets a circle
+            teams_plotted.add(team_name)
+        # --- END OF DETERMINING SYMBOL ---
+        
+        fig.add_trace(go.Scatter(
+            x=driver_laps['LapNumber'],
+            y=driver_laps['Position'],
+            name=driver_tla,
+            mode='lines+markers',
+            line=dict(color=color), # Line is always solid
+            marker=dict(size=5, color=color, symbol=symbol_to_use) # Apply symbol
+        ))
+
+    # Update layout (no changes needed here)
+    fig.update_layout(
+        template='plotly_dark',
+        title="Race Position Change by Lap",
+        xaxis_title="Lap Number",
+        yaxis_title="Position",
+        yaxis=dict(autorange="reversed"),
+        # Adjust margin to give space for the legend at the bottom
+        margin=dict(l=40, r=20, t=40, b=80), 
+        
+        # New legend styling
+        legend=dict(
+            title_text="Driver",
+            orientation="h",      # Horizontal
+            yanchor="top",        # Anchor to its top edge
+            y=-0.2,               # Position it below the x-axis
+            xanchor="center",     # Center the legend block
+            x=0.5                 # Center it horizontally
+        )
+    )
+    
+    return fig
+
 def create_tyre_strategy_figure(driver_stint_data: dict, timing_state: dict):
     """
     Creates a Gantt chart figure visualizing the tyre strategy for all drivers

@@ -13,6 +13,7 @@ from layout import dashboard_content_layout
 from schedule_page import schedule_page_layout
 from standings_page import standings_page_layout
 from settings_layout import create_settings_layout
+from historical_analysis_page import historical_analysis_page_layout
 
 @app.callback(
     Output("page-content", "children"),
@@ -24,6 +25,8 @@ def display_page(pathname: str):
         return schedule_page_layout
     elif pathname == "/standings":
         return standings_page_layout
+    elif pathname == "/historical":
+        return historical_analysis_page_layout
     elif pathname == "/settings":
         return create_settings_layout()
     elif pathname == "/":
