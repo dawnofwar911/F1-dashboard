@@ -39,10 +39,237 @@ except ImportError:
     np = None  # type: ignore
 
 import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 
 logger = logging.getLogger("F1App.Utils")
 
 # --- Utility Functions (Many can remain as is if they are pure or use config) ---
+
+def create_telemetry_comparison_chart(session, driver1_tla, lap1_num, driver2_tla, lap2_num, use_mph=False):
+    """
+    Creates a detailed, multi-panel telemetry comparison chart between two laps.
+    """
+    try:
+        lap1 = session.laps.pick_driver(driver1_tla).pick_lap(lap1_num)
+        lap2 = session.laps.pick_driver(driver2_tla).pick_lap(lap2_num)
+
+        tel1 = lap1.get_car_data().add_distance()
+        tel2 = lap2.get_car_data().add_distance()
+
+        # --- START: THE FINAL, CORRECTED COLOR LOGIC ---
+        # The lap object is a pandas Series. To get the raw string value,
+        # we first select the 'Team' column, which gives a Series of one item,
+        # then use .item() to extract the single value from it.
+        team_name1 = lap1['Team'].item()
+        team_name2 = lap2['Team'].item()
+
+        color1 = get_color_from_team_name(team_name1)
+        color2 = get_color_from_team_name(team_name2)
+        # --- END: THE FINAL, CORRECTED COLOR LOGIC ---
+        
+        fig = make_subplots(rows=7, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                            subplot_titles=("Speed", "Throttle", "Brake", "Gear", "RPM", "DRS", "Time Delta"))
+
+        # --- Speed Trace (Row 1) ---
+        speed_unit = "MPH" if use_mph else "KPH"
+        speed1 = convert_kph_to_mph(tel1['Speed']) if use_mph else tel1['Speed']
+        speed2 = convert_kph_to_mph(tel2['Speed']) if use_mph else tel2['Speed']
+        fig.add_trace(go.Scatter(x=tel1['Distance'], y=speed1, mode='lines', name=f"{driver1_tla} (Lap {lap1_num})", line=dict(color=color1, width=0.75)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=tel2['Distance'], y=speed2, mode='lines', name=f"{driver2_tla} (Lap {lap2_num})", line=dict(color=color2, width=0.75)), row=1, col=1)
+        fig.update_yaxes(title_text=speed_unit, row=1, col=1, title_standoff=10)
+
+        # --- Throttle Trace (Row 2) ---
+        fig.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Throttle'], mode='lines', line=dict(color=color1, width=0.75), showlegend=False), row=2, col=1)
+        fig.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Throttle'], mode='lines', line=dict(color=color2, width=0.75), showlegend=False), row=2, col=1)
+        fig.update_yaxes(title_text="%", range=[0, 105], row=2, col=1, title_standoff=25)
+
+        # --- Brake Trace (Row 3) ---
+        fig.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['Brake'], mode='lines', line=dict(color=color1, width=0.75), showlegend=False), row=3, col=1)
+        fig.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['Brake'], mode='lines', line=dict(color=color1, width=0.75), showlegend=False), row=3, col=1)
+        fig.update_yaxes(title_text="%", range=[0, 1.1], row=3, col=1, title_standoff=25, tickvals=[0, 1], ticktext=["OFF", "ON"])
+
+        # --- Gear Trace (Row 4) ---
+        fig.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['nGear'], mode='lines', line=dict(color=color1,width=0.75, shape='hv'), showlegend=False), row=4, col=1)
+        fig.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['nGear'], mode='lines', line=dict(color=color2, width=0.75, shape='hv'), showlegend=False), row=4, col=1)
+        fig.update_yaxes(title_text="Gear", row=4, col=1, title_standoff=20)
+
+        # --- RPM Trace (Row 5) ---
+        fig.add_trace(go.Scatter(x=tel1['Distance'], y=tel1['RPM'], mode='lines', line=dict(color=color1, width=0.75), showlegend=False), row=5, col=1)
+        fig.add_trace(go.Scatter(x=tel2['Distance'], y=tel2['RPM'], mode='lines', line=dict(color=color2, width=0.75), showlegend=False), row=5, col=1)
+        fig.update_yaxes(title_text="RPM", row=5, col=1, title_standoff=15)
+
+        # --- DRS Trace (Row 6) ---
+        drs1 = [1 if val in [10, 12, 14] else 0 for val in tel1['DRS']]
+        drs2 = [1 if val in [10, 12, 14] else 0 for val in tel2['DRS']]
+        fig.add_trace(go.Scatter(x=tel1['Distance'], y=drs1, mode='lines', line=dict(color=color1, shape='hv', width=0.75), showlegend=False), row=6, col=1)
+        fig.add_trace(go.Scatter(x=tel2['Distance'], y=drs2, mode='lines', line=dict(color=color2, shape='hv', width=0.75), showlegend=False), row=6, col=1)
+        fig.update_yaxes(tickvals=[0, 1], ticktext=["Off", "On"], row=6, col=1, title_standoff=20)
+
+        # --- Delta Time Trace (Row 7) ---
+        delta_time, ref_tel, comp_tel = fastf1.utils.delta_time(lap1, lap2)
+        fig.add_trace(go.Scatter(x=ref_tel['Distance'], y=delta_time, mode='lines', name='Time Delta', line=dict(color='white')), row=7, col=1)
+        fig.update_yaxes(title_text="Delta (s)", row=7, col=1, title_standoff=10)
+        
+        # --- Final Layout Updates ---
+        fig.update_layout(
+            template='plotly_dark', 
+            height=950,
+            title_text=f"Telemetry Comparison: {driver1_tla} (Lap {lap1_num}) vs. {driver2_tla} (Lap {lap2_num})", 
+            xaxis_title="Distance (m)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        for annotation in fig['layout']['annotations']:
+            annotation['font']['size'] = 10
+            annotation['y'] = annotation['y'] + 0.015
+
+        return fig
+
+    except Exception as e:
+        logger.error(f"Error creating telemetry comparison chart: {e}", exc_info=True)
+        return go.Figure(layout={'template': 'plotly_dark', 'annotations': [{'text': 'Could not generate telemetry comparison.', 'showarrow': False}]})
+
+
+def create_tyre_degradation_chart(stint_laps_df: pd.DataFrame):
+    """
+    Creates a scatter plot of lap times within a single stint to visualize
+    tyre degradation, including a trend line calculated manually with NumPy.
+    """
+    if stint_laps_df.empty or len(stint_laps_df) < 2:
+        return go.Figure(layout={
+            'template': 'plotly_dark',
+            'annotations': [{'text': 'Not enough valid laps for this stint.', 'showarrow': False, 'font': {'size': 12}}]
+        })
+
+    # Get stint info from the first lap
+    driver = stint_laps_df['Driver'].iloc[0]
+    compound = stint_laps_df['Compound'].iloc[0]
+    stint_num = stint_laps_df['Stint'].iloc[0]
+    team_name = stint_laps_df['Team'].iloc[0]
+    color = get_color_from_team_name(team_name)
+
+    # Create the base scatter plot
+    fig = px.scatter(
+        stint_laps_df,
+        x="TyreLife",
+        y="LapTime",
+    )
+    
+    fig.update_traces(marker=dict(color=color, size=8), hovertemplate="Lap Time: %{y:|.3f}s<br>Laps on Tyre: %{x}<extra></extra>")
+
+    # --- START: Manual Trendline Calculation using NumPy ---
+    try:
+        # Prepare data, ensuring we have at least 2 points for a line
+        valid_laps = stint_laps_df.dropna(subset=['TyreLife', 'LapTime'])
+        if len(valid_laps) >= 2:
+            x_data = valid_laps["TyreLife"].to_numpy(dtype=float)
+            y_data = valid_laps["LapTime"].to_numpy(dtype=float)
+
+            # Use numpy's polyfit to get the slope (m) and intercept (b) of a 1st-degree polynomial
+            slope, intercept = np.polyfit(x_data, y_data, 1)
+
+            # Create the trend line coordinates from the fit
+            x_trend = np.array([x_data.min(), x_data.max()])
+            y_trend = intercept + slope * x_trend
+            
+            # Add the trend line as a new trace
+            fig.add_trace(go.Scatter(
+                x=x_trend,
+                y=y_trend,
+                mode='lines',
+                name=f'Deg: {slope:+.3f}s/lap',
+                line=dict(color='white', width=2, dash='dash')
+            ))
+    except Exception as e:
+        logger.error(f"Could not calculate numpy trend line for {driver} stint {stint_num}: {e}")
+    # --- END: Manual Trendline Calculation ---
+
+    fig.update_layout(
+        template='plotly_dark',
+        title=f"{driver} - Stint {stint_num} ({compound}) Pace",
+        xaxis_title="Laps on Tyre",
+        yaxis_title="Lap Time (seconds)",
+        margin=dict(l=40, r=20, t=40, b=30),
+        yaxis=dict(autorange="reversed"),
+        legend=dict(yanchor="top", y=0.98, xanchor="left", x=0.02)
+    )
+
+    return fig
+
+def get_color_from_team_name(team_name: str) -> str:
+    """Fuzzy matches a team name to the color map in config."""
+    # First, check for an exact match
+    if team_name in config.TEAM_COLORS:
+        return config.TEAM_COLORS[team_name]
+    # If no exact match, check if a key is contained in the name
+    for key, color in config.TEAM_COLORS.items():
+        if key in team_name:
+            return color
+    # Fallback to grey if no match is found
+    return '#808080'
+
+def create_lap_position_chart(laps_df: pd.DataFrame, session_year: int):
+    """
+    Creates a line chart showing the position of each driver on every lap.
+    """
+    if laps_df.empty:
+        return go.Figure(layout={'template': 'plotly_dark', 'annotations': [{'text': 'No lap data available for this session.', 'showarrow': False}]})
+
+    fig = go.Figure()
+    
+    drivers_by_tla = laps_df.sort_values(by='Position')['Driver'].unique()
+    
+    teams_plotted = set()
+    marker_symbols = ['circle', 'cross'] # Use different markers for teammatesdriver of a team
+
+    for driver_tla in drivers_by_tla:
+        driver_laps = laps_df[laps_df['Driver'] == driver_tla]
+        
+        if driver_laps.empty:
+            continue
+            
+        team_name = driver_laps['Team'].iloc[0]
+        color = get_color_from_team_name(team_name)
+
+        # --- Determine which marker symbol to use ---
+        if team_name in teams_plotted:
+            symbol_to_use = marker_symbols[1] # Second driver gets a cross
+        else:
+            symbol_to_use = marker_symbols[0] # First driver gets a circle
+            teams_plotted.add(team_name)
+        # --- END OF DETERMINING SYMBOL ---
+        
+        fig.add_trace(go.Scatter(
+            x=driver_laps['LapNumber'],
+            y=driver_laps['Position'],
+            name=driver_tla,
+            mode='lines+markers',
+            line=dict(color=color), # Line is always solid
+            marker=dict(size=5, color=color, symbol=symbol_to_use) # Apply symbol
+        ))
+
+    # Update layout (no changes needed here)
+    fig.update_layout(
+        template='plotly_dark',
+        title="Race Position Change by Lap",
+        xaxis_title="Lap Number",
+        yaxis_title="Position",
+        yaxis=dict(autorange="reversed"),
+        # Adjust margin to give space for the legend at the bottom
+        margin=dict(l=40, r=20, t=40, b=80), 
+        
+        # New legend styling
+        legend=dict(
+            title_text="Driver",
+            orientation="h",      # Horizontal
+            yanchor="top",        # Anchor to its top edge
+            y=-0.2,               # Position it below the x-axis
+            xanchor="center",     # Center the legend block
+            x=0.5                 # Center it horizontally
+        )
+    )
+    
+    return fig
 
 def create_tyre_strategy_figure(driver_stint_data: dict, timing_state: dict):
     """
@@ -139,17 +366,30 @@ def create_tyre_strategy_figure(driver_stint_data: dict, timing_state: dict):
     )
 
     return fig
+        
+def convert_kph_to_mph(kph_values):
+    """
+    Robustly converts KPH values to MPH, handling single numbers,
+    lists of numbers, or pandas Series.
+    """
+    if kph_values is None:
+        return None
 
-def convert_kph_to_mph(kph_values: list[float]) -> list[float]:
-    """Converts a list of speed values from KPH to MPH."""
-    if not kph_values:
-        return []
-    try:
-        # Use a list comprehension for efficient conversion
-        return [kph * config.KPH_TO_MPH_FACTOR for kph in kph_values]
-    except (TypeError, ValueError):
-        # Handle cases where the list might contain non-numeric data gracefully
-        return []
+    # Check the type of the input and process accordingly
+    if isinstance(kph_values, (int, float)):
+        # Handle a single number (e.g., 300)
+        return kph_values * config.KPH_TO_MPH_FACTOR
+    elif isinstance(kph_values, list):
+        # Handle a list of numbers (e.g., [300, 301, 302])
+        # We use a list comprehension and check each item to be safe
+        return [val * config.KPH_TO_MPH_FACTOR for val in kph_values if isinstance(val, (int, float))]
+    elif isinstance(kph_values, pd.Series):
+        # Handle a pandas Series (this is the most efficient case)
+        return kph_values * config.KPH_TO_MPH_FACTOR
+    else:
+        # If the type is unknown, log a warning and return the original value to avoid crashing
+        logger.warning(f"convert_kph_to_mph received an unexpected type: {type(kph_values)}")
+        return kph_values
 
 
 def determine_session_type_from_name(session_name_str: str) -> str:

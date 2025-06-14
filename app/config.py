@@ -351,6 +351,25 @@ TRACK_STATUS_STYLES = {
     'DEFAULT': {"label": "UNKNOWN", "card_color": "secondary", "text_color": "white"}
 }
 
+TEAM_COLORS = {
+    # 2024 Teams
+    "Mercedes": "#27F4D2",
+    "Red Bull Racing": "#3671C6",
+    "Ferrari": "#E8002D",
+    "McLaren": "#FF8000",
+    "Aston Martin": "#229971",
+    "Alpine": "#0090FF",
+    "RB": "#6692FF", # Visa Cash App RB
+    "Kick Sauber": "#52E252",
+    "Williams": "#64C4FF",
+    "Haas F1 Team": "#B6BABD",
+    
+    # Add a few older team names for historical compatibility
+    "Racing Point": "#F596C8",
+    "AlphaTauri": "#2B4562",
+    "Alfa Romeo": "#9B0000",
+}
+
 # Weather Icon Mapping
 WEATHER_ICON_MAP = {
     "sunny": "☀️", "cloudy": "☁️", "overcast": "🌥️",

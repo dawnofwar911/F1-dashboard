@@ -682,7 +682,13 @@ def update_lap_time_progression_chart(driver1_rno, driver2_rno, n_intervals, cur
     
     traces_to_add = []
 
-    for driver_rno_str in selected_drivers_rnos:
+    style_cycle = [
+        {'dash': 'solid', 'symbol': 'circle'},
+        {'dash': 'dash', 'symbol': 'cross'}
+    ]
+    
+    # Use enumerate to get an index (0 for the first driver, 1 for the second)
+    for i, driver_rno_str in enumerate(selected_drivers_rnos):
         driver_laps = lap_history_snapshot.get(driver_rno_str, [])
         if not driver_laps: continue
 
@@ -710,10 +716,13 @@ def update_lap_time_progression_chart(driver1_rno, driver2_rno, n_intervals, cur
             seconds_part = total_seconds % 60
             time_formatted = f"{minutes}:{seconds_part:06.3f}" if minutes > 0 else f"{seconds_part:.3f}"
             hover_texts_parts.append(f"<b>{tla}</b><br>Lap: {lap['lap_number']}<br>Time: {time_formatted}<br>Tyre: {lap.get('compound', 'N/A')}<extra></extra>")
+            
+        style_to_use = style_cycle[i % len(style_cycle)]
         
         traces_to_add.append(go.Scatter(
             x=lap_numbers, y=lap_times_sec, mode='lines+markers', name=tla,
-            marker=dict(color=team_color_hex, size=5), line=dict(color=team_color_hex, width=1.5),
+            line=dict(color=team_color_hex, width=1.5, dash=style_to_use['dash']),
+            marker=dict(color=team_color_hex, size=6, symbol=style_to_use['symbol']),
             hovertext=hover_texts_parts, hoverinfo='text'
         ))
     

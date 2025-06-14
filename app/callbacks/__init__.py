@@ -6,3 +6,4 @@ from . import data_displays
 from . import charts
 from . import standings
 from . import clientside
+from . import historical
