@@ -6,11 +6,19 @@ import logging
 import fastf1
 import pandas as pd
 from dash.dependencies import Input, Output, State
-from dash import no_update, dcc
+from dash import no_update, dcc, html
+import dash_bootstrap_components as dbc
+from io import StringIO
 
-from app_instance import app, server
-from historical_data_fetcher import load_historical_laps
-from utils import create_lap_position_chart
+import plotly.graph_objects as go
+
+from app_instance import app
+from historical_data_fetcher import load_historical_laps, load_historical_telemetry
+from utils import (
+    create_lap_position_chart, 
+    create_tyre_degradation_chart, 
+    create_telemetry_comparison_chart
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +97,10 @@ def toggle_load_button_disabled_state(year, event, session):
     # The button is disabled if not all values are truthy (i.e., not None or empty)
     return not (year and event and session)
     
+# 4. Main callback when 'Load' is clicked. THIS ONE IS MODIFIED.
 @app.callback(
-    Output('historical-display-area', 'children'),
+    Output('historical-charts-display-area', 'children'),
+    Output('historical-laps-data-store', 'data'),
     Input('historical-load-button', 'n_clicks'),
     [State('historical-year-dropdown', 'value'),
      State('historical-event-dropdown', 'value'),
@@ -99,20 +109,205 @@ def toggle_load_button_disabled_state(year, event, session):
 )
 def load_historical_data(n_clicks, year, event, session):
     """
-    Triggered by the 'Load' button. Fetches historical lap data and
-    displays the lap position chart.
+    Triggered by the 'Load' button. Fetches historical data and displays all
+    analysis charts within a clean, tabbed interface.
     """
     if not all([year, event, session]):
-        return "Please make a complete selection (Year, Event, and Session)."
+        return "Please make a complete selection.", None
     
-    # Step 1: Fetch the lap data
     laps_df = load_historical_laps(year, event, session)
 
     if laps_df.empty:
-        return dbc.Alert("Error: Could not load lap data for the selected session.", color="danger")
+        return dbc.Alert("Error: Could not load lap data for the selected session.", color="danger"), None
 
-    # Step 2: Generate the chart from the data
+    # --- Create the components needed for all tabs ---
     lap_chart_figure = create_lap_position_chart(laps_df, year)
+    driver_options = [{'label': tla, 'value': tla} for tla in sorted(laps_df['Driver'].unique())]
+    empty_figure = go.Figure(layout={'template': 'plotly_dark'}) # Placeholder for empty graphs
 
-    # Step 3: Return the chart to be displayed
-    return dcc.Graph(figure=lap_chart_figure)
+    # --- Build the new tabbed layout ---
+    tabbed_layout = html.Div([
+        dbc.Tabs(
+            id="historical-analysis-tabs",
+            active_tab="tab-lap-positions",
+            children=[
+                # Tab 1: Lap Position Chart
+                dbc.Tab(
+                    dcc.Graph(id="lap-position-chart", figure=lap_chart_figure),
+                    label="Lap Positions",
+                    tab_id="tab-lap-positions",
+                    className="pt-3" # Add some padding to the top of the tab content
+                ),
+                
+                # Tab 2: Tyre Degradation Analysis
+                dbc.Tab([
+                    html.Div([
+                        html.P("Select a driver and stint to analyze tyre performance drop-off.", className="mt-3 text-muted"),
+                        dbc.Row([
+                            dbc.Col(dcc.Dropdown(id='historical-driver-dropdown', options=driver_options, placeholder="Select Driver...")),
+                            dbc.Col(dcc.Dropdown(id='historical-stint-dropdown', placeholder="Select Stint...", disabled=True)),
+                        ], className="my-3"),
+                        dbc.Spinner(dcc.Graph(id='tyre-degradation-graph'))
+                    ], className="p-2")
+                ], label="Tyre Degradation", tab_id="tab-tyre-degradation"),
+                
+                # Tab 3: Telemetry Comparison
+                dbc.Tab([
+                     html.Div([
+                        html.P("Select two laps to compare detailed telemetry.", className="mt-3 text-muted"),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Label("Driver 1", className="fw-bold"),
+                                dcc.Dropdown(id='historical-driver-1-dropdown', options=driver_options, placeholder="Select..."),
+                                dcc.Dropdown(id='historical-lap-1-dropdown', placeholder="Select Lap...", disabled=True, className="mt-2"),
+                            ], md=5),
+                            dbc.Col(
+                                html.H2("vs", className="text-center text-muted"),
+                                md=2, className="d-flex align-items-center justify-content-center"
+                            ),
+                            dbc.Col([
+                                html.Label("Driver 2", className="fw-bold"),
+                                dcc.Dropdown(id='historical-driver-2-dropdown', options=driver_options, placeholder="Select..."),
+                                dcc.Dropdown(id='historical-lap-2-dropdown', placeholder="Select Lap...", disabled=True, className="mt-2"),
+                            ], md=5),
+                        ], className="my-3"),
+                        dbc.Row(dbc.Col(dbc.Button("Compare Laps", id="historical-compare-button", disabled=True, n_clicks=0, color="primary"))),
+                        dbc.Row(dbc.Col(
+                            dbc.Spinner(dcc.Graph(id='historical-telemetry-graph')),
+                            className="mt-3"
+                        ))
+                     ], className="p-2")
+                ], label="Telemetry H2H", tab_id="tab-telemetry-h2h"),
+            ],
+        )
+    ], className="mt-3")
+
+    # Store the lap data in the browser for other callbacks to use
+    json_laps = laps_df.to_json(date_format='iso', orient='split')
+
+    return tabbed_layout, json_laps
+
+# 5. NEW: Callback to populate Stint dropdown
+@app.callback(
+    Output('historical-stint-dropdown', 'options'),
+    Output('historical-stint-dropdown', 'disabled'),
+    Input('historical-driver-dropdown', 'value'),
+    State('historical-laps-data-store', 'data')
+)
+def update_stint_dropdown(selected_driver, laps_data_json):
+    if not selected_driver or not laps_data_json:
+        return [], True
+
+    # FIX: Wrap the JSON string in StringIO to avoid the FutureWarning
+    laps_df = pd.read_json(StringIO(laps_data_json), orient='split')
+    
+    driver_laps = laps_df[laps_df['Driver'] == selected_driver]
+    stints = sorted(driver_laps['Stint'].unique())
+    
+    stint_options = [{'label': f'Stint {int(s)}', 'value': s} for s in stints]
+    return stint_options, False
+
+# 6. NEW: Callback to generate and display the degradation chart
+@app.callback(
+    Output('tyre-degradation-graph', 'figure'),
+    Input('historical-stint-dropdown', 'value'),
+    [State('historical-driver-dropdown', 'value'),
+     State('historical-laps-data-store', 'data')]
+)
+def update_tyre_degradation_chart(selected_stint, selected_driver, laps_data_json):
+    if not all([selected_stint, selected_driver, laps_data_json]):
+        return go.Figure(layout={'template': 'plotly_dark', 'annotations': [{'text': 'Select a driver and stint to view analysis.', 'showarrow': False}]})
+
+    # FIX 1: Wrap the JSON string in StringIO
+    laps_df = pd.read_json(StringIO(laps_data_json), orient='split')
+    
+    stint_df = laps_df[(laps_df['Driver'] == selected_driver) & (laps_df['Stint'] == selected_stint)]
+    
+    # FIX 2: Convert to seconds and remove outliers on a new DataFrame to avoid the SettingWithCopyWarning
+    clean_stint_df = stint_df.copy()
+    clean_stint_df['LapTime'] = pd.to_timedelta(clean_stint_df['LapTime']).dt.total_seconds()
+    
+    q1 = clean_stint_df['LapTime'].quantile(0.25)
+    q3 = clean_stint_df['LapTime'].quantile(0.75)
+    iqr = q3 - q1
+    
+    # Filter by creating a new DataFrame slice
+    clean_stint_df = clean_stint_df[~((clean_stint_df['LapTime'] < (q1 - 1.5 * iqr)) |(clean_stint_df['LapTime'] > (q3 + 1.5 * iqr)))]
+
+    return create_tyre_degradation_chart(clean_stint_df)
+
+def _populate_lap_options(selected_driver, laps_data_json):
+    """Helper function to generate lap options for a driver."""
+    if not selected_driver or not laps_data_json:
+        return [], True, None # options, disabled, value
+
+    laps_df = pd.read_json(StringIO(laps_data_json), orient='split')
+    driver_laps = laps_df[laps_df['Driver'] == selected_driver].sort_values(by="LapNumber")
+
+    lap_options = [{'label': f"Lap {int(lap['LapNumber'])} ({lap['LapTime']})", 'value': int(lap['LapNumber'])} 
+                   for _, lap in driver_laps.iterrows() if pd.notna(lap.get('LapTime'))]
+    
+    return lap_options, False, None if not lap_options else lap_options[-1]['value']
+
+
+@app.callback(
+    Output('historical-lap-1-dropdown', 'options'),
+    Output('historical-lap-1-dropdown', 'disabled'),
+    Output('historical-lap-1-dropdown', 'value'),
+    Input('historical-driver-1-dropdown', 'value'),
+    State('historical-laps-data-store', 'data')
+)
+def update_lap_dropdown_1(selected_driver, laps_data_json):
+    return _populate_lap_options(selected_driver, laps_data_json)
+
+
+@app.callback(
+    Output('historical-lap-2-dropdown', 'options'),
+    Output('historical-lap-2-dropdown', 'disabled'),
+    Output('historical-lap-2-dropdown', 'value'),
+    Input('historical-driver-2-dropdown', 'value'),
+    State('historical-laps-data-store', 'data')
+)
+def update_lap_dropdown_2(selected_driver, laps_data_json):
+    return _populate_lap_options(selected_driver, laps_data_json)
+
+
+@app.callback(
+    Output('historical-compare-button', 'disabled'),
+    Input('historical-lap-1-dropdown', 'value'),
+    Input('historical-lap-2-dropdown', 'value')
+)
+def toggle_compare_button_disabled_state(lap1, lap2):
+    """Enables the 'Compare' button only when both lap dropdowns have a value."""
+    return not (lap1 and lap2)
+    
+@app.callback(
+    Output('historical-telemetry-graph', 'figure'),
+    Input('historical-compare-button', 'n_clicks'),
+    [State('historical-year-dropdown', 'value'),
+     State('historical-event-dropdown', 'value'),
+     State('historical-session-dropdown', 'value'),
+     State('historical-driver-1-dropdown', 'value'),
+     State('historical-lap-1-dropdown', 'value'),
+     State('historical-driver-2-dropdown', 'value'),
+     State('historical-lap-2-dropdown', 'value'),
+     State('session-preferences-store', 'data')],
+    prevent_initial_call=True
+)
+def update_telemetry_comparison_chart(n_clicks, year, event, session, driver1, lap1, driver2, lap2, prefs):
+    """
+    Triggered by the 'Compare Laps' button. Loads telemetry and generates the
+    detailed comparison chart.
+    """
+    if not all([year, event, session, driver1, lap1, driver2, lap2]):
+        return no_update
+
+    # Load the session with telemetry data
+    session_obj = load_historical_telemetry(year, event, session)
+    if session_obj is None:
+        return go.Figure(layout={'annotations': [{'text': 'Failed to load telemetry data.'}]})
+
+    use_mph = prefs.get('use_mph', False) if prefs else False
+
+    # Generate the figure using our new utility function
+    return create_telemetry_comparison_chart(session_obj, driver1, lap1, driver2, lap2, use_mph)

@@ -28,9 +28,14 @@ def create_historical_layout():
         className="mb-3"
     )
 
-    display_area = html.Div(
-        dbc.Spinner(html.Div(id='historical-display-area'), color="primary")
-    )
+    display_area = html.Div([
+        dcc.Store(id='historical-laps-data-store'), # To hold the main laps DataFrame
+        dcc.Store(id='historical-telemetry-data-store'), # <-- ADD THIS LINE
+         dbc.Spinner(
+            html.Div(id='historical-charts-display-area'), # The content will be rendered here
+            color="primary",
+        )
+    ])
 
     layout = dbc.Container([
         html.H2("Historical Session Analysis", className="my-4"),

@@ -107,3 +107,22 @@ def load_historical_laps(year: int, event_name: str, session_identifier: str) ->
         logger.error(f"Failed to load historical laps: {e}", exc_info=True)
         return pd.DataFrame() # Return an empty DataFrame on error
         
+def load_historical_telemetry(year: int, event_name: str, session_identifier: str) -> 'fastf1.session.Session':
+    """
+    Loads a historical session from fastf1 with telemetry data enabled.
+
+    Returns:
+        A fastf1 Session object with telemetry loaded, or None if it fails.
+    """
+    try:
+        logger.info(f"Loading historical TELEMETRY for {year} {event_name} - {session_identifier}...")
+        
+        session = fastf1.get_session(year, event_name, session_identifier)
+        # We need laps to get telemetry, and telemetry=True to load the actual data
+        session.load(laps=True, telemetry=True, weather=False, messages=False)
+        
+        return session
+
+    except Exception as e:
+        logger.error(f"Failed to load historical session with telemetry: {e}", exc_info=True)
+        return None
