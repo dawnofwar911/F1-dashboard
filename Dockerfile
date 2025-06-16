@@ -29,5 +29,5 @@ EXPOSE 8050
 # Define environment variable
 ENV PYTHONUNBUFFERED=1
 
-# Run main.py when the container launches
-CMD ["waitress-serve", "--host", "0.0.0.0", "--port", "8050", "main:server"]
+# Run main.py with the recommended threaded Gunicorn server
+CMD ["gunicorn", "--workers", "1", "--threads", "8", "--timeout", "120", "--bind", "0.0.0.0:8050", "app.main:server"]
