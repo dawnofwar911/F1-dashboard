@@ -113,53 +113,63 @@ def get_replay_files(directory: str) -> list:
 
 
 def init_live_file_session(session_state: 'app_state.SessionState') -> bool:
-    """Initializes the live data recording file for the given session using a temporary name."""
-    sess_id_log = session_state.session_id[:8]
-    with session_state.lock:
-        should_record = session_state.record_live_data
-
-    if not should_record:
-        logger.info(
-            f"Session {sess_id_log}: Live recording is disabled by preference. No file will be created.")
+    """
+    Initializes a recording file ONLY if global recording is enabled AND
+    this session is the designated global recorder session.
+    """
+    # Step 1: Check the global setting. If it's off, no one can record.
+    # This uses the new utility function to read from settings.json.
+    settings = utils.load_global_settings()
+    if not settings.get('record_live_sessions'):
+        # Log only if the session *thought* it should record, to reduce noise.
+        if "auto-recorder-" in session_state.session_id:
+             logger.info("Global recording is disabled in settings.json. Recorder will not start.")
         return False
 
+    # Step 2: Check if this session has the special recorder role.
+    is_recorder_session = "auto-recorder-" in session_state.session_id
+    
+    # Step 3: If it's a normal user session, deny permission to save.
+    if not is_recorder_session:
+        logger.debug(f"Session {session_state.session_id}: Global recording is active, but user sessions cannot save.")
+        return False
+
+    # Step 4: If we get here, it's the recorder session and the setting is ON.
+    # Proceed with recording. No lock files or temp files are needed.
+    sess_id_log = session_state.session_id[:8]
     ensure_replay_dir_exists()
     
-    # Generate a temporary filename based on the unique session ID
-    temp_filename = f"recording_temp_{session_state.session_id}.data.txt"
-    filepath = Path(config.TARGET_SAVE_DIRECTORY) / temp_filename
+    # Generate the final, descriptive filename directly.
+    final_filename = generate_live_filename_session(session_state)
+    filepath = Path(config.TARGET_SAVE_DIRECTORY) / final_filename
 
     try:
         with session_state.lock:
             if session_state.live_data_file and not session_state.live_data_file.closed:
-                logger.warning(
-                    f"Session {sess_id_log}: Closing previously open live data file: {session_state.current_recording_filename}")
+                logger.warning(f"Recorder {sess_id_log}: Closing previously open live data file.")
                 session_state.live_data_file.close()
 
             session_state.live_data_file = open(filepath, 'a', encoding='utf-8')
             session_state.is_saving_active = True
-            session_state.current_recording_filename = temp_filename # Store the temp name
+            session_state.current_recording_filename = final_filename
 
-            start_time_str = datetime.datetime.now(timezone.utc).strftime(
-                config.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
+            # Add the standard file header
+            start_time_str = datetime.datetime.now(timezone.utc).strftime(config.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
             header_msg = f"{config.LOG_REPLAY_FILE_START_MSG_PREFIX}{start_time_str}\n"
-
             s_details = session_state.session_details
             s_details_for_header = {
                 'Year': s_details.get('Year'), 'CircuitName': s_details.get('CircuitName'),
                 'EventName': s_details.get('EventName'), 'SessionName': s_details.get('SessionName'),
-                'SessionType': s_details.get('Type'), 'SessionStartTimeUTC': s_details.get('SessionStartTimeUTC')
             }
             header_msg += f"# Recording for SessionID {sess_id_log}: {s_details_for_header}\n"
             session_state.live_data_file.write(header_msg)
             session_state.live_data_file.flush()
 
-        logger.info(
-            f"Session {sess_id_log}: Live data recording started. Saving to temporary file: {temp_filename}")
+        logger.info(f"Designated Recorder {sess_id_log}: Live data recording started. Saving to: {final_filename}")
         return True
+
     except Exception as e:
-        logger.error(
-            f"Session {sess_id_log}: Failed to initialize live recording file '{filepath.name}': {e}", exc_info=True)
+        logger.error(f"Recorder {sess_id_log}: Failed to initialize recording file '{filepath.name}': {e}", exc_info=True)
         with session_state.lock:
             session_state.live_data_file = None
             session_state.is_saving_active = False

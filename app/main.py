@@ -107,6 +107,69 @@ app.clientside_callback(
     Input('url', 'pathname'),
 )
 
+def global_auto_recorder_service():
+    """
+    A background service that checks the F1 schedule, updates a global
+    status variable, and automatically records live sessions if enabled.
+    """
+    logger_recorder = logging.getLogger("F1App.AutoRecorder")
+    logger_recorder.info("Global Auto-Recorder service started.")
+   
+    from callbacks import main_controls
+
+    while True:
+        time.sleep(60) # Check every 60 seconds
+        
+        current_live_info = None
+        with app_state.CURRENT_LIVE_SESSION_INFO_LOCK:
+            current_live_info = app_state.CURRENT_LIVE_SESSION_INFO
+
+        # --- Step A: Check if the currently tracked session is over ---
+        if current_live_info:
+            # We need to parse the start time from the dictionary
+            session_start_time = utils.parse_iso_timestamp_safe(current_live_info.get('start_time_utc'))
+            
+            # Check if 3 hours have passed since the session started
+            if schedule_page.is_session_over(session_start_time):
+                logger_recorder.info(f"Session '{current_live_info.get('unique_id')}' is over. Clearing global status.")
+                with app_state.CURRENT_LIVE_SESSION_INFO_LOCK:
+                    app_state.CURRENT_LIVE_SESSION_INFO = None
+                continue # Restart the loop
+
+        # --- Step B: If no session is live, scan for the next one ---
+        if not current_live_info:
+            settings = utils.load_global_settings()
+            if not settings.get('record_live_sessions'):
+                continue
+
+            try:
+                next_session = schedule_page.find_next_session_to_connect(
+                    lead_time_minutes=config.AUTO_CONNECT_LEAD_TIME_MINUTES
+                )
+
+                if next_session:
+                    # Found a new session! Update global status and start recorder.
+                    with app_state.CURRENT_LIVE_SESSION_INFO_LOCK:
+                        app_state.CURRENT_LIVE_SESSION_INFO = next_session
+                    
+                    session_key = next_session.get('SessionKey')
+                    if not session_key: continue
+                    
+                    recorder_session_id = f"auto-recorder-{session_key}"
+                    if app_state.get_session_state(recorder_session_id): continue
+
+                    logger_recorder.info(f"Time to connect for {next_session.get('session_name')}. Starting recorder session.")
+                    recorder_session_state = app_state.get_or_create_session_state(recorder_session_id)
+                    
+                    if recorder_session_state:
+                        with recorder_session_state.lock:
+                            recorder_session_state.session_details.update(next_session['SessionInfo'])
+                        main_controls.start_live_connection(recorder_session_state, trigger_source="global_auto_recorder")
+
+            except Exception as e:
+                logger_recorder.error(f"Error in auto-recorder service scan: {e}", exc_info=True)
+
+
 def session_garbage_collector():
     """A background thread to remove stale sessions."""
     while True:
@@ -229,10 +292,21 @@ if hasattr(config, 'REPLAY_DIR') and config.REPLAY_DIR:
             f"Could not create replay directory {config.REPLAY_DIR}: {e}")
 
 atexit.register(shutdown_application)
+logger_main_module.info("Session-aware shutdown handler registered.")
 
+# Start the cache warmer thread
 threading.Thread(target=warm_up_schedule_cache, daemon=True, name="ScheduleCacheWarmer").start()
 
-logger_main_module.info("Session-aware shutdown handler registered.")
+# Start the new background services here so Gunicorn will execute them.
+logger_main_module.info("Starting background services (Garbage Collector and Auto-Recorder)...")
+
+cleanup_thread = threading.Thread(target=session_garbage_collector, daemon=True, name="SessionGarbageCollector")
+cleanup_thread.start()
+
+recorder_thread = threading.Thread(target=global_auto_recorder_service, daemon=True, name="GlobalAutoRecorder")
+recorder_thread.start()
+
+logger_main_module.info("Background services started.")
 logger_main_module.info(
     f"To run with Waitress/Gunicorn, target this 'server' object: app_instance.server")
 
@@ -243,10 +317,6 @@ if __name__ == '__main__':
         f"Running Dash development server on http://{config.DASH_HOST}:{config.DASH_PORT}")
     logger_main_module.warning(
         "This development mode is for testing. For production, use a WSGI server like Waitress or Gunicorn.")
-        
-    logger_main_module.info("Starting session garbage collector thread...")
-    cleanup_thread = threading.Thread(target=session_garbage_collector, daemon=True, name="SessionGarbageCollector")
-    cleanup_thread.start()
 
     try:
         # use_reloader=False is critical when managing threads at the module/application level

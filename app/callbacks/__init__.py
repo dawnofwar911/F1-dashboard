@@ -7,3 +7,4 @@ from . import charts
 from . import standings
 from . import clientside
 from . import historical
+from . import admin

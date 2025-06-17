@@ -12,9 +12,15 @@ USE_MPH = False
 HIDE_RETIRED_DRIVERS = False
 KPH_TO_MPH_FACTOR = 0.621371
 
-# --- Session Details ---
-SESSION_TIMEOUT_HOURS = 12  # Remove sessions inactive for 12 hours
-SESSION_CLEANUP_INTERVAL_MINUTES = 60 # Check for old sessions every hour
+# --- Admin and Session Management ---
+# Password for the admin settings panel, set via environment variable
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', None)
+
+# How long a session can be inactive before being removed (in hours)
+SESSION_TIMEOUT_HOURS = 12
+
+# How often the garbage collector runs to check for stale sessions (in minutes)
+SESSION_CLEANUP_INTERVAL_MINUTES = 60
 
 
 # --- Core Application & Server ---
@@ -29,6 +35,7 @@ _SCRIPT_DIR = Path(__file__).parent.resolve()
 REPLAY_DIR = Path(os.environ.get('REPLAY_DIR', _SCRIPT_DIR / 'replays'))
 TARGET_SAVE_DIRECTORY = Path(os.environ.get('TARGET_SAVE_DIRECTORY', REPLAY_DIR))
 FASTF1_CACHE_DIR = Path(os.environ.get('FASTF1_CACHE_DIR', _SCRIPT_DIR / 'ff1_cache'))
+SETTINGS_FILE_PATH = TARGET_SAVE_DIRECTORY / 'settings.json'
 
 QUALIFYING_ELIMINATION_COUNT = {
     "Q1": 5, "SQ1": 5,

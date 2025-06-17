@@ -27,6 +27,9 @@ INITIAL_SESSION_APP_STATUS: Dict[str, Any] = {  # Added type hint
     "auto_connected_session_end_detected_utc": None,
 }
 
+CURRENT_LIVE_SESSION_INFO: Optional[Dict] = None
+CURRENT_LIVE_SESSION_INFO_LOCK: threading.Lock = threading.Lock()
+
 INITIAL_SESSION_DATA_STORE: Dict = {}  # Example type hint
 INITIAL_SESSION_TIMING_STATE: Dict = {}
 INITIAL_SESSION_LAP_TIME_HISTORY: Dict = {}

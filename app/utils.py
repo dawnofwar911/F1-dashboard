@@ -46,6 +46,26 @@ logger = logging.getLogger("F1App.Utils")
 
 # --- Utility Functions (Many can remain as is if they are pure or use config) ---
 
+def load_global_settings():
+    """Loads global settings from settings.json, returns defaults if not found."""
+    if not config.SETTINGS_FILE_PATH.exists():
+        # These are the default settings if the file doesn't exist
+        return {'record_live_sessions': False}
+    try:
+        with open(config.SETTINGS_FILE_PATH, 'r') as f:
+            return json.load(f)
+    except (IOError, json.JSONDecodeError) as e:
+        logger.error(f"Error loading settings file: {e}")
+        return {'record_live_sessions': False}
+
+def save_global_settings(settings):
+    """Saves the global settings dictionary to settings.json."""
+    try:
+        with open(config.SETTINGS_FILE_PATH, 'w') as f:
+            json.dump(settings, f, indent=4)
+    except IOError as e:
+        logger.error(f"Error saving settings file: {e}")
+
 def create_telemetry_comparison_chart(session, driver1_tla, lap1_num, driver2_tla, lap2_num, use_mph=False):
     """
     Creates a detailed, multi-panel telemetry comparison chart between two laps.
