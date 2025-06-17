@@ -107,7 +107,24 @@ app.clientside_callback(
     Input('url', 'pathname'),
 )
 
-# --- Target function for per-session auto-connect threads ---
+def session_garbage_collector():
+    """A background thread to remove stale sessions."""
+    while True:
+        time.sleep(config.SESSION_CLEANUP_INTERVAL_MINUTES * 60)
+
+        stale_sessions = []
+        timeout_seconds = config.SESSION_TIMEOUT_HOURS * 3600
+
+        with app_state.SESSIONS_STORE_LOCK:
+            for session_id, session in app_state.SESSIONS_STORE.items():
+                if (time.time() - session.last_accessed_time) > timeout_seconds:
+                    stale_sessions.append(session_id)
+
+        if stale_sessions:
+            print(f"Garbage Collector: Found {len(stale_sessions)} stale sessions. Removing them.")
+            for session_id in stale_sessions:
+                # Here we call the existing cleanup function
+                app_state.remove_session_state(session_id)
 
 # --- Shutdown Hook (Updated for per-session auto_connect_thread) ---
 
@@ -226,6 +243,10 @@ if __name__ == '__main__':
         f"Running Dash development server on http://{config.DASH_HOST}:{config.DASH_PORT}")
     logger_main_module.warning(
         "This development mode is for testing. For production, use a WSGI server like Waitress or Gunicorn.")
+        
+    logger_main_module.info("Starting session garbage collector thread...")
+    cleanup_thread = threading.Thread(target=session_garbage_collector, daemon=True, name="SessionGarbageCollector")
+    cleanup_thread.start()
 
     try:
         # use_reloader=False is critical when managing threads at the module/application level

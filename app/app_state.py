@@ -8,6 +8,7 @@ import collections  # For collections.deque
 import logging
 from copy import deepcopy
 import uuid
+import time
 import flask  # Required for accessing Flask's session object
 from typing import Dict, Optional, Set, Deque, List, Any  # Import necessary types
 
@@ -66,6 +67,7 @@ INITIAL_DRIVER_INFO: Dict = {}
 class SessionState:
     def __init__(self, session_id: str):
         self.session_id: str = session_id
+        self.last_accessed_time: float = time.time()
         self.lock: threading.RLock = threading.RLock()
 
         self.app_status: Dict[str, Any] = deepcopy(INITIAL_SESSION_APP_STATUS)
@@ -278,6 +280,8 @@ def get_or_create_session_state(session_id: Optional[str] = None) -> Optional[Se
                 f"Session_id '{resolved_session_id}' not in SESSIONS_STORE. Creating new SessionState.")
             SESSIONS_STORE[resolved_session_id] = SessionState(
                 resolved_session_id)
+        session = SESSIONS_STORE[resolved_session_id]
+        session.last_accessed_time = time.time() # Add this line to update time
         return SESSIONS_STORE[resolved_session_id]
 
 

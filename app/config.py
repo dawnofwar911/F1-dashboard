@@ -12,6 +12,10 @@ USE_MPH = False
 HIDE_RETIRED_DRIVERS = False
 KPH_TO_MPH_FACTOR = 0.621371
 
+# --- Session Details ---
+SESSION_TIMEOUT_HOURS = 12  # Remove sessions inactive for 12 hours
+SESSION_CLEANUP_INTERVAL_MINUTES = 60 # Check for old sessions every hour
+
 
 # --- Core Application & Server ---
 DASH_ENV = os.environ.get('DASH_ENV', 'development')
