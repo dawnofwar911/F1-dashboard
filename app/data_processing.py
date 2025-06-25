@@ -21,6 +21,9 @@ import replay
 # Module-level logger
 logger = logging.getLogger("F1App.DataProcessing")
 
+def _process_heartbeat(session_state: app_state.SessionState, data: Dict[str, Any], timestamp: str):
+    session_state.app_status["last_heartbeat"] = timestamp
+
 def _check_and_trigger_rename(session_state: app_state.SessionState):
     """
     Checks if a temporary recording file is active and if enough session
@@ -573,7 +576,7 @@ def _process_driver_list(session_state: app_state.SessionState, data: Dict[str, 
     _check_and_trigger_rename(session_state)
 
 
-def _process_timing_data(session_state: app_state.SessionState, data: Dict[str, Any]):
+def _process_timing_data(session_state: app_state.SessionState, data: Dict[str, Any], timestamp: str):
     # (This function is very complex, applying the same pattern:
     #  - Pass session_state
     #  - Access session_state.timing_state, session_state.session_bests, session_state.lap_time_history
@@ -883,7 +886,7 @@ def _process_session_data(session_state: app_state.SessionState, data: Dict[str,
             f"Session {sess_id_log}: Error processing SessionData: {e}", exc_info=True)
 
 
-def _process_session_info(session_state: app_state.SessionState, data: Dict[str, Any]):
+def _process_session_info(session_state: app_state.SessionState, data: Dict[str, Any], _timestamp: str):
     sess_id_log = session_state.session_id[:8]
     if not isinstance(data, dict):
         logger.warning(f"Session {sess_id_log}: SessionInfo non-dict: {data}")
@@ -1020,36 +1023,35 @@ def data_processing_loop_session(session_state: app_state.SessionState):
                     with session_state.lock:
                         session_state.current_processed_feed_timestamp_utc_dt = msg_dt
 
-            with session_state.lock:  # Main lock for processing a message
-                session_state.data_store[stream_name] = {
-                    "data": actual_data, "timestamp": timestamp}
+            with session_state.lock:
+                session_state.data_store[stream_name] = {"data": actual_data, "timestamp": timestamp}
                 session_state._pending_background_fetch = None
 
                 try:
                     if stream_name == "Heartbeat":
-                        session_state.app_status["last_heartbeat"] = timestamp
-                    elif stream_name == "DriverList":
-                        _process_driver_list(session_state, actual_data) # type: ignore
-                    elif stream_name == "TimingData":
-                        _process_timing_data(session_state, actual_data)  # type: ignore
-                    elif stream_name == "SessionInfo":
-                        _process_session_info(session_state, actual_data) # type: ignore
-                    elif stream_name == "SessionData":
-                        _process_session_data(session_state, actual_data)  # type: ignore
-                    elif stream_name == "TimingAppData":
-                        _process_timing_app_data(session_state, actual_data) # type: ignore
-                    elif stream_name == "TrackStatus":
-                        _process_track_status(session_state, actual_data)  # type: ignore
-                    elif stream_name == "WeatherData":
-                        _process_weather_data(session_state, actual_data) # type: ignore
-                    elif stream_name == "RaceControlMessages":
-                        _process_race_control(session_state, actual_data)  # type: ignore
-                    elif stream_name == "TeamRadio":
-                        _process_team_radio(session_state, actual_data) # type: ignore
-                    elif stream_name == "ChampionshipPrediction":
-                            _process_championship_prediction(session_state, actual_data)
+                        _process_heartbeat(session_state, actual_data, timestamp)
                     elif stream_name == "ExtrapolatedClock":
-                        _process_extrapolated_clock(session_state, actual_data, timestamp)  # type: ignore
+                        _process_extrapolated_clock(session_state, actual_data, timestamp)
+                    elif stream_name == "TeamRadio":
+                        _process_team_radio(session_state, actual_data)
+                    elif stream_name == "TimingAppData":
+                        _process_timing_app_data(session_state, actual_data)
+                    elif stream_name == "WeatherData":
+                        _process_weather_data(session_state, actual_data)
+                    elif stream_name == "TrackStatus":
+                        _process_track_status(session_state, actual_data)
+                    elif stream_name == "DriverList":
+                        _process_driver_list(session_state, actual_data)
+                    elif stream_name == "RaceControlMessages":
+                        _process_race_control(session_state, actual_data)
+                    elif stream_name == "SessionInfo":
+                        _process_session_info(session_state, actual_data, timestamp)
+                    elif stream_name == "SessionData":
+                        _process_session_data(session_state, actual_data)
+                    elif stream_name == "TimingData":
+                        _process_timing_data(session_state, actual_data, timestamp)
+                    elif stream_name == "ChampionshipPrediction":
+                        _process_championship_prediction(session_state, actual_data)
                     elif stream_name == "Position":
                         # Position data prep uses a snapshot, so get snapshot then call prepare
                         current_timing_state_snapshot_for_pos = {k: {'PositionData': v.get('PositionData', {}), 'PreviousPositionData': v.get('PreviousPositionData', {}) } 
@@ -1079,8 +1081,7 @@ def data_processing_loop_session(session_state: app_state.SessionState):
                                 session_state.telemetry_data[car_n_str][lap_n][ch_key_map].extend(
                                     telem_upd[ch_key_map])
                 except Exception as proc_ex:
-                    logger.error(
-                        f"Session {sess_id_log}: ERROR processing stream '{stream_name}': {proc_ex}", exc_info=True)
+                    logger.error(f"Session {sess_id_log}: ERROR processing stream '{stream_name}': {proc_ex}", exc_info=True)
 
                 pending_fetch_info = getattr(
                     session_state, '_pending_background_fetch', None)
@@ -1125,6 +1126,21 @@ def data_processing_loop_session(session_state: app_state.SessionState):
         f"Data processing thread for session {sess_id_log} finished. Stop_event: {session_state.stop_event.is_set()}")
     with session_state.lock:
         session_state.data_processing_thread = None
+
+STREAM_PROCESSORS = {
+    "Heartbeat": _process_heartbeat,
+    "ExtrapolatedClock": _process_extrapolated_clock,
+    "TeamRadio": _process_team_radio,
+    "TimingAppData": _process_timing_app_data,
+    "WeatherData": _process_weather_data,
+    "TrackStatus": _process_track_status,
+    "DriverList": _process_driver_list,
+    "RaceControlMessages": _process_race_control,
+    "SessionInfo": _process_session_info,
+    "SessionData": _process_session_data,
+    "TimingData": _process_timing_data,
+    "ChampionshipPrediction": _process_championship_prediction,
+}
 
 
 print("DEBUG: data_processing module (multi-session structure) loaded")
