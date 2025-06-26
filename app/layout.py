@@ -273,7 +273,7 @@ def define_dashboard_layout():
     main_data_zone = dbc.Row([
         dbc.Col([
             html.H4("Live Timing"),
-            html.P(id='timing-data-timestamp', children=config.TEXT_WAITING_FOR_DATA, style={'fontSize':'0.8rem', 'color':'grey', 'marginBottom':'2px'}),
+            html.P(id='timing-data-timestamp', children=config.TEXT_WAITING_FOR_DATA, className='text-muted small mb-1'),
             dash_table.DataTable(
                 id='timing-data-actual-table',
                 fixed_rows={'headers': True},
@@ -399,25 +399,14 @@ def define_dashboard_layout():
             dbc.Accordion([
                 dbc.AccordionItem(
                     children=[dcc.Textarea(id='race-control-log-display', value=config.TEXT_RC_WAITING,
-                                            style={'width': '100%', 'height': '140px',
-                                                   'backgroundColor': '#2B2B2B', 'color': '#E0E0E0',
-                                                   'border': '1px solid #444', 'fontFamily': 'monospace',
-                                                   'fontSize':'0.75rem'}, readOnly=True)],
+                                            className='race-control-log', readOnly=True)],
                     title="Race Control Messages", item_id="rcm-accordion"
                 ),
                 dbc.AccordionItem( 
                     children=[
                         html.Div(
                             id='team-radio-display',
-                            style={
-                                'maxHeight': '200px', 
-                                'overflowY': 'auto',
-                                'border': '1px solid #444',
-                                'padding': '8px',
-                                'fontSize': '0.75rem',
-                                'backgroundColor': '#2B2B2B',
-                                'color': '#E0E0E0' 
-                            }
+                            className='team-radio-display'
                         )
                     ],
                     title="Team Radio", 
@@ -425,9 +414,7 @@ def define_dashboard_layout():
                 ), 
                 dbc.AccordionItem(
                     children=[html.Div(id='other-data-display',
-                                       style={'maxHeight': '140px', 'overflowY': 'auto',
-                                              'border': '1px solid #444', 'padding': '8px',
-                                              'fontSize': '0.7rem', 'backgroundColor': '#2B2B2B'})],
+                                       className='other-data-display')],
                     title="Other Data Streams (Debug)",
                     item_id="other-data-accordion",
                     id="debug-data-accordion-item" 
@@ -440,7 +427,7 @@ def define_dashboard_layout():
                 dbc.CardBody([
                     html.H5("Track Map", className="card-title mb-2"),
                     html.Div(
-                        style={'height': f'{config.TRACK_MAP_WRAPPER_HEIGHT}px', 'width': '100%'}, 
+                        className='track-map-wrapper', 
                         children=[
                             dcc.Graph(
                                 id='track-map-graph',
@@ -490,7 +477,7 @@ def define_dashboard_layout():
                                          ), className="ps-1", width=True)
                                 ], className="mb-2 align-items-center g-1"),
                                 html.Div(
-                                    style={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px'}, 
+                                    className='telemetry-wrapper', 
                                     children=[
                                         dcc.Graph(
                                             id='telemetry-graph',
@@ -580,7 +567,7 @@ def define_dashboard_layout():
         ),
     ], className="mb-3"),
                 html.Div(
-                    style={'height': f'{config.LAP_PROG_WRAPPER_HEIGHT}px'}, 
+                    className='lap-prog-wrapper', 
                     children=[
                         dcc.Graph(
                             id='lap-time-progression-graph',

@@ -192,6 +192,18 @@ def session_garbage_collector():
 # --- Shutdown Hook (Updated for per-session auto_connect_thread) ---
 
 
+def _join_thread(logger, session_id, thread_name, thread_obj):
+    if thread_obj and thread_obj.is_alive():
+        logger.info(
+            f"Session {session_id}: Waiting for {thread_name} thread ({thread_obj.name}) to join...")
+        thread_obj.join(timeout=5.0)
+        if thread_obj.is_alive():
+            logger.warning(
+                f"Session {session_id}: Thread {thread_obj.name} did not exit cleanly.")
+        else:
+            logger.info(
+                f"Session {session_id}: Thread {thread_obj.name} joined successfully.")
+
 def shutdown_application():
     logger_shutdown = logging.getLogger("F1App.Main.Shutdown")
     logger_shutdown.info(
@@ -208,25 +220,17 @@ def shutdown_application():
         if session_state:
             logger_shutdown.info(f"Cleaning up session: {session_id}...")
             with session_state.lock:
-                session_state.stop_event.set()  # Signal all threads for this session
+                session_state.stop_event.set()
 
-                threads_to_join = []
-                if session_state.connection_thread and session_state.connection_thread.is_alive():
-                    threads_to_join.append(
-                        ("SignalR Connection", session_state.connection_thread))
-                if session_state.replay_thread and session_state.replay_thread.is_alive():
-                    threads_to_join.append(
-                        ("Replay", session_state.replay_thread))
-                if session_state.data_processing_thread and session_state.data_processing_thread.is_alive():
-                    threads_to_join.append(
-                        ("Data Processing", session_state.data_processing_thread))
-                if session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive():  # ADDED
-                    threads_to_join.append(
-                        ("Auto-Connect Monitor", session_state.auto_connect_thread))
-                if session_state.track_data_fetch_thread and session_state.track_data_fetch_thread.is_alive(): # NEW
-                    threads_to_join.append(
-                        ("Track Data Fetch", session_state.track_data_fetch_thread))
-                if session_state.hub_connection:  # Attempt to stop hub directly if part of this session's state
+                threads_to_join = [
+                    ("SignalR Connection", session_state.connection_thread),
+                    ("Replay", session_state.replay_thread),
+                    ("Data Processing", session_state.data_processing_thread),
+                    ("Auto-Connect Monitor", session_state.auto_connect_thread),
+                    ("Track Data Fetch", session_state.track_data_fetch_thread),
+                ]
+
+                if session_state.hub_connection:
                     try:
                         logger_shutdown.debug(
                             f"Session {session_id}: Attempting to stop session's hub_connection directly.")
@@ -236,23 +240,15 @@ def shutdown_application():
                             f"Session {session_id}: Error stopping session's hub_connection: {e_hub_stop}")
 
             for thread_name, thread_obj in threads_to_join:
-                logger_shutdown.info(
-                    f"Session {session_id}: Waiting for {thread_name} thread ({thread_obj.name}) to join...")
-                thread_obj.join(timeout=5.0)  # Standard timeout
-                if thread_obj.is_alive():
-                    logger_shutdown.warning(
-                        f"Session {session_id}: Thread {thread_obj.name} did not exit cleanly.")
-                else:
-                    logger_shutdown.info(
-                        f"Session {session_id}: Thread {thread_obj.name} joined successfully.")
+                _join_thread(logger_shutdown, session_id, thread_name, thread_obj)
 
-            with session_state.lock:  # Re-acquire lock to nullify handles and close files
+            with session_state.lock:
                 session_state.connection_thread = None
                 session_state.replay_thread = None
                 session_state.data_processing_thread = None
                 session_state.auto_connect_thread = None
                 session_state.hub_connection = None
-                session_state.track_data_fetch_thread = None #
+                session_state.track_data_fetch_thread = None
 
                 if session_state.live_data_file and not session_state.live_data_file.closed:
                     try:
@@ -262,7 +258,7 @@ def shutdown_application():
                     except Exception as e:
                         logger_shutdown.error(
                             f"Session {session_id}: Error closing live_data_file: {e}")
-                session_state.live_data_file = None  # Ensure it's cleared
+                session_state.live_data_file = None
 
     with app_state.SESSIONS_STORE_LOCK:
         if app_state.SESSIONS_STORE:  # Only log if there was something to clear
