@@ -22,6 +22,7 @@ import config
 import utils
 
 logger = logging.getLogger(__name__)
+logger.setLevel(config.CALLBACK_LOG_LEVEL)
 
 @app.callback(
     [Output('driver-details-output', 'children'),      # For basic driver Name/Team

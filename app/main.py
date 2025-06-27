@@ -31,51 +31,6 @@ import schedule_page
 
 from layout import main_app_layout
 
-# --- Logging Setup (from your previous main.py) ---
-
-def setup_logging():
-    log_formatter = logging.Formatter(config.LOG_FORMAT_DEFAULT)
-    actual_root_logger = logging.getLogger()
-    actual_root_logger.setLevel(logging.INFO)
-    if actual_root_logger.hasHandlers():
-        actual_root_logger.handlers.clear()
-    root_console_handler = logging.StreamHandler(sys.stdout)
-    root_console_handler.setFormatter(log_formatter)
-    actual_root_logger.addHandler(root_console_handler)
-
-    # Add a file handler to the root logger
-    log_file_path = os.path.join(os.path.dirname(__file__), 'f1_dashboard.log')
-    root_file_handler = logging.FileHandler(log_file_path, mode='a')
-    root_file_handler.setFormatter(log_formatter)
-    actual_root_logger.addHandler(root_file_handler)
-
-    f1_app_logger = logging.getLogger("F1App")
-    f1_app_logger.setLevel(logging.INFO)
-    f1_app_logger.propagate = True
-
-    # Logger for per-session auto-connect (will be dynamically named)
-    # For general auto-connect config/module logging:
-    logging.getLogger("F1App.AutoConnect").setLevel(logging.DEBUG)
-    logging.getLogger("F1App.SessionID").setLevel(logging.INFO)
-
-    logging.getLogger("SignalRCoreClient").setLevel(logging.WARNING)
-    logging.getLogger("signalrcore").setLevel(logging.WARNING)
-
-    # Set level for callbacks.data_displays early
-    logging.getLogger("callbacks.data_displays").setLevel(logging.INFO)
-
-    werkzeug_logger = logging.getLogger('werkzeug')
-    werkzeug_logger.setLevel(
-        logging.ERROR if not config.DASH_DEBUG_MODE else logging.INFO)
-    werkzeug_logger.propagate = True
-    if werkzeug_logger.hasHandlers():
-        werkzeug_logger.handlers.clear()
-
-    logging.getLogger('requests').setLevel(logging.WARNING)
-    logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('fastf1').setLevel(logging.INFO)
-
-
 # --- Initialize FastF1 Cache (from your previous main.py) ---
 if hasattr(config, 'FASTF1_CACHE_DIR') and config.FASTF1_CACHE_DIR:
     try:
@@ -126,8 +81,13 @@ def global_auto_recorder_service():
    
     from callbacks import main_controls
 
+    first_check = True
     while True:
-        time.sleep(60) # Check every 60 seconds
+        if first_check:
+            time.sleep(1) # Initial quick check
+            first_check = False
+        else:
+            time.sleep(60) # Check every 60 seconds
         
         current_live_info = None
         with app_state.CURRENT_LIVE_SESSION_INFO_LOCK:
@@ -281,7 +241,7 @@ def shutdown_application():
 
 # --- Module Level Execution ---
 faulthandler.enable()
-setup_logging()  # Call your logging setup
+utils.setup_logging()  # Call your logging setup
 logger_main_module = logging.getLogger("F1App.Main.ModuleLevel")
 
 logger_main_module.info(

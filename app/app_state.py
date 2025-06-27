@@ -221,6 +221,61 @@ class SessionState:
             logger.info(
                 f"Session {self.session_id}: State variables have been reset to defaults.")
 
+    def stop_all_threads(self):
+        """
+        Signals all active threads associated with this session to stop and attempts to join them.
+        This method should be called before resetting the session state or removing the session.
+        """
+        sess_id_log = self.session_id[:8]
+        logger.info(f"Session {sess_id_log}: Signalling all threads to stop...")
+        self.stop_event.set() # Signal all threads to stop
+
+        threads_to_join = [
+            ("SignalR Connection", self.connection_thread),
+            ("Replay", self.replay_thread),
+            ("Data Processing", self.data_processing_thread),
+            ("Auto-Connect Monitor", self.auto_connect_thread),
+            ("Track Data Fetch", self.track_data_fetch_thread),
+        ]
+
+        # Stop hub connection directly if it exists
+        if self.hub_connection:
+            try:
+                logger.debug(f"Session {sess_id_log}: Attempting to stop session's hub_connection directly.")
+                self.hub_connection.stop()
+            except Exception as e_hub_stop:
+                logger.error(f"Session {sess_id_log}: Error stopping session's hub_connection: {e_hub_stop}")
+
+        for thread_name, thread_obj in threads_to_join:
+            if thread_obj and thread_obj.is_alive():
+                logger.info(f"Session {sess_id_log}: Waiting for {thread_name} thread ({thread_obj.name}) to join...")
+                thread_obj.join(timeout=5.0) # Give threads a chance to finish
+                if thread_obj.is_alive():
+                    logger.warning(f"Session {sess_id_log}: Thread {thread_obj.name} did not exit cleanly.")
+                else:
+                    logger.info(f"Session {sess_id_log}: Thread {thread_obj.name} joined successfully.")
+            else:
+                logger.debug(f"Session {sess_id_log}: {thread_name} thread is not active or already stopped.")
+        
+        # Clear thread references after attempting to join
+        with self.lock:
+            self.connection_thread = None
+            self.replay_thread = None
+            self.data_processing_thread = None
+            self.auto_connect_thread = None
+            self.hub_connection = None
+            self.track_data_fetch_thread = None
+            logger.info(f"Session {sess_id_log}: All thread references cleared.")
+
+        # Close live data file if open
+        if self.live_data_file and not self.live_data_file.closed:
+            try:
+                self.live_data_file.close()
+                logger.info(f"Session {sess_id_log}: Closed live_data_file.")
+            except Exception as e:
+                logger.error(f"Session {sess_id_log}: Error closing live_data_file: {e}")
+            self.live_data_file = None
+
 
 # --- Global Session Management ---
 SESSIONS_STORE: Dict[str, SessionState] = {}  # Added type hint

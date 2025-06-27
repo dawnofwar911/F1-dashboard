@@ -396,8 +396,11 @@ LOG_REPLAY_FILE_START_MSG_PREFIX = "# Recording Started: "
 LOG_REPLAY_FILE_SESSION_INFO_PREFIX = "# Session Info (from FastF1 at start): "
 LOG_REPLAY_FILE_STOP_MSG_PREFIX = "\n# Recording Stopped: "
 
+# Callback Logging Level (e.g., logging.INFO, logging.DEBUG, logging.WARNING)
+CALLBACK_LOG_LEVEL = logging.INFO
 
-# --- API URLs (other than SignalR) ---"
+
+# --- API URLs (other than SignalR) ---
 MULTIVIEWER_API_USER_AGENT = 'F1-Dash/0.5' # Increment version or make more dynamic
 
 print("DEBUG: config module loaded")

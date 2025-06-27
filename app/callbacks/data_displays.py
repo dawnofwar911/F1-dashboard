@@ -18,6 +18,7 @@ import config
 import utils
 
 logger = logging.getLogger(__name__)
+logger.setLevel(config.CALLBACK_LOG_LEVEL)
 
 @app.callback(
     Output('timing-data-actual-table', 'columns'),

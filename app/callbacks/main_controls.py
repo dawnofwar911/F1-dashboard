@@ -197,29 +197,8 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
 
         logger.info(f"ReplaySess {sess_id_log}: In 'replay-button' logic. Selected file: {selected_replay_file}.")
 
-        # --- Stop existing activities for THIS session WITHOUT holding the main session lock during joins ---
-        # It's better if stop_connection_session and stop_replay_session manage their own locking carefully
-        # or if they signal threads and the actual join happens outside critical lock sections.
-        
-        # Get current threads to check if they are alive, without lock initially if possible,
-        # or briefly acquire lock just to get handles.
-        _conn_thread = None
-        _repl_thread = None
-        with session_state.lock:
-            _conn_thread = session_state.connection_thread
-            _repl_thread = session_state.replay_thread
-
-        if _conn_thread and _conn_thread.is_alive():
-            logger.info(f"ReplaySess {sess_id_log}: Stopping active live connection (from handle_control_clicks) to start replay.")
-            signalr_client.stop_connection_session(session_state) # This function should handle its own join and lock release.
-            # No sleep here while holding the main callback's lock.
-            # Wait for it to actually stop if necessary, or ensure stop_connection_session is fully synchronous.
-            # For simplicity, assume stop_connection_session blocks until done or times out.
-
-        if _repl_thread and _repl_thread.is_alive():
-             logger.info(f"ReplaySess {sess_id_log}: Stopping previous replay (from handle_control_clicks) to start new one.")
-             replay.stop_replay_session(session_state) # This function should handle its own join.
-             # No sleep here.
+        # Stop any existing activities for THIS session
+        session_state.stop_all_threads()
 
         # Brief sleep outside any specific session lock, to allow threads to react if needed.
         # This is a bit of a pragmatic measure; ideally, thread stopping is fully synchronous.
@@ -257,33 +236,7 @@ def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
     elif button_id == 'stop-reset-button':
         logger.info(f"Session {sess_id_log}: Stop & Reset Session button clicked.")
         
-        # Stop live connection (if any)
-        # signalr_client.stop_connection_session should handle its DP thread.
-        logger.info(f"Session {sess_id_log}: Stopping SignalR connection (if any)...")
-        signalr_client.stop_connection_session(session_state) 
-    
-        # Stop replay (if any)
-        # replay.stop_replay_session should handle its DP thread.
-        logger.info(f"Session {sess_id_log}: Stopping replay (if any)...")
-        replay.stop_replay_session(session_state) 
-        
-        # Stop auto-connect thread if running for this session
-        _auto_connect_thread_to_join = None
-        with session_state.lock:
-            if session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive():
-                logger.info(f"Session {sess_id_log}: Signalling auto-connect thread to stop...")
-                session_state.stop_event.set() 
-                _auto_connect_thread_to_join = session_state.auto_connect_thread
-            session_state.auto_connect_enabled = False 
-        
-        if _auto_connect_thread_to_join:
-            logger.info(f"Session {sess_id_log}: Joining auto-connect thread {_auto_connect_thread_to_join.name}...")
-            _auto_connect_thread_to_join.join(timeout=3.0) 
-            with session_state.lock:
-                if _auto_connect_thread_to_join.is_alive():
-                    logger.warning(f"Session {sess_id_log}: Auto-connect thread {_auto_connect_thread_to_join.name} did not join cleanly.")
-                if session_state.auto_connect_thread is _auto_connect_thread_to_join:
-                    session_state.auto_connect_thread = None
+        session_state.stop_all_threads()
         
         # After specific stop functions have run, the DP thread handles should ideally be None.
         # A brief pause to allow threads to fully terminate if their join returned slightly before full cleanup.
