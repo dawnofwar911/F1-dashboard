@@ -3,3 +3,4 @@ __pycache__/
 ff1_cache/
 .venv
 GEMINI.md
+app/f1_dashboard.log
