@@ -2,6 +2,7 @@
 from dash import Input, Output, State, callback, clientside_callback, no_update
 import config
 import utils
+import secrets
 
 # Callback to open the password modal
 @callback(
@@ -21,7 +22,7 @@ def open_admin_modal(n_clicks):
     prevent_initial_call=True,
 )
 def check_admin_password(n_clicks, password):
-    if password == config.ADMIN_PASSWORD and config.ADMIN_PASSWORD is not None:
+    if config.ADMIN_PASSWORD and password and secrets.compare_digest(password, config.ADMIN_PASSWORD):
         return {"display": "block"}, False # Show panel, hide modal
     return no_update, True # Keep modal open, do not change panel
 
