@@ -175,7 +175,7 @@ def session_garbage_collector():
                     stale_sessions.append(session_id)
 
         if stale_sessions:
-            print(f"Garbage Collector: Found {len(stale_sessions)} stale sessions. Removing them.")
+            logging.info(f"Garbage Collector: Found {len(stale_sessions)} stale sessions. Removing them.")
             for session_id in stale_sessions:
                 # Here we call the existing cleanup function
                 app_state.remove_session_state(session_id)
