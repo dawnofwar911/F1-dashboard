@@ -125,7 +125,29 @@ def global_auto_recorder_service():
                     if not session_key: continue
                     
                     recorder_session_id = f"auto-recorder-{session_key}"
-                    if app_state.get_session_state(recorder_session_id): continue
+                    existing_recorder_session = app_state.get_session_state(recorder_session_id)
+                    if existing_recorder_session:
+                        # Check if any of its threads are still alive
+                        any_thread_alive = False
+                        with existing_recorder_session.lock: # Acquire lock to safely access thread objects
+                            if existing_recorder_session.connection_thread and existing_recorder_session.connection_thread.is_alive():
+                                any_thread_alive = True
+                            elif existing_recorder_session.replay_thread and existing_recorder_session.replay_thread.is_alive():
+                                any_thread_alive = True
+                            elif existing_recorder_session.data_processing_thread and existing_recorder_session.data_processing_thread.is_alive():
+                                any_thread_alive = True
+                            elif existing_recorder_session.auto_connect_thread and existing_recorder_session.auto_connect_thread.is_alive():
+                                any_thread_alive = True
+                            elif existing_recorder_session.track_data_fetch_thread and existing_recorder_session.track_data_fetch_thread.is_alive():
+                                any_thread_alive = True
+
+                        if any_thread_alive:
+                            logger_recorder.info(f"Recorder session {recorder_session_id[:8]} already exists and its threads are alive. Skipping.")
+                            continue # Skip if an active recorder session already exists
+                        else:
+                            logger_recorder.warning(f"Stale recorder session {recorder_session_id[:8]} found (no active threads). Removing it.")
+                            app_state.remove_session_state(recorder_session_id)
+                            # After removal, the loop will continue and attempt to create a new one if needed.
 
                     logger_recorder.info(f"Time to connect for {next_session.get('session_name')}. Starting recorder session.")
                     recorder_session_state = app_state.get_or_create_session_state(recorder_session_id)

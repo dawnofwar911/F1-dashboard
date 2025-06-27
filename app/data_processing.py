@@ -557,7 +557,6 @@ def _process_driver_list(session_state: app_state.SessionState, data: Dict[str, 
     if added_count > 0 or updated_count > 0:
         logger.debug(
             f"Session {sess_id_log}: Processed DriverList. Added: {added_count}, Updated: {updated_count}. Total drivers: {len(session_state.timing_state)}")
-    _check_and_trigger_rename(session_state)
 
 
 def _process_timing_data(session_state: app_state.SessionState, data: Dict[str, Any], timestamp: str):
@@ -1013,30 +1012,13 @@ def data_processing_loop_session(session_state: app_state.SessionState):
                 session_state._pending_background_fetch = None
 
                 try:
-                    if stream_name == "Heartbeat":
-                        _process_heartbeat(session_state, actual_data, timestamp)
-                    elif stream_name == "ExtrapolatedClock":
-                        _process_extrapolated_clock(session_state, actual_data, timestamp)
-                    elif stream_name == "TeamRadio":
-                        _process_team_radio(session_state, actual_data)
-                    elif stream_name == "TimingAppData":
-                        _process_timing_app_data(session_state, actual_data)
-                    elif stream_name == "WeatherData":
-                        _process_weather_data(session_state, actual_data)
-                    elif stream_name == "TrackStatus":
-                        _process_track_status(session_state, actual_data)
-                    elif stream_name == "DriverList":
-                        _process_driver_list(session_state, actual_data)
-                    elif stream_name == "RaceControlMessages":
-                        _process_race_control(session_state, actual_data)
-                    elif stream_name == "SessionInfo":
-                        _process_session_info(session_state, actual_data, timestamp)
-                    elif stream_name == "SessionData":
-                        _process_session_data(session_state, actual_data)
-                    elif stream_name == "TimingData":
-                        _process_timing_data(session_state, actual_data, timestamp)
-                    elif stream_name == "ChampionshipPrediction":
-                        _process_championship_prediction(session_state, actual_data)
+                    processor = STREAM_PROCESSORS.get(stream_name)
+                    if processor:
+                        # These streams use timestamp as a third argument
+                        if stream_name in ["Heartbeat", "ExtrapolatedClock", "SessionInfo", "TimingData"]:
+                            processor(session_state, actual_data, timestamp)
+                        else:
+                            processor(session_state, actual_data)
                     elif stream_name == "Position":
                         # Position data prep uses a snapshot, so get snapshot then call prepare
                         current_timing_state_snapshot_for_pos = {k: {'PositionData': v.get('PositionData', {}), 'PreviousPositionData': v.get('PreviousPositionData', {}) } 
@@ -1065,6 +1047,8 @@ def data_processing_loop_session(session_state: app_state.SessionState):
                             for ch_key_map in config.CHANNEL_MAP.values():
                                 session_state.telemetry_data[car_n_str][lap_n][ch_key_map].extend(
                                     telem_upd[ch_key_map])
+                    else:
+                        logger.debug(f"No specific processor for stream: {stream_name}")
                 except Exception as proc_ex:
                     logger.error(f"Session {sess_id_log}: ERROR processing stream '{stream_name}': {proc_ex}", exc_info=True)
 
