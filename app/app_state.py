@@ -341,7 +341,7 @@ def get_or_create_session_state(session_id: Optional[str] = None) -> Optional[Se
                 resolved_session_id)
         session = SESSIONS_STORE[resolved_session_id]
         session.last_accessed_time = time.time() # Add this line to update time
-        return SESSIONS_STORE[resolved_session_id]
+        return session
 
 
 def remove_session_state(session_id: str):
