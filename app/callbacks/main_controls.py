@@ -647,6 +647,9 @@ def export_timing_data_to_csv(n_clicks):
     Handles the click event for the export button.
     Gathers the current timing data, formats it as a CSV, and sends it for download.
     """
+    if n_clicks is None or n_clicks == 0:
+        raise PreventUpdate
+
     session_state = app_state.get_or_create_session_state()
     if not session_state:
         return dash.no_update

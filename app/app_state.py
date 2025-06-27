@@ -136,6 +136,7 @@ class SessionState:
 
         # Assuming driver number as str
         self.selected_driver_for_map_and_lap_chart: Optional[str] = None
+        self.all_pit_stop_durations: Dict[str, List[float]] = {}
 
         self.connection_thread: Optional[threading.Thread] = None  # CORRECTED
         # Replace Any with actual HubConnection type if available

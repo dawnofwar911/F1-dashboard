@@ -43,6 +43,12 @@ def setup_logging():
     root_console_handler.setFormatter(log_formatter)
     actual_root_logger.addHandler(root_console_handler)
 
+    # Add a file handler to the root logger
+    log_file_path = os.path.join(os.path.dirname(__file__), 'f1_dashboard.log')
+    root_file_handler = logging.FileHandler(log_file_path, mode='a')
+    root_file_handler.setFormatter(log_formatter)
+    actual_root_logger.addHandler(root_file_handler)
+
     f1_app_logger = logging.getLogger("F1App")
     f1_app_logger.setLevel(logging.INFO)
     f1_app_logger.propagate = True
@@ -54,6 +60,9 @@ def setup_logging():
 
     logging.getLogger("SignalRCoreClient").setLevel(logging.WARNING)
     logging.getLogger("signalrcore").setLevel(logging.WARNING)
+
+    # Set level for callbacks.data_displays early
+    logging.getLogger("callbacks.data_displays").setLevel(logging.INFO)
 
     werkzeug_logger = logging.getLogger('werkzeug')
     werkzeug_logger.setLevel(

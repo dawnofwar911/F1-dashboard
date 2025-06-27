@@ -455,6 +455,23 @@ def define_dashboard_layout():
             ),
             dbc.Card(
                 dbc.CardBody([
+                    html.H5("Session Key Statistics", className="card-title mb-2"),
+                    html.Div(id='fastest-lap-display', children=[
+                        html.Strong("Fastest Lap: "),
+                        html.Span("Awaiting data...", id="fastest-lap-value")
+                    ], className="mb-2"),
+                    html.Div(id='total-pit-stops-display', children=[
+                        html.Strong("Total Pit Stops: "),
+                        html.Span("Awaiting data...", id="total-pit-stops-value")
+                    ], className="mb-2"),
+                    html.Div(id='fastest-pit-stop-display', children=[
+                        html.Strong("Fastest Pit Stop: "),
+                        html.Span("Awaiting data...", id="fastest-pit-stop-value")
+                    ])
+                ]), className="mb-2"
+            ),
+            dbc.Card(
+                dbc.CardBody([
                     html.H5("Driver Focus", className="card-title mb-2"),
                     dcc.Dropdown(
                         id='driver-select-dropdown', options=[], placeholder=config.TEXT_DRIVER_SELECT,
@@ -477,19 +494,19 @@ def define_dashboard_layout():
                                          ), className="ps-1", width=True)
                                 ], className="mb-2 align-items-center g-1"),
                                 html.Div(
-                                    className='telemetry-wrapper', 
+                                    className='telemetry-wrapper',
                                     children=[
                                         dcc.Graph(
                                             id='telemetry-graph',
                                             style={'height': '100%', 'width': '100%'},
                                             figure=go.Figure(layout={
                                                 'template': 'plotly_dark',
-                                                'uirevision': config.INITIAL_TELEMETRY_UIREVISION, 
-                                                'annotations': [{'text': config.TEXT_DRIVER_SELECT_LAP, 'xref': 'paper', 
+                                                'uirevision': config.INITIAL_TELEMETRY_UIREVISION,
+                                                'annotations': [{'text': config.TEXT_DRIVER_SELECT_LAP, 'xref': 'paper',
                                                                  'yref': 'paper', 'showarrow': False, 'font': {'size': 10}}],
                                                 'xaxis': {'visible': False, 'range': [0,1]},
                                                 'yaxis': {'visible': False, 'range': [0,1]},
-                                                'margin': config.TELEMETRY_MARGINS_EMPTY 
+                                                'margin': config.TELEMETRY_MARGINS_EMPTY
                                             })
                                         )
                                     ]
@@ -567,19 +584,19 @@ def define_dashboard_layout():
         ),
     ], className="mb-3"),
                 html.Div(
-                    className='lap-prog-wrapper', 
+                    className='lap-prog-wrapper',
                     children=[
                         dcc.Graph(
                             id='lap-time-progression-graph',
                             style={'height': '100%', 'width': '100%'},
                             figure=go.Figure(layout={
                                 'template': 'plotly_dark',
-                                'uirevision': config.INITIAL_LAP_PROG_UIREVISION, 
-                                'annotations': [{'text': config.TEXT_LAP_PROG_SELECT_DRIVERS, 'xref': 'paper', 
+                                'uirevision': config.INITIAL_LAP_PROG_UIREVISION,
+                                'annotations': [{'text': config.TEXT_LAP_PROG_SELECT_DRIVERS, 'xref': 'paper',
                                                  'yref': 'paper', 'showarrow': False, 'font': {'size': 12}}],
                                 'xaxis': {'visible': False, 'range': [0,1]},
                                 'yaxis': {'visible': False, 'range': [0,1]},
-                                'margin': config.LAP_PROG_MARGINS_EMPTY 
+                                'margin': config.LAP_PROG_MARGINS_EMPTY
                             }),
                             config={'autosizable': True, 'responsive': True}
                         )

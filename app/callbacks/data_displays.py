@@ -1084,6 +1084,66 @@ def update_main_data_displays(n, debug_mode_enabled: bool, session_prefs: Option
         return no_update, no_update, no_update
         
 @app.callback(
+    Output('fastest-lap-value', 'children'),
+    Output('total-pit-stops-value', 'children'),
+    Output('fastest-pit-stop-value', 'children'),
+    Input('interval-component-medium', 'n_intervals')
+)
+def update_session_key_statistics(n_intervals):
+    session_state = app_state.get_or_create_session_state()
+    callback_start_time = time.monotonic()
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"Callback '{func_name}' START")
+
+    fastest_lap_display = "Awaiting data..."
+    total_pit_stops_display = "Awaiting data..."
+    fastest_pit_stop_display = "Awaiting data..."
+
+    try:
+        with session_state.lock:
+            # Fastest Lap
+            overall_best_lap = session_state.session_bests.get('OverallBestLapTime', {})
+            if overall_best_lap and overall_best_lap.get('Value') and overall_best_lap.get('DriverNumber'):
+                driver_num = overall_best_lap['DriverNumber']
+                driver_tla = session_state.timing_state.get(driver_num, {}).get('Tla', driver_num)
+                fastest_lap_time = overall_best_lap['Value']
+                fastest_lap_display = f"{driver_tla} - {fastest_lap_time}"
+
+            # Total Pit Stops
+            total_pits = 0
+            for driver_num, driver_state in session_state.timing_state.items():
+                # Use ReliablePitStops if available, otherwise fall back to NumberOfPitStops
+                # These values are directly from the timing feed and should be accurate.
+                reliable_stops = driver_state.get('ReliablePitStops', 0)
+                timing_data_stops = driver_state.get('NumberOfPitStops', 0)
+                
+                if reliable_stops > 0:
+                    total_pits += reliable_stops
+                elif timing_data_stops > 0:
+                    total_pits += timing_data_stops
+            total_pit_stops_display = str(total_pits)
+
+            # Fastest Pit Stop
+            all_pit_durations = []
+            for driver_pit_times in session_state.all_pit_stop_durations.values():
+                all_pit_durations.extend(driver_pit_times)
+            
+            if all_pit_durations:
+                fastest_pit_time = min(all_pit_durations)
+                fastest_pit_stop_display = f"{fastest_pit_time:.1f}s"
+            else:
+                fastest_pit_stop_display = "N/A"
+
+    except Exception as e:
+        logger.error(f"Error in update_session_key_statistics: {e}", exc_info=True)
+        fastest_lap_display = "Error"
+        total_pit_stops_display = "Error"
+        fastest_pit_stop_display = "Error"
+
+    logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
+    return fastest_lap_display, total_pit_stops_display, fastest_pit_stop_display
+
+@app.callback(
     Output('race-control-log-display', 'value'),
     Input('interval-component-medium', 'n_intervals') # Update periodically
 )

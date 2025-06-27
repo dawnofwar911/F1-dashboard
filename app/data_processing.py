@@ -313,6 +313,8 @@ def _update_driver_stint_data(session_state: app_state.SessionState, driver_rno_
 
     for stint_feed_key in sorted_incoming_stint_keys:
         incoming_stint_info = stints_payload_from_app_data[stint_feed_key]
+        logger.debug(f"Sess {sess_id_log} StintUpdate: Processing driver {driver_rno_str}, StintKey: {stint_feed_key}, IncomingInfo: {incoming_stint_info}")
+
         if not isinstance(incoming_stint_info, dict):
             continue
 
@@ -372,7 +374,7 @@ def _update_driver_stint_data(session_state: app_state.SessionState, driver_rno_
                 'total_laps_on_tyre_in_stint': laps_run_in_this_stint, 'tyre_total_laps_at_stint_end': total_laps_on_tyre_set_feed,
                 'tyres_not_changed': tyres_not_changed_feed
             })
-            # logger.debug(f"Session {sess_id_log} StintUpdate: Updated Stint {existing_stint_entry['stint_number']} for {driver_rno_str} (FK {stint_feed_key})")
+            logger.debug(f"Session {sess_id_log} StintUpdate: Updated Stint {existing_stint_entry['stint_number']} for {driver_rno_str} (FK {stint_feed_key}). Current history: {driver_stints_history}")
         else:  # New stint
             if driver_stints_history:  # Finalize previous stint
                 prev_stint = driver_stints_history[-1]
@@ -410,7 +412,7 @@ def _update_driver_stint_data(session_state: app_state.SessionState, driver_rno_
                 "total_laps_on_tyre_in_stint": laps_run_in_this_stint, "tyre_total_laps_at_stint_end": total_laps_on_tyre_set_feed,
                 "tyres_not_changed": tyres_not_changed_feed
             })
-            # logger.debug(f"Session {sess_id_log} StintUpdate: Added NEW Stint {stint_num_hist} for {driver_rno_str} (FK {stint_feed_key})")
+            logger.debug(f"Session {sess_id_log} StintUpdate: Added NEW Stint {stint_num_hist} for {driver_rno_str} (FK {stint_feed_key}). Current history: {driver_stints_history}")
     session_state.driver_stint_data[driver_rno_str] = sorted(
         driver_stints_history, key=lambda x: x['stint_number'])
 
@@ -444,8 +446,7 @@ def _process_timing_app_data(session_state: app_state.SessionState, data: Dict[s
 
                             new_status_val = latest_stint_info.get('New')
                             if isinstance(new_status_val, str):
-                                driver_current_s_state['IsNewTyre'] = new_status_val.lower(
-                                ) == 'true'
+                                driver_current_s_state['IsNewTyre'] = new_status_val.lower() == 'true'
                             elif isinstance(new_status_val, bool):
                                 driver_current_s_state['IsNewTyre'] = new_status_val
 
@@ -471,24 +472,7 @@ def _process_timing_app_data(session_state: app_state.SessionState, data: Dict[s
                                         pass
                             driver_current_s_state['TyreAge'] = current_age_val
 
-                            # Pit duration display (your existing logic for this)
-                            if 'PitInTime' in latest_stint_info and latest_stint_info['PitInTime'] and \
-                               'PitOutTime' in latest_stint_info and latest_stint_info['PitOutTime']:
-                                pit_in_s = utils.parse_feed_time_to_seconds(
-                                    latest_stint_info['PitInTime'])
-                                pit_out_s = utils.parse_feed_time_to_seconds(
-                                    latest_stint_info['PitOutTime'])
-                                if pit_in_s is not None and pit_out_s is not None and pit_out_s >= pit_in_s:
-                                    duration = round(pit_out_s - pit_in_s, 1)
-                                    # Check if this is a new completed pit stop for this stint key
-                                    if driver_current_s_state.get('last_pit_stint_key_ref') != latest_stint_key or \
-                                       driver_current_s_state.get('last_pit_duration') != duration:  # Or if duration changed for same key
-                                        driver_current_s_state['last_pit_duration'] = duration
-                                        # Wall time for display timeout
-                                        driver_current_s_state['last_pit_duration_timestamp'] = time.time(
-                                        )
-                                        # Track which stint this was for
-                                        driver_current_s_state['last_pit_stint_key_ref'] = latest_stint_key
+                            
                     except Exception as e_stint:
                         logger.error(
                             f"Session {sess_id_log} Drv {car_num_str}: Error proc Stints in TimingAppData: {e_stint}", exc_info=False)
@@ -622,6 +606,7 @@ def _process_timing_data(session_state: app_state.SessionState, data: Dict[str, 
                                        entry_wall) * speed_entry
                         driver_s_state['final_live_pit_time_text'] = f"Stop: {adj_elapsed:.1f}s"
                         driver_s_state['final_live_pit_time_display_timestamp'] = current_time_for_pit_calc
+                        session_state.all_pit_stop_durations.setdefault(car_num_str, []).append(adj_elapsed)
                     driver_s_state['current_pit_entry_system_time'] = None
                     driver_s_state['just_exited_pit_event_time'] = current_time_for_pit_calc
 
