@@ -145,9 +145,8 @@ def global_auto_recorder_service():
                             logger_recorder.info(f"Recorder session {recorder_session_id[:8]} already exists and its threads are alive. Skipping.")
                             continue # Skip if an active recorder session already exists
                         else:
-                            logger_recorder.warning(f"Stale recorder session {recorder_session_id[:8]} found (no active threads). Removing it.")
-                            app_state.remove_session_state(recorder_session_id)
-                            # After removal, the loop will continue and attempt to create a new one if needed.
+                            logger_recorder.warning(f"Stale recorder session {recorder_session_id[:8]} found (no active threads). Removing it. Attempting to create new one.")
+                            app_state.remove_session_state(recorder_session_id) # Remove the stale one
 
                     logger_recorder.info(f"Time to connect for {next_session.get('session_name')}. Starting recorder session.")
                     recorder_session_state = app_state.get_or_create_session_state(recorder_session_id)
@@ -156,6 +155,8 @@ def global_auto_recorder_service():
                         with recorder_session_state.lock:
                             recorder_session_state.session_details.update(next_session['SessionInfo'])
                         main_controls.start_live_connection(recorder_session_state, trigger_source="global_auto_recorder")
+                    else:
+                        logger_recorder.error(f"Failed to get or create session state for {recorder_session_id[:8]}. Cannot start recorder.")
 
             except Exception as e:
                 logger_recorder.error(f"Error in auto-recorder service scan: {e}", exc_info=True)
@@ -284,22 +285,24 @@ logger_main_module.info("Session-aware shutdown handler registered.")
 # Start the cache warmer thread
 threading.Thread(target=warm_up_schedule_cache, daemon=True, name="ScheduleCacheWarmer").start()
 
-# Start the new background services here so Gunicorn will execute them.
-logger_main_module.info("Starting background services (Garbage Collector and Auto-Recorder)...")
+def start_background_services():
+    logger_main_module.info("Starting background services (Garbage Collector and Auto-Recorder)...")
 
-cleanup_thread = threading.Thread(target=session_garbage_collector, daemon=True, name="SessionGarbageCollector")
-cleanup_thread.start()
+    global cleanup_thread, recorder_thread # Declare as global if they are accessed outside this function
+    cleanup_thread = threading.Thread(target=session_garbage_collector, daemon=True, name="SessionGarbageCollector")
+    cleanup_thread.start()
 
-recorder_thread = threading.Thread(target=global_auto_recorder_service, daemon=True, name="GlobalAutoRecorder")
-recorder_thread.start()
+    recorder_thread = threading.Thread(target=global_auto_recorder_service, daemon=True, name="GlobalAutoRecorder")
+    recorder_thread.start()
 
-logger_main_module.info("Background services started.")
+    logger_main_module.info("Background services started.")
 logger_main_module.info(
     f"To run with Waitress/Gunicorn, target this 'server' object: app_instance.server")
 
 
 # --- Main Execution Logic (for direct `python main.py` run) ---
 if __name__ == '__main__':
+    start_background_services()
     logger_main_module.info(
         f"Running Dash development server on http://{config.DASH_HOST}:{config.DASH_PORT}")
     logger_main_module.warning(
