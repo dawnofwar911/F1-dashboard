@@ -37,6 +37,14 @@ TARGET_SAVE_DIRECTORY = Path(os.environ.get('TARGET_SAVE_DIRECTORY', REPLAY_DIR)
 FASTF1_CACHE_DIR = Path(os.environ.get('FASTF1_CACHE_DIR', _SCRIPT_DIR / 'ff1_cache'))
 SETTINGS_FILE_PATH = TARGET_SAVE_DIRECTORY / 'settings.json'
 
+# --- Default Global Settings ---
+# These are the settings that will be used if the settings.json file is missing
+# or if a new setting is added to the app.
+DEFAULT_GLOBAL_SETTINGS = {
+    'record_live_sessions': False,
+    # Add new settings here with their default values
+}
+
 QUALIFYING_ELIMINATION_COUNT = {
     "Q1": 5, "SQ1": 5,
     "Q2": 5, "SQ2": 5,

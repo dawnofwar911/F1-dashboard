@@ -101,6 +101,38 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(details["Type"], "Qualifying")
         self.assertTrue(flags["reset_q_and_practice"])
 
+    @patch('utils.config.SETTINGS_FILE_PATH')
+    def test_load_global_settings_file_not_found(self, mock_settings_file_path):
+        mock_settings_file_path.exists.return_value = False
+        settings = utils.load_global_settings()
+        self.assertEqual(settings, config.DEFAULT_GLOBAL_SETTINGS)
+
+    @patch('utils.config.SETTINGS_FILE_PATH')
+    @patch('builtins.open', new_callable=mock_open)
+    @patch('json.load', side_effect=IOError("Can't read"))
+    def test_load_global_settings_io_error(self, mock_json_load, mock_file_open, mock_settings_file_path):
+        mock_settings_file_path.exists.return_value = True
+        settings = utils.load_global_settings()
+        self.assertEqual(settings, config.DEFAULT_GLOBAL_SETTINGS)
+
+    @patch('utils.config.SETTINGS_FILE_PATH')
+    @patch('builtins.open', new_callable=mock_open)
+    @patch('json.dump', side_effect=IOError("Can't write"))
+    def test_save_global_settings_io_error(self, mock_json_dump, mock_file_open, mock_settings_file_path):
+        with self.assertLogs('F1App.Utils', level='ERROR') as cm:
+            utils.save_global_settings({'record_live_sessions': True})
+            self.assertIn("Error saving settings file", cm.output[0])
+
+    @patch('utils.config.SETTINGS_FILE_PATH')
+    @patch('builtins.open', mock_open(read_data='{"theme": "dark"}'))
+    @patch('json.load', return_value={'theme': 'dark'})
+    def test_load_global_settings_partial_data(self, mock_json_load, mock_settings_file_path):
+        mock_settings_file_path.exists.return_value = True
+        settings = utils.load_global_settings()
+        expected_settings = config.DEFAULT_GLOBAL_SETTINGS.copy()
+        expected_settings.update({'theme': 'dark'})
+        self.assertEqual(settings, expected_settings)
+
     
 
 if __name__ == '__main__':

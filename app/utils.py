@@ -94,16 +94,29 @@ def setup_logging():
 # --- Utility Functions (Many can remain as is if they are pure or use config) ---
 
 def load_global_settings():
-    """Loads global settings from settings.json, returns defaults if not found."""
+    """
+    Loads global settings from settings.json, merging them with defaults
+    from config.py to ensure all settings are present.
+    """
+    # Start with a copy of the defaults
+    settings = config.DEFAULT_GLOBAL_SETTINGS.copy()
+
     if not config.SETTINGS_FILE_PATH.exists():
-        # These are the default settings if the file doesn't exist
-        return {'record_live_sessions': False}
+        # If the file doesn't exist, return the defaults
+        return settings
+
     try:
         with open(config.SETTINGS_FILE_PATH, 'r') as f:
-            return json.load(f)
+            user_settings = json.load(f)
+            # Update the defaults with the user's settings
+            if isinstance(user_settings, dict):
+                settings.update(user_settings)
     except (IOError, json.JSONDecodeError) as e:
-        logger.error(f"Error loading settings file: {e}")
-        return {'record_live_sessions': False}
+        logger.error(f"Error loading settings file, using defaults: {e}")
+        # In case of error, we still return the default settings
+        return config.DEFAULT_GLOBAL_SETTINGS.copy()
+
+    return settings
 
 def save_global_settings(settings):
     """Saves the global settings dictionary to settings.json."""
