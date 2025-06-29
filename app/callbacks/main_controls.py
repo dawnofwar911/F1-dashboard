@@ -17,14 +17,14 @@ from dash.dependencies import Input, Output, State
 from dash import no_update, Patch, dcc
 from dash.exceptions import PreventUpdate
 
-from app_instance import app
-import app_state
-import config
-import replay
-import signalr_client
-import utils
-import data_processing
-from schedule_page import get_current_year_schedule_with_sessions
+from app.app_instance import app
+from app import app_state
+from app import replay
+from app import signalr_client
+from app import utils
+from app import data_processing
+from app.schedule_page import get_current_year_schedule_with_sessions
+from app import settings, constants, api, config
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +55,12 @@ def start_live_connection(session_state: app_state.SessionState, trigger_source:
         session_state.reset_state_variables()
         session_state.app_status.update({
             "state": "Initializing",
-            "connection": config.TEXT_SIGNALR_SOCKET_PRE_NEGOTIATE_STATUS,
+            "connection": constants.TEXT_SIGNALR_SOCKET_PRE_NEGOTIATE_STATUS,
         })
         logger.info(f"Session {sess_id_log}: Session state reset and app_status set to Initializing.")
 
     logger.info(f"Session {sess_id_log}: Attempting to build connection URL...")
-    websocket_url, ws_headers = signalr_client.build_connection_url(config.NEGOTIATE_URL_BASE, config.HUB_NAME)
+    websocket_url, ws_headers = signalr_client.build_connection_url(api.NEGOTIATE_URL_BASE, api.HUB_NAME)
 
     if not (websocket_url and ws_headers):
         logger.error(f"Session {sess_id_log}: Negotiation failed for trigger '{trigger_source}'. Cannot start live connection.")
@@ -133,6 +133,95 @@ def auto_connect_monitor_session_actual_target(session_state: app_state.SessionS
     with session_state.lock:
         session_state.auto_connect_thread = None
 
+
+def handle_connect_click(session_state):
+    """Handles the logic for the connect button click."""
+    sess_id_log = session_state.session_id[:8]
+    logger.info(f"LiveConnSess {sess_id_log}: 'connect-button' pressed by user.")
+
+    start_live_connection(session_state, trigger_source="connect_button")
+
+    track_map_output = utils.create_empty_figure_with_message(
+        constants.TRACK_MAP_WRAPPER_HEIGHT, f"map_connect_{time.time()}",
+        constants.TEXT_TRACK_MAP_LOADING, constants.TRACK_MAP_MARGINS
+    )
+    car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
+    return dash.no_update, track_map_output, car_pos_store_output
+
+
+def handle_replay_click(session_state, selected_replay_file, replay_speed_value):
+    """Handles the logic for the replay button click."""
+    sess_id_log = session_state.session_id[:8]
+    if not selected_replay_file:
+        logger.warning(f"Session {sess_id_log}: Start Replay: {constants.TEXT_REPLAY_SELECT_FILE}")
+        return dash.no_update, dash.no_update, dash.no_update
+
+    logger.info(f"ReplaySess {sess_id_log}: In 'replay-button' logic. Selected file: {selected_replay_file}.")
+
+    session_state.stop_all_threads()
+    time.sleep(0.1)
+
+    current_replay_speed_val = 1.0
+    with session_state.lock:
+        try:
+            speed_val_from_slider = float(replay_speed_value if replay_speed_value is not None else 1.0)
+            current_replay_speed_val = max(0.1, speed_val_from_slider)
+            session_state.replay_speed = current_replay_speed_val
+        except:
+            logger.warning(f"ReplaySess {sess_id_log}: Could not parse replay_speed_value '{replay_speed_value}', defaulting to 1.0x")
+            session_state.replay_speed = 1.0
+            current_replay_speed_val = 1.0
+
+    full_replay_path = Path(settings.REPLAY_DIR) / selected_replay_file
+    logger.info(f"ReplaySess {sess_id_log}: Preparing to call replay.start_replay_session with path: {full_replay_path}, speed: {current_replay_speed_val}")
+
+    if replay.start_replay_session(session_state, full_replay_path, current_replay_speed_val):
+        logger.info(f"ReplaySess {sess_id_log}: Replay initiation for {full_replay_path.name} reported success by start_replay_session.")
+    else:
+        logger.error(f"ReplaySess {sess_id_log}: Replay initiation for {full_replay_path.name} reported failure by start_replay_session.")
+        with session_state.lock:
+            if session_state.app_status["state"] != "Error":
+                session_state.app_status.update({"state": "Error", "connection": "Replay Start Failed"})
+
+    track_map_output = utils.create_empty_figure_with_message(
+        constants.TRACK_MAP_WRAPPER_HEIGHT, f"map_replay_{time.time()}",
+        constants.TEXT_TRACK_MAP_LOADING, constants.TRACK_MAP_MARGINS
+    )
+    car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
+    return dash.no_update, track_map_output, car_pos_store_output
+
+
+def handle_stop_reset_click(session_state):
+    """Handles the logic for the stop/reset button click."""
+    sess_id_log = session_state.session_id[:8]
+    logger.info(f"Session {sess_id_log}: Stop & Reset Session button clicked.")
+
+    session_state.stop_all_threads()
+    time.sleep(0.2)
+
+    logger.info(f"Session {sess_id_log}: Resetting session state variables...")
+    session_state.reset_state_variables()
+
+    with session_state.lock:
+        session_state.app_status.update({
+            "state": "Idle",
+            "connection": constants.TEXT_SIGNALR_DISCONNECTED_STATUS,
+            "current_replay_file": None,
+            "auto_connected_session_identifier": None,
+            "auto_connected_session_end_detected_utc": None
+        })
+    session_state.stop_event.clear()
+
+    map_reset_fig = utils.create_empty_figure_with_message(
+        constants.TRACK_MAP_WRAPPER_HEIGHT, f"reset_map_sess_{sess_id_log}_{time.time()}",
+        constants.TEXT_TRACK_MAP_DATA_WILL_LOAD, constants.TRACK_MAP_MARGINS
+    )
+    map_reset_fig.update_layout(plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)')
+    track_map_output = map_reset_fig
+    car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
+    logger.info(f"Session {sess_id_log}: Stop & Reset processing finished.")
+    return dash.no_update, track_map_output, car_pos_store_output
+
 @app.callback(
     [Output('dummy-output-for-controls', 'children', allow_duplicate=True),
      Output('track-map-graph', 'figure', allow_duplicate=True),
@@ -142,129 +231,37 @@ def auto_connect_monitor_session_actual_target(session_state: app_state.SessionS
      Input('stop-reset-button', 'n_clicks')],
     [State('replay-file-selector', 'value'),
      State('replay-speed-slider', 'value'),
-     State('session-preferences-store', 'data')], # CHANGED
+     State('session-preferences-store', 'data')],
     prevent_initial_call=True
 )
 def handle_control_clicks(connect_clicks, replay_clicks, stop_reset_clicks,
                           selected_replay_file, replay_speed_value,
-                          session_prefs: Optional[dict]): # CHANGED
+                          session_prefs: Optional[dict]):
     ctx = dash.callback_context
     if not ctx.triggered or ctx.triggered[0]['value'] is None or ctx.triggered[0]['value'] < 1:
         return dash.no_update, dash.no_update, dash.no_update
-    
+
     session_state = app_state.get_or_create_session_state()
     if not session_state:
         return dash.no_update, dash.no_update, dash.no_update
 
-    # --- Read record preference from the store ---
     session_prefs = session_prefs or {}
     record_pref = session_prefs.get('record_data', False)
     with session_state.lock:
         session_state.record_live_data = record_pref
-    # ---
 
     button_id = ctx.triggered_id
-
-    # --- FIXED: Robust Guard Clause ---
-    # This check prevents the callback from running on initial page load,
-    # even if `prevent_initial_call=True` is behaving unexpectedly.
-    # It ensures a button has been physically clicked (n_clicks >= 1).
-    if not ctx.triggered or ctx.triggered[0]['value'] is None or ctx.triggered[0]['value'] < 1:
-        logger.info(f"Control callback fired for '{ctx.triggered_id}' but it was not a user click (n_clicks={ctx.triggered[0]['value']}). Ignoring.")
-        return dash.no_update, dash.no_update, dash.no_update
-    # --- END OF FIX ---
-    button_id = ctx.triggered_id if ctx.triggered else None
     sess_id_log = session_state.session_id[:8]
     logger.info(f"Session {sess_id_log}: Control button clicked: {button_id}")
 
-    # Default outputs
-    dummy_output = dash.no_update
-    track_map_output = dash.no_update # Use specific map reset when needed
-    car_pos_store_output = dash.no_update
-
     if button_id == 'connect-button':
-        logger.info(f"LiveConnSess {sess_id_log}: 'connect-button' pressed by user.")
-
-        start_live_connection(session_state, trigger_source="connect_button")
-            
-        track_map_output = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"map_connect_{time.time()}", config.TEXT_TRACK_MAP_LOADING, config.TRACK_MAP_MARGINS)
-        car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
-
+        return handle_connect_click(session_state)
     elif button_id == 'replay-button':
-        if not selected_replay_file:
-            logger.warning(f"Session {sess_id_log}: Start Replay: {config.TEXT_REPLAY_SELECT_FILE}")
-            return dummy_output, track_map_output, car_pos_store_output
-
-        logger.info(f"ReplaySess {sess_id_log}: In 'replay-button' logic. Selected file: {selected_replay_file}.")
-
-        # Stop any existing activities for THIS session
-        session_state.stop_all_threads()
-
-        # Brief sleep outside any specific session lock, to allow threads to react if needed.
-        # This is a bit of a pragmatic measure; ideally, thread stopping is fully synchronous.
-        time.sleep(0.1) 
-
-        # Set replay speed (can be done under lock before calling start_replay_session, or pass as arg)
-        current_replay_speed_val = 1.0 # Default
-        with session_state.lock:
-            try:
-                speed_val_from_slider = float(replay_speed_value if replay_speed_value is not None else 1.0)
-                current_replay_speed_val = max(0.1, speed_val_from_slider)
-                session_state.replay_speed = current_replay_speed_val # Update session state here
-            except:
-                logger.warning(f"ReplaySess {sess_id_log}: Could not parse replay_speed_value '{replay_speed_value}', defaulting to 1.0x")
-                session_state.replay_speed = 1.0
-                current_replay_speed_val = 1.0
-
-        full_replay_path = Path(config.REPLAY_DIR) / selected_replay_file
-        logger.info(f"ReplaySess {sess_id_log}: Preparing to call replay.start_replay_session with path: {full_replay_path}, speed: {current_replay_speed_val}")
-        
-        # replay.start_replay_session will now handle reset_state_variables, app_status updates, and starting its threads
-        if replay.start_replay_session(session_state, full_replay_path, current_replay_speed_val):
-            logger.info(f"ReplaySess {sess_id_log}: Replay initiation for {full_replay_path.name} reported success by start_replay_session.")
-        else:
-            logger.error(f"ReplaySess {sess_id_log}: Replay initiation for {full_replay_path.name} reported failure by start_replay_session.")
-            # Ensure UI reflects error if start_replay_session fails
-            with session_state.lock:
-                if session_state.app_status["state"] != "Error": # If start_replay_session didn't set it
-                    session_state.app_status.update({"state": "Error", "connection": "Replay Start Failed"})
-        
-        track_map_output = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"map_replay_{time.time()}", config.TEXT_TRACK_MAP_LOADING, config.TRACK_MAP_MARGINS)
-        car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
-
-
+        return handle_replay_click(session_state, selected_replay_file, replay_speed_value)
     elif button_id == 'stop-reset-button':
-        logger.info(f"Session {sess_id_log}: Stop & Reset Session button clicked.")
-        
-        session_state.stop_all_threads()
-        
-        # After specific stop functions have run, the DP thread handles should ideally be None.
-        # A brief pause to allow threads to fully terminate if their join returned slightly before full cleanup.
-        time.sleep(0.2) # Small delay
-    
-        logger.info(f"Session {sess_id_log}: Resetting session state variables...")
-        session_state.reset_state_variables() # This will clear all thread handles to None again.
-        
-        with session_state.lock: # Ensure status is correctly set after reset
-             session_state.app_status.update({
-                 "state": "Idle", 
-                 "connection": config.TEXT_SIGNALR_DISCONNECTED_STATUS,
-                 "current_replay_file": None,
-                 "auto_connected_session_identifier": None,
-                 "auto_connected_session_end_detected_utc": None
-            })
-        session_state.stop_event.clear()
-    
-        map_reset_fig = utils.create_empty_figure_with_message(
-            config.TRACK_MAP_WRAPPER_HEIGHT, f"reset_map_sess_{sess_id_log}_{time.time()}",
-            config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS
-        )
-        map_reset_fig.update_layout(plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)')
-        track_map_output = map_reset_fig
-        car_pos_store_output = {'status': 'reset_map_display', 'timestamp': time.time()}
-        logger.info(f"Session {sess_id_log}: Stop & Reset processing finished.")
-    
-    return dummy_output, track_map_output, car_pos_store_output
+        return handle_stop_reset_click(session_state)
+
+    return dash.no_update, dash.no_update, dash.no_update
     
 
 # This callback loads the simple display preferences from the store.
@@ -280,8 +277,8 @@ def load_display_preferences_from_store(store_data: Optional[dict], session_id: 
     and set the initial state of the switches.
     """
     store_data = store_data or {}
-    hide_retired = store_data.get('hide_retired', config.HIDE_RETIRED_DRIVERS)
-    use_mph = store_data.get('use_mph', config.USE_MPH)
+    hide_retired = store_data.get('hide_retired', settings.HIDE_RETIRED_DRIVERS)
+    use_mph = store_data.get('use_mph', settings.USE_MPH)
     
     # Also update the in-memory session state for recording
     
@@ -588,7 +585,7 @@ def load_replay_file_from_store(store_data: Optional[dict], pathname: str):
     Input('interval-component-slow', 'n_intervals')
 )
 def update_replay_options(n_intervals):
-     return replay.get_replay_files(config.REPLAY_DIR) #
+     return replay.get_replay_files(settings.REPLAY_DIR) #
      
 @app.callback(
     Output("download-timing-data-csv", "data"),

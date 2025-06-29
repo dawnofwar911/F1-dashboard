@@ -12,8 +12,8 @@ import dash
 import dash_bootstrap_components as dbc
 from dash import html
 
-from app_instance import app
-import config
+from app.app_instance import app
+from app import settings, constants, api, config
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +38,11 @@ def toggle_sidebar(n_clicks, sidebar_state_data):
         new_is_open_state = not is_open_currently
 
     if new_is_open_state:
-        sidebar_style_to_apply = config.SIDEBAR_STYLE_VISIBLE
-        content_style_to_apply = config.CONTENT_STYLE_WITH_SIDEBAR
+        sidebar_style_to_apply = constants.SIDEBAR_STYLE_VISIBLE
+        content_style_to_apply = constants.CONTENT_STYLE_WITH_SIDEBAR
     else:
-        sidebar_style_to_apply = config.SIDEBAR_STYLE_HIDDEN
-        content_style_to_apply = config.CONTENT_STYLE_FULL_WIDTH
+        sidebar_style_to_apply = constants.SIDEBAR_STYLE_HIDDEN
+        content_style_to_apply = constants.CONTENT_STYLE_FULL_WIDTH
 
     current_store_val = {'is_open': new_is_open_state}
 

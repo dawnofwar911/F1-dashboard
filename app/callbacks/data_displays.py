@@ -12,10 +12,10 @@ from datetime import datetime, timezone
 from dash.dependencies import Input, Output, State
 from dash import dash_table, html, no_update, dash
 
-from app_instance import app
-import app_state
-import config
-import utils
+from app.app_instance import app
+from app import app_state
+from app import settings, constants, api, config
+from app import utils
 
 logger = logging.getLogger(__name__)
 logger.setLevel(config.CALLBACK_LOG_LEVEL)
@@ -41,7 +41,7 @@ def update_timing_table_columns(n_intervals):
 
     # Assuming config.TIMING_TABLE_COLUMNS_CONFIG is a list of dicts,
     # where each dict has at least an 'id' and 'name' key.
-    all_columns = config.TIMING_TABLE_COLUMNS_CONFIG
+    all_columns = constants.TIMING_TABLE_COLUMNS_CONFIG
 
     # Define columns that are primarily relevant for Race/Sprint sessions
     race_sprint_specific_column_ids = ['Pits', 'IntervalGap']
@@ -53,7 +53,7 @@ def update_timing_table_columns(n_intervals):
         ]
         return columns_to_display
 
-    if session_type in [config.SESSION_TYPE_RACE, config.SESSION_TYPE_SPRINT]:
+    if session_type in [constants.SESSION_TYPE_RACE, constants.SESSION_TYPE_SPRINT]:
         logger.debug(f"Session is '{session_type}', showing all relevant columns including Pits, Gap.")
         return all_columns
     else:
@@ -79,15 +79,15 @@ def update_team_radio_display(n_intervals):
             session_path = session_state.session_details.get('Path') # Needed for the audio URL
 
         if not radio_messages_snapshot:
-            return html.Em(config.TEXT_TEAM_RADIO_AWAITING, style={'color': 'grey'})
+            return html.Em(constants.TEXT_TEAM_RADIO_AWAITING, style={'color': 'grey'})
 
         if not session_path:
             logger.warning("Team Radio: Session Path not found in session_details. Cannot build audio URLs.")
-            return html.Em(config.TEXT_TEAM_RADIO_NO_SESSION_PATH, style={'color': 'orange'})
+            return html.Em(constants.TEXT_TEAM_RADIO_NO_SESSION_PATH, style={'color': 'orange'})
 
         # The base URL for audio files, constructed from config and session_path
         # Example: "https://livetiming.formula1.com/static/2023/2023-11-26_Abu_Dhabi_Grand_Prix/..."
-        base_audio_url = f"https://{config.F1_LIVETIMING_BASE_URL}/static/{session_path}"
+        base_audio_url = f"https://{api.F1_LIVETIMING_BASE_URL}/static/{session_path}"
 
         display_elements = []
         # radio_messages_snapshot is already newest first due to appendleft in data_processing
@@ -152,14 +152,14 @@ def update_team_radio_display(n_intervals):
             display_elements.append(html.Div([timestamp_tla_span, audio_player], style=message_style))
 
         if not display_elements: # If after filtering, nothing is left
-             return html.Em(config.TEXT_TEAM_RADIO_AWAITING, style={'color': 'grey'})
+             return html.Em(constants.TEXT_TEAM_RADIO_AWAITING, style={'color': 'grey'})
         
         logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
         return html.Div(display_elements) # Wrap all messages in a parent Div
 
     except Exception as e:
         logger.error(f"Error updating team radio display: {e}", exc_info=True)
-        return html.Em(config.TEXT_TEAM_RADIO_ERROR, style={'color': 'red'})
+        return html.Em(constants.TEXT_TEAM_RADIO_ERROR, style={'color': 'red'})
         
 @app.callback(
     [Output('lap-counter', 'children'),
@@ -227,7 +227,7 @@ def update_lap_and_session_info(n_intervals):
 
         # --- Logic for displaying session type specific info ---
 
-        if session_type_lower in [config.SESSION_TYPE_RACE.lower(), config.SESSION_TYPE_SPRINT.lower()]: #
+        if session_type_lower in [constants.SESSION_TYPE_RACE.lower(), constants.SESSION_TYPE_SPRINT.lower()]: #
             lap_counter_div_style = {'display': 'inline-block', 'margin-right': '20px'} #
             session_timer_div_style = {'display': 'none'} # session_timer is hidden for Race/Sprint
             lap_value_str = f"{current_lap_to_display}/{actual_total_laps_to_display}" if current_lap_to_display != '-' else "Awaiting Data..." #
@@ -275,7 +275,7 @@ def update_lap_and_session_info(n_intervals):
             else:
                 session_time_str = "Awaiting Status"
 
-        elif session_type_lower in [config.SESSION_TYPE_QUALI, config.SESSION_TYPE_SPRINT_SHOOTOUT]: #
+        elif session_type_lower in [constants.SESSION_TYPE_QUALI, constants.SESSION_TYPE_SPRINT_SHOOTOUT]: #
             lap_counter_div_style = {'display': 'none'} #
             session_timer_div_style = {'display': 'inline-block'} #
             segment_label = q_state_live_anchor.get("current_segment", "") # Current segment from q_state #
@@ -340,7 +340,7 @@ def update_lap_and_session_info(n_intervals):
             session_timer_div_style = {'display': 'inline-block'} #
             lap_value_str = f"{current_lap_to_display}/{actual_total_laps_to_display}" #
             if current_lap_to_display == '-': #
-                awaiting_text_value = config.TEXT_LAP_COUNTER_AWAITING.replace("Lap: ", "") if hasattr(config, 'TEXT_LAP_COUNTER_AWAITING') else "Awaiting Data..." #
+                awaiting_text_value = constants.TEXT_LAP_COUNTER_AWAITING.replace("Lap: ", "") if hasattr(constants, 'TEXT_LAP_COUNTER_AWAITING') else "Awaiting Data..." #
                 lap_value_str = awaiting_text_value #
             session_timer_label_text = "Time:" #
             session_time_str = extrapolated_clock_remaining if extrapolated_clock_remaining and extrapolated_clock_remaining != "0" else "00:00:00" #
@@ -363,7 +363,7 @@ def update_connection_status(n, existing_status_text):
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
-    status_text = config.TEXT_CONN_STATUS_DEFAULT # Use constant
+    status_text = constants.TEXT_CONN_STATUS_DEFAULT # Use constant
     status_style = {'color': 'grey', 'fontWeight': 'bold'}
 
     try:
@@ -399,7 +399,7 @@ def update_connection_status(n, existing_status_text):
 
     except Exception as e:
         logger.error(f"Error in update_connection_status: {e}", exc_info=True)
-        status_text = config.TEXT_CONN_STATUS_ERROR_UPDATE # Use constant
+        status_text = constants.TEXT_CONN_STATUS_ERROR_UPDATE # Use constant
         status_style = {'color': 'red', 'fontWeight': 'bold'}
     
     logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
@@ -418,7 +418,7 @@ def update_session_and_weather_info(n):
     callback_start_time = time.monotonic()
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
-    session_info_str = config.TEXT_SESSION_INFO_AWAITING
+    session_info_str = constants.TEXT_SESSION_INFO_AWAITING
     weather_details_spans = []
 
     with session_state.lock:
@@ -446,7 +446,7 @@ def update_session_and_weather_info(n):
             current_weather_data_payload = {}
 
     # Initialize icon based on persisted overall state
-    current_main_weather_icon = config.WEATHER_ICON_MAP.get(main_weather_icon_key, config.WEATHER_ICON_MAP["default"])
+    current_main_weather_icon = constants.WEATHER_ICON_MAP.get(main_weather_icon_key, constants.WEATHER_ICON_MAP["default"])
 
     try:
         # Session Info part (remains the same)
@@ -576,7 +576,7 @@ def update_session_and_weather_info(n):
                 session_state.last_known_weather_card_inverse = weather_card_inverse
                 session_state.last_known_main_weather_icon_key = main_weather_icon_key
 
-        current_main_weather_icon = config.WEATHER_ICON_MAP.get(main_weather_icon_key, config.WEATHER_ICON_MAP["default"])
+        current_main_weather_icon = constants.WEATHER_ICON_MAP.get(main_weather_icon_key, constants.WEATHER_ICON_MAP["default"])
 
         # --- Step 4: Build weather_details_spans using the 'to_display' values ---
         if air_temp_to_display is not None: weather_details_spans.append(html.Span(f"Air: {air_temp_to_display:.1f}°C", className="me-3"))
@@ -606,9 +606,9 @@ def update_session_and_weather_info(n):
 
 
         if not weather_details_spans and overall_condition == "default":
-            final_weather_display_children = [html.Em(config.TEXT_WEATHER_UNAVAILABLE)]
+            final_weather_display_children = [html.Em(constants.TEXT_WEATHER_UNAVAILABLE)]
         elif not weather_details_spans and overall_condition != "default":
-             final_weather_display_children = [html.Em(config.TEXT_WEATHER_CONDITION_GENERIC.format(condition=overall_condition.replace("_"," ").title()))]
+             final_weather_display_children = [html.Em(constants.TEXT_WEATHER_CONDITION_GENERIC.format(condition=overall_condition.replace("_"," ").title()))]
         else:
             final_weather_display_children = weather_details_spans
         
@@ -617,9 +617,9 @@ def update_session_and_weather_info(n):
 
     except Exception as e:
         logger.error(f"Session/Weather Display Error in callback: {e}", exc_info=True)
-        return (config.TEXT_SESSION_INFO_ERROR,
-                config.TEXT_WEATHER_ERROR,
-                config.WEATHER_ICON_MAP["default"],
+        return (constants.TEXT_SESSION_INFO_ERROR,
+                constants.TEXT_WEATHER_ERROR,
+                constants.WEATHER_ICON_MAP["default"],
                 "light",
                 False)
                 
@@ -638,7 +638,7 @@ def update_prominent_track_status(n):
         track_status_code = str(session_state.track_status_data.get('Status', '0'))
 
     # Use TRACK_STATUS_STYLES from config
-    status_info = config.TRACK_STATUS_STYLES.get(track_status_code, config.TRACK_STATUS_STYLES['DEFAULT'])
+    status_info = constants.TRACK_STATUS_STYLES.get(track_status_code, constants.TRACK_STATUS_STYLES['DEFAULT'])
 
     label_to_display = status_info["label"]
     text_style = {'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px', 'color': status_info["text_color"]}
@@ -662,13 +662,13 @@ def update_main_data_displays(n, debug_mode_enabled: bool, session_prefs: Option
     logger.debug(f"Callback '{func_name}' START")
     other_elements = []
     table_data = []
-    timestamp_text = config.TEXT_WAITING_FOR_DATA
+    timestamp_text = constants.TEXT_WAITING_FOR_DATA
     current_time_for_callbacks = time.time()
     callback_start_time = time.perf_counter()  # For performance logging
     if session_prefs is None:
         session_prefs = {} # Handle case where store is empty on first load
     
-    hide_retired_pref = session_prefs.get('hide_retired', config.HIDE_RETIRED_DRIVERS)
+    hide_retired_pref = session_prefs.get('hide_retired', settings.HIDE_RETIRED_DRIVERS)
 
     try:
         current_q_segment_from_state = None
@@ -825,15 +825,13 @@ def update_main_data_displays(n, debug_mode_enabled: bool, session_prefs: Option
                     danger_zone_applies_to_segment = previous_q_segment_from_state
             if apply_danger_zone_highlight and danger_zone_applies_to_segment:
                 if danger_zone_applies_to_segment in ["Q1", "SQ1"]:
-                    lower_b_q1_active = config.QUALIFYING_CARS_Q1 - \
-                        config.QUALIFYING_ELIMINATED_Q1 + 1
-                    upper_b_q1_active = config.QUALIFYING_CARS_Q1
+                    lower_b_q1_active = constants.QUALIFYING_CARS_Q1 -                         constants.QUALIFYING_ELIMINATED_Q1 + 1
+                    upper_b_q1_active = constants.QUALIFYING_CARS_Q1
                     active_segment_highlight_rule = {
                         "type": "RED_DANGER", "lower_pos": lower_b_q1_active, "upper_pos": upper_b_q1_active}
                 elif danger_zone_applies_to_segment in ["Q2", "SQ2"]:
-                    lower_b_q2_active = config.QUALIFYING_CARS_Q2 - \
-                        config.QUALIFYING_ELIMINATED_Q2 + 1
-                    upper_b_q2_active = config.QUALIFYING_CARS_Q2
+                    lower_b_q2_active = constants.QUALIFYING_CARS_Q2 -                         constants.QUALIFYING_ELIMINATED_Q2 + 1
+                    upper_b_q2_active = constants.QUALIFYING_CARS_Q2
                     active_segment_highlight_rule = {
                         "type": "RED_DANGER", "lower_pos": lower_b_q2_active, "upper_pos": upper_b_q2_active}
             if (previous_q_segment_from_state in ["Q1", "SQ1"] and current_q_segment_from_state == "Between Segments" and session_feed_status_snapshot == "Inactive"):
@@ -853,11 +851,11 @@ def update_main_data_displays(n, debug_mode_enabled: bool, session_prefs: Option
             elif current_q_segment_from_state == "Ended" and previous_q_segment_from_state in ["Q2", "SQ2", "Q3", "SQ3"]:
                 apply_q2_elimination_highlight = True
             if apply_q1_elimination_highlight:
-                q1_eliminated_highlight_rule = {"type": "GREY_ELIMINATED", "lower_pos": config.QUALIFYING_CARS_Q1 -
-                                                config.QUALIFYING_ELIMINATED_Q1 + 1, "upper_pos": config.QUALIFYING_CARS_Q1}
+                q1_eliminated_highlight_rule = {"type": "GREY_ELIMINATED", "lower_pos": constants.QUALIFYING_CARS_Q1 -
+                                                constants.QUALIFYING_ELIMINATED_Q1 + 1, "upper_pos": constants.QUALIFYING_CARS_Q1}
             if apply_q2_elimination_highlight:
-                q2_eliminated_highlight_rule = {"type": "GREY_ELIMINATED", "lower_pos": config.QUALIFYING_CARS_Q2 -
-                                                config.QUALIFYING_ELIMINATED_Q2 + 1, "upper_pos": config.QUALIFYING_CARS_Q2}
+                q2_eliminated_highlight_rule = {"type": "GREY_ELIMINATED", "lower_pos": constants.QUALIFYING_CARS_Q2 -
+                                                constants.QUALIFYING_ELIMINATED_Q2 + 1, "upper_pos": constants.QUALIFYING_CARS_Q2}
         logger.debug(f"HighlightCheck: Seg='{current_q_segment_from_state}', Prev='{previous_q_segment_from_state}', DangerAppliesTo='{danger_zone_applies_to_segment}', RemSecForHighlight={current_segment_time_remaining_seconds:.1f}, Mode='{app_overall_status}', FeedStatus='{session_feed_status_snapshot}', ApplyDanger='{apply_danger_zone_highlight}', ApplyQ1Elim='{apply_q1_elimination_highlight}', ApplyQ2Elim='{apply_q2_elimination_highlight}'")  # MODIFIED: Changed to debug
 
         # Use data_store_copy that was fetched within the lock if debug_mode_enabled, otherwise it's {}
@@ -869,7 +867,7 @@ def update_main_data_displays(n, debug_mode_enabled: bool, session_prefs: Option
             timing_data_entry = session_state.data_store.get(
                 'TimingData', {}) if not debug_mode_enabled else data_store_copy.get('TimingData', {})
 
-        timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else config.TEXT_WAITING_FOR_DATA
+        timestamp_text = f"Timing TS: {timing_data_entry.get('timestamp', 'N/A')}" if timing_data_entry else constants.TEXT_WAITING_FOR_DATA
         table_data_prep_start_time = time.monotonic()
         if timing_state_copy:
             processed_table_data = []
@@ -914,8 +912,8 @@ def update_main_data_displays(n, debug_mode_enabled: bool, session_prefs: Option
                 bold_interval_text = f"**{interval_display_text}**"
                 interval_gap_markdown = ""
                 is_p1 = (pos_str == '1')
-                show_gap = not is_p1 and session_type_from_state_str in [config.SESSION_TYPE_RACE.lower(
-                ), config.SESSION_TYPE_SPRINT.lower()] and gap_display_text != "-"
+                show_gap = not is_p1 and session_type_from_state_str in [constants.SESSION_TYPE_RACE.lower(
+                ), constants.SESSION_TYPE_SPRINT.lower()] and gap_display_text != "-"
                 if show_gap and interval_display_text != "":
                     normal_weight_gap_text = gap_display_text
                     interval_gap_markdown = f"{bold_interval_text}\\\n{normal_weight_gap_text}"
@@ -1069,7 +1067,7 @@ def update_main_data_displays(n, debug_mode_enabled: bool, session_prefs: Option
             processed_table_data.sort(key=utils.pos_sort_key)
             table_data = processed_table_data
         else:
-            timestamp_text = config.TEXT_WAITING_FOR_DATA
+            timestamp_text = constants.TEXT_WAITING_FOR_DATA
         logger.debug(f"'{func_name}' - Table data prep (loop & sort): {time.monotonic() - table_data_prep_start_time:.4f}s")
 
         callback_duration = time.perf_counter() - callback_start_time
@@ -1161,7 +1159,7 @@ def update_race_control_display(n_intervals):
             log_messages = list(session_state.race_control_log) # Get a snapshot
 
         if not log_messages:
-            return config.TEXT_RC_WAITING # Use constant
+            return constants.TEXT_RC_WAITING # Use constant
 
         # To display newest messages at the top of the textarea:
         display_text = "\n".join(log_messages)
@@ -1171,4 +1169,4 @@ def update_race_control_display(n_intervals):
         return display_text
     except Exception as e:
         logger.error(f"Error updating race control display: {e}", exc_info=True)
-        return config.TEXT_RC_ERROR # Use constant
+        return constants.TEXT_RC_ERROR # Use constant

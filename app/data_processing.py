@@ -13,10 +13,10 @@ from copy import deepcopy
 from typing import Dict, Any, List, Tuple  # For type hints
 
 # Import shared state definition (for SessionState type hint) and config
-import app_state  # For app_state.SessionState
-import utils
-import config
-import replay
+from app import app_state
+from app import utils
+from app import replay
+from app import settings, constants, api, config
 
 # Module-level logger
 logger = logging.getLogger("F1App.DataProcessing")
@@ -141,7 +141,7 @@ def _process_extrapolated_clock(session_state: app_state.SessionState, data_payl
         q_state = session_state.qualifying_segment_state
         q_current_segment = q_state.get("current_segment")
 
-        if q_state.get("just_resumed_flag", False) and session_type in [config.SESSION_TYPE_QUALI, config.SESSION_TYPE_SPRINT_SHOOTOUT]:
+        if q_state.get("just_resumed_flag", False) and session_type in [constants.SESSION_TYPE_QUALI, constants.SESSION_TYPE_SPRINT_SHOOTOUT]:
             if msg_dt:
                 q_state["last_official_time_capture_utc"] = msg_dt
             q_state["last_capture_replay_speed"] = session_state.replay_speed
@@ -175,7 +175,7 @@ def _update_current_qualifying_segment_based_on_status(session_state: app_state.
     current_segment_in_q_state = q_state.get("current_segment")
     old_segment_in_q_state = q_state.get("old_segment")
 
-    segments_order = config.QUALIFYING_ORDER.get(session_type, [])
+    segments_order = constants.QUALIFYING_ORDER.get(session_type, [])
     if not segments_order:
         if session_type.startswith("practice"):
             if current_segment_in_q_state != "Practice":
@@ -814,7 +814,7 @@ def _process_session_data(session_state: app_state.SessionState, data: Dict[str,
 
                 elif session_type in ["qualifying", "sprint shootout"]:
                     # ... (your existing qualifying logic, using session_state attributes) ...
-                    segments = config.QUALIFYING_ORDER.get(session_type, [])
+                    segments = constants.QUALIFYING_ORDER.get(session_type, [])
                     determined_next_segment = segment_in_q_state_before_this_event
                     resuming_this_segment, is_brand_new_q_segment = False, False
                     if session_status_from_feed == "Started":
@@ -856,7 +856,7 @@ def _process_session_data(session_state: app_state.SessionState, data: Dict[str,
                                 session_state.session_start_feed_timestamp_utc_dt = session_state.current_processed_feed_timestamp_utc_dt
                         elif is_brand_new_q_segment:
                             q_state["just_resumed_flag"] = False
-                            default_duration = config.QUALIFYING_SEGMENT_DEFAULT_DURATIONS.get(
+                            default_duration = constants.QUALIFYING_SEGMENT_DEFAULT_DURATIONS.get(
                                 str(determined_next_segment), 900)
                             q_state["official_segment_remaining_seconds"] = default_duration
                             q_state["last_official_time_capture_utc"] = None
@@ -1041,10 +1041,10 @@ def data_processing_loop_session(session_state: app_state.SessionState):
                                         'CarData', {}).update(updates['CarData'])
                         for (car_n_str, lap_n), telem_upd in telemetry_updates.items():
                             session_state.telemetry_data.setdefault(car_n_str, {}).setdefault(
-                                lap_n, {'Timestamps': [], **{k_map: [] for k_map in config.CHANNEL_MAP.values()}})
+                                lap_n, {'Timestamps': [], **{k_map: [] for k_map in constants.CHANNEL_MAP.values()}})
                             session_state.telemetry_data[car_n_str][lap_n]['Timestamps'].extend(
                                 telem_upd['Timestamps'])
-                            for ch_key_map in config.CHANNEL_MAP.values():
+                            for ch_key_map in constants.CHANNEL_MAP.values():
                                 session_state.telemetry_data[car_n_str][lap_n][ch_key_map].extend(
                                     telem_upd[ch_key_map])
                     else:

@@ -18,11 +18,11 @@ from typing import Any, Optional, List, Dict
 import re # Added for regex
 
 # Import shared state and config
-import app_state  # For app_state.SessionState type hint and get_or_create_session_state if needed by callers
-import config
-import utils  # For sanitize_filename, parse_iso_timestamp_safe, _decode_and_decompress
-import data_processing
-import signalr_client
+from app import app_state
+from app import utils
+from app import data_processing
+from app import signalr_client
+from app import settings, constants, api, config
 
 logger = logging.getLogger("F1App.Replay")  # Module-level logger
 
@@ -83,7 +83,7 @@ def generate_live_filename_session(session_state: 'app_state.SessionState') -> s
 
     # Construct final filename
     if not all([year, circuit_name, session_type_short]):
-        fallback_name = f"{config.LIVE_DATA_FILENAME_FALLBACK_PREFIX}_{timestamp_suffix}.data.txt"
+        fallback_name = f"{constants.LIVE_DATA_FILENAME_FALLBACK_PREFIX}_{timestamp_suffix}.data.txt"
         logger.warning(
             f"Session {sess_id_log}: Missing details for structured filename (Year: {year}, Circuit: {circuit_name}, Session Type: {session_type_full}). "
             f"Using fallback: {fallback_name}"
@@ -99,7 +99,7 @@ def generate_live_filename_session(session_state: 'app_state.SessionState') -> s
 def ensure_replay_dir_exists():
     """Creates the replay directory and target save directory if they don't exist. (Global utility)"""
     # This function can remain as a global utility, typically called once at app startup.
-    replay_dir_path = Path(config.REPLAY_DIR)
+    replay_dir_path = Path(settings.REPLAY_DIR)
     if not replay_dir_path.exists():
         try:
             replay_dir_path.mkdir(parents=True, exist_ok=True)
@@ -108,14 +108,14 @@ def ensure_replay_dir_exists():
             logger.error(
                 f"Failed to create replay directory '{replay_dir_path}': {e}")
 
-    target_save_path = Path(config.TARGET_SAVE_DIRECTORY)
+    target_save_path = Path(settings.TARGET_SAVE_DIRECTORY)
     if not target_save_path.exists():
         try:
             target_save_path.mkdir(parents=True, exist_ok=True)
             logger.info(f"Created target save directory: {target_save_path}")
         except Exception as e:
             logger.error(
-                f"Failed to ensure target save directory '{config.TARGET_SAVE_DIRECTORY}': {e}")
+                f"Failed to ensure target save directory '{settings.TARGET_SAVE_DIRECTORY}': {e}")
 
 
 def get_replay_files(directory: str) -> list:
@@ -166,7 +166,7 @@ def init_live_file_session(session_state: 'app_state.SessionState') -> bool:
     
     # Generate the final, descriptive filename directly.
     final_filename = generate_live_filename_session(session_state)
-    filepath = Path(config.TARGET_SAVE_DIRECTORY) / final_filename
+    filepath = Path(settings.TARGET_SAVE_DIRECTORY) / final_filename
 
     try:
         with session_state.lock:
@@ -179,8 +179,8 @@ def init_live_file_session(session_state: 'app_state.SessionState') -> bool:
             session_state.current_recording_filename = final_filename
 
             # Add the standard file header
-            start_time_str = datetime.datetime.now(timezone.utc).strftime(config.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
-            header_msg = f"{config.LOG_REPLAY_FILE_START_MSG_PREFIX}{start_time_str}\n"
+            start_time_str = datetime.datetime.now(timezone.utc).strftime(constants.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
+            header_msg = f"{constants.LOG_REPLAY_FILE_START_MSG_PREFIX}{start_time_str}\n"
             s_details = session_state.session_details
             s_details_for_header = {
                 'Year': s_details.get('Year'), 'CircuitName': s_details.get('CircuitName'),
@@ -220,13 +220,13 @@ def rename_live_file_session(session_state: 'app_state.SessionState'):
     # --- THIS IS THE NEW LOGIC ---
     # If the generator returned a fallback name, it means we still don't have
     # all the details. Abort the rename for now and wait for the next trigger.
-    if config.LIVE_DATA_FILENAME_FALLBACK_PREFIX in final_filename:
+    if constants.LIVE_DATA_FILENAME_FALLBACK_PREFIX in final_filename:
         logger.debug(f"Session {sess_id_log}: Deferring rename, full session details not yet available.")
         return
     # --- END OF NEW LOGIC ---
 
-    temp_filepath = Path(config.TARGET_SAVE_DIRECTORY) / temp_filename
-    final_filepath = Path(config.TARGET_SAVE_DIRECTORY) / final_filename
+    temp_filepath = Path(settings.TARGET_SAVE_DIRECTORY) / temp_filename
+    final_filepath = Path(settings.TARGET_SAVE_DIRECTORY) / final_filename
 
     if live_file and not live_file.closed:
         logger.debug(f"Session {sess_id_log}: Closing file handle for renaming.")
@@ -266,8 +266,8 @@ def close_live_file_session(session_state: 'app_state.SessionState'):
                 f"Session {sess_id_log}: Closing live data file: {filename_that_was_closed}")
             try:
                 stop_time_str = datetime.datetime.now(timezone.utc).strftime(
-                    config.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
-                footer_msg = f"{config.LOG_REPLAY_FILE_STOP_MSG_PREFIX}{stop_time_str}\n"
+                    constants.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
+                footer_msg = f"{constants.LOG_REPLAY_FILE_STOP_MSG_PREFIX}{stop_time_str}\n"
                 session_state.live_data_file.write(footer_msg)
                 session_state.live_data_file.close()
                 file_closed_successfully = True
@@ -373,7 +373,7 @@ def _queue_message_from_replay_session(session_state: 'app_state.SessionState', 
 def _replay_thread_target_session(session_state: 'app_state.SessionState', filename_str: str, initial_speed: float):
     """Target function for a session's replay thread."""
     sess_id_log = session_state.session_id[:8]
-    filepath = Path(config.REPLAY_DIR) / filename_str
+    filepath = Path(settings.REPLAY_DIR) / filename_str
     logger.info(
         f"ReplaySess {sess_id_log}: Replay thread STARTED for file: {filepath} at initial speed: {initial_speed}x")
 
@@ -384,7 +384,7 @@ def _replay_thread_target_session(session_state: 'app_state.SessionState', filen
 
     lines_processed = 0
     lines_skipped_json_error = 0; lines_skipped_other = 0
-    playback_status_str = config.REPLAY_STATUS_RUNNING
+    playback_status_str = constants.REPLAY_STATUS_RUNNING
 
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -392,7 +392,7 @@ def _replay_thread_target_session(session_state: 'app_state.SessionState', filen
             for line_num, line in enumerate(f, 1):
                 if session_state.stop_event.is_set():
                     logger.info(f"ReplaySess {sess_id_log}: Stop event detected in replay thread loop (L{line_num}). Breaking.")
-                    playback_status_str = config.REPLAY_STATUS_STOPPED
+                    playback_status_str = constants.REPLAY_STATUS_STOPPED
                     break
 
                 line = line.strip()
@@ -495,9 +495,9 @@ def _replay_thread_target_session(session_state: 'app_state.SessionState', filen
                                 while remaining_sleep > 0.001:
                                     chunk = min(remaining_sleep, max_sleep_chunk)
                                     if session_state.stop_event.wait(chunk):
-                                        playback_status_str = config.REPLAY_STATUS_STOPPED; break
+                                        playback_status_str = constants.REPLAY_STATUS_STOPPED; break
                                     remaining_sleep -= chunk
-                                if playback_status_str == config.REPLAY_STATUS_STOPPED: break
+                                if playback_status_str == constants.REPLAY_STATUS_STOPPED: break
                             
                             last_paced_line_file_timestamp = current_line_has_pacing_timestamp # Update for next iteration
 
@@ -519,24 +519,24 @@ def _replay_thread_target_session(session_state: 'app_state.SessionState', filen
                         f"Session {sess_id_log}: Error processing L{line_num} of {filename_str}: {e_line}", exc_info=False)
                     continue
 
-            if playback_status_str == config.REPLAY_STATUS_RUNNING:  # If loop finished without break
-                playback_status_str = config.REPLAY_STATUS_COMPLETE
+            if playback_status_str == constants.REPLAY_STATUS_RUNNING:  # If loop finished without break
+                playback_status_str = constants.REPLAY_STATUS_COMPLETE
 
     except FileNotFoundError:
         logger.error(
             f"Session {sess_id_log}: Replay file not found at {filepath}")
-        playback_status_str = config.REPLAY_STATUS_ERROR_FILE_NOT_FOUND
+        playback_status_str = constants.REPLAY_STATUS_ERROR_FILE_NOT_FOUND
     except Exception as e_thread:
         logger.error(
             f"Session {sess_id_log}: Unexpected error in replay thread for {filepath}: {e_thread}", exc_info=True)
-        playback_status_str = config.REPLAY_STATUS_ERROR_RUNTIME
+        playback_status_str = constants.REPLAY_STATUS_ERROR_RUNTIME
     finally:
         logger.info(f"Session {sess_id_log}: Replay thread for '{filename_str}' finishing. Final Status: {playback_status_str}. Processed: {lines_processed}, JSONSkips: {lines_skipped_json_error}, OtherSkips: {lines_skipped_other}")
         with session_state.lock:
             final_app_state_str = "Error"  # Default
-            if playback_status_str == config.REPLAY_STATUS_COMPLETE:
+            if playback_status_str == constants.REPLAY_STATUS_COMPLETE:
                 final_app_state_str = "Playback Complete"
-            elif playback_status_str == config.REPLAY_STATUS_STOPPED: final_app_state_str = "Stopped"
+            elif playback_status_str == constants.REPLAY_STATUS_STOPPED: final_app_state_str = "Stopped"
 
             # Only update app_status if this thread was the one responsible for the current replay state
             current_replay_filename_in_app_status = session_state.app_status.get(
@@ -563,7 +563,7 @@ def start_replay_session(session_state: 'app_state.SessionState', data_file_path
         logger.debug(f"ReplaySess {sess_id_log}: Acquired lock to check existing threads.") # NEW LOG
         if session_state.replay_thread and session_state.replay_thread.is_alive():
             logger.warning(
-                f"ReplaySess {sess_id_log}: {config.TEXT_REPLAY_ALREADY_RUNNING}. Stopping existing replay.") # MODIFIED LOG
+                f"ReplaySess {sess_id_log}: {constants.TEXT_REPLAY_ALREADY_RUNNING}. Stopping existing replay.") # MODIFIED LOG
             # Add call to stop_replay_session directly here if needed, or rely on external stop.
             # For now, let's assume it should be stopped before calling start_replay again.
             # replay.stop_replay_session(session_state) # This might be too recursive if called from here
@@ -589,10 +589,10 @@ def start_replay_session(session_state: 'app_state.SessionState', data_file_path
 
     if not data_file_path.is_file():
         logger.error(
-            f"ReplaySess {sess_id_log}: {config.TEXT_REPLAY_FILE_NOT_FOUND_ERROR_PREFIX}{data_file_path}") # MODIFIED LOG
+            f"ReplaySess {sess_id_log}: {constants.TEXT_REPLAY_FILE_NOT_FOUND_ERROR_PREFIX}{data_file_path}") # MODIFIED LOG
         with session_state.lock:
             session_state.app_status.update(
-                {"state": "Error", "connection": config.TEXT_REPLAY_ERROR_FILE_NOT_FOUND_STATUS})
+                {"state": "Error", "connection": constants.TEXT_REPLAY_ERROR_FILE_NOT_FOUND_STATUS})
         return False
 
     logger.debug(f"ReplaySess {sess_id_log}: Resetting state variables for replay.") # NEW LOG
@@ -602,7 +602,7 @@ def start_replay_session(session_state: 'app_state.SessionState', data_file_path
 
     with session_state.lock:
         logger.info(
-            f"ReplaySess {sess_id_log}: {config.TEXT_REPLAY_CLEARING_STATE} for file {filename_str}") # MODIFIED LOG
+            f"ReplaySess {sess_id_log}: {constants.TEXT_REPLAY_CLEARING_STATE} for file {filename_str}") # MODIFIED LOG
         session_state.app_status.update({
             "state": "Initializing", # Initializing is good
             "connection": f"Replay Preparing: {filename_str}",
@@ -657,7 +657,7 @@ def start_replay_session(session_state: 'app_state.SessionState', data_file_path
             f"ReplaySess {sess_id_log}: Failed to create or start replay threads for {filename_str}: {e}", exc_info=True) # MODIFIED LOG
         with session_state.lock:
             session_state.app_status.update(
-                {"state": "Error", "connection": config.TEXT_REPLAY_ERROR_THREAD_START_FAILED_STATUS})
+                {"state": "Error", "connection": constants.TEXT_REPLAY_ERROR_THREAD_START_FAILED_STATUS})
             if session_state.app_status.get("current_replay_file") == filename_str: # Clear only if it's this file
                 session_state.app_status['current_replay_file'] = None
         return False
@@ -701,7 +701,7 @@ def stop_replay_session(session_state: 'app_state.SessionState'):
         with session_state.lock:
             if current_s_state in ["Replaying", "Playback Complete", "Stopping", "Initializing"]:
                 session_state.app_status.update(
-                    {"state": "Stopped", "connection": config.REPLAY_STATUS_CONNECTION_REPLAY_ENDED})
+                    {"state": "Stopped", "connection": constants.REPLAY_STATUS_CONNECTION_REPLAY_ENDED})
             if current_s_replay_file:
                 session_state.app_status["current_replay_file"] = None
             session_state.replay_thread = None
@@ -730,7 +730,7 @@ def stop_replay_session(session_state: 'app_state.SessionState'):
             logger.info(
                 f"ReplaySess {sess_id_log}: Replay reader thread ({s_replay_thread.name}) joined successfully.") # MODIFIED LOG
             if session_state.app_status["state"] == "Stopping": # If it was stopping due to this action
-                session_state.app_status.update({"state": "Stopped", "connection": config.REPLAY_STATUS_CONNECTION_REPLAY_STOPPED})
+                session_state.app_status.update({"state": "Stopped", "connection": constants.REPLAY_STATUS_CONNECTION_REPLAY_STOPPED})
         session_state.replay_thread = None # Clear reader thread handle
 
     # NOW, handle the data processing thread associated with this replay

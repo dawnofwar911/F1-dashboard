@@ -15,9 +15,9 @@ import logging
 from typing import List, Dict, Any, Optional  # For type hinting
 
 
-from app_instance import app  # Assuming app is imported for callbacks
-import config
-import utils  # For parse_iso_timestamp_safe
+from app.app_instance import app  # Assuming app is imported for callbacks
+from app import settings, constants, api, config
+from app import utils  # For parse_iso_timestamp_safe
 # from pathlib import Path # Not needed if FastF1 cache handled globally
 
 # --- Setup Logger for this Module ---
@@ -417,7 +417,7 @@ def display_f1_schedule_callback(schedule_data: Optional[List[Dict[str, Any]]], 
             if last_session_dt_utc_for_event < now_utc:
                 event_status = "Completed"
                 item_class_name += " event-completed opacity-75"
-            elif first_session_dt_utc_for_event <= now_utc <= (last_session_dt_utc_for_event + timedelta(hours=getattr(config, 'FASTF1_ONGOING_SESSION_WINDOW_HOURS', 3))):
+            elif first_session_dt_utc_for_event <= now_utc <= (last_session_dt_utc_for_event + timedelta(hours=getattr(settings, 'FASTF1_ONGOING_SESSION_WINDOW_HOURS', 3))):
                 event_status = "Ongoing"
                 item_class_name += " event-ongoing"
                 if first_upcoming_event_idx == -1:

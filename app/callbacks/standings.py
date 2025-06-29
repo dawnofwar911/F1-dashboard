@@ -17,11 +17,11 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import dash_bootstrap_components as dbc
 
-from app_instance import app
-import app_state
-import config
-import utils
-from schedule_page import get_championship_standings, get_constructor_standings
+from app.app_instance import app
+from app import app_state
+from app import utils
+from app.schedule_page import get_championship_standings, get_constructor_standings
+from app import settings, constants, api, config
 
 logger = logging.getLogger(__name__)
 

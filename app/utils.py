@@ -24,9 +24,9 @@ except ImportError:
     fastf1 = None  # type: ignore
     pd = None  # type: ignore
 
-# Import config for constants and app_state for SessionState type hint
-import config
-import app_state  # Required for app_state.SessionState type hint
+# Import settings, constants, and api for configuration and app_state for SessionState type hint
+from app import settings, constants, api
+from app import app_state  # Required for app_state.SessionState type hint
 
 # Shapely and numpy are for track map processing
 try:
@@ -48,7 +48,7 @@ import sys # Added for logging setup
 logger = logging.getLogger("F1App.Utils")
 
 def setup_logging():
-    log_formatter = logging.Formatter(config.LOG_FORMAT_DEFAULT)
+    log_formatter = logging.Formatter(constants.LOG_FORMAT_DEFAULT)
     actual_root_logger = logging.getLogger()
     actual_root_logger.setLevel(logging.INFO)
     if actual_root_logger.hasHandlers():
@@ -80,7 +80,7 @@ def setup_logging():
 
     werkzeug_logger = logging.getLogger('werkzeug')
     werkzeug_logger.setLevel(
-        logging.ERROR if not config.DASH_DEBUG_MODE else logging.INFO)
+        logging.ERROR if not settings.DASH_DEBUG_MODE else logging.INFO)
     werkzeug_logger.propagate = True
     if werkzeug_logger.hasHandlers():
         werkzeug_logger.handlers.clear()
@@ -99,30 +99,30 @@ def load_global_settings():
     from config.py to ensure all settings are present.
     """
     # Start with a copy of the defaults
-    settings = config.DEFAULT_GLOBAL_SETTINGS.copy()
+    local_settings = settings.DEFAULT_GLOBAL_SETTINGS.copy()
 
-    if not config.SETTINGS_FILE_PATH.exists():
+    if not settings.SETTINGS_FILE_PATH.exists():
         # If the file doesn't exist, return the defaults
-        return settings
+        return local_settings
 
     try:
-        with open(config.SETTINGS_FILE_PATH, 'r') as f:
+        with open(settings.SETTINGS_FILE_PATH, 'r') as f:
             user_settings = json.load(f)
             # Update the defaults with the user's settings
             if isinstance(user_settings, dict):
-                settings.update(user_settings)
+                local_settings.update(user_settings)
     except (IOError, json.JSONDecodeError) as e:
         logger.error(f"Error loading settings file, using defaults: {e}")
         # In case of error, we still return the default settings
-        return config.DEFAULT_GLOBAL_SETTINGS.copy()
+        return settings.DEFAULT_GLOBAL_SETTINGS.copy()
 
-    return settings
+    return local_settings
 
-def save_global_settings(settings):
+def save_global_settings(local_settings):
     """Saves the global settings dictionary to settings.json."""
     try:
-        with open(config.SETTINGS_FILE_PATH, 'w') as f:
-            json.dump(settings, f, indent=4)
+        with open(settings.SETTINGS_FILE_PATH, 'w') as f:
+            json.dump(local_settings, f, indent=4)
     except IOError as e:
         logger.error(f"Error saving settings file: {e}")
 
@@ -279,10 +279,10 @@ def create_tyre_degradation_chart(stint_laps_df: pd.DataFrame):
 def get_color_from_team_name(team_name: str) -> str:
     """Fuzzy matches a team name to the color map in config."""
     # First, check for an exact match
-    if team_name in config.TEAM_COLORS:
-        return config.TEAM_COLORS[team_name]
+    if team_name in constants.TEAM_COLORS:
+        return constants.TEAM_COLORS[team_name]
     # If no exact match, check if a key is contained in the name
-    for key, color in config.TEAM_COLORS.items():
+    for key, color in constants.TEAM_COLORS.items():
         if key in team_name:
             return color
     # Fallback to grey if no match is found
@@ -410,7 +410,7 @@ def create_tyre_strategy_figure(driver_stint_data: dict, timing_state: dict):
     fig = go.Figure()
 
     # Add a separate Bar trace for each tyre compound
-    for compound_name, color in config.TYRE_COMPOUND_COLORS.items():
+    for compound_name, color in constants.TYRE_COMPOUND_COLORS.items():
         df_compound = df[df["Compound"] == compound_name]
         if not df_compound.empty:
             fig.add_trace(go.Bar(
@@ -458,14 +458,14 @@ def convert_kph_to_mph(kph_values):
     # Check the type of the input and process accordingly
     if isinstance(kph_values, (int, float)):
         # Handle a single number (e.g., 300)
-        return kph_values * config.KPH_TO_MPH_FACTOR
+        return kph_values * settings.KPH_TO_MPH_FACTOR
     elif isinstance(kph_values, list):
         # Handle a list of numbers (e.g., [300, 301, 302])
         # We use a list comprehension and check each item to be safe
-        return [val * config.KPH_TO_MPH_FACTOR for val in kph_values if isinstance(val, (int, float))]
+        return [val * settings.KPH_TO_MPH_FACTOR for val in kph_values if isinstance(val, (int, float))]
     elif isinstance(kph_values, pd.Series):
         # Handle a pandas Series (this is the most efficient case)
-        return kph_values * config.KPH_TO_MPH_FACTOR
+        return kph_values * settings.KPH_TO_MPH_FACTOR
     else:
         # If the type is unknown, log a warning and return the original value to avoid crashing
         logger.warning(f"convert_kph_to_mph received an unexpected type: {type(kph_values)}")
@@ -475,13 +475,13 @@ def convert_kph_to_mph(kph_values):
 def determine_session_type_from_name(session_name_str: str) -> str:
     s_name_lower = str(session_name_str).lower()
     if "practice" in s_name_lower:
-        return config.SESSION_TYPE_PRACTICE
+        return constants.SESSION_TYPE_PRACTICE
     if "qualifying" in s_name_lower:
-        return config.SESSION_TYPE_QUALI
+        return constants.SESSION_TYPE_QUALI
     if "sprint" in s_name_lower and "qualifying" not in s_name_lower:
-        return config.SESSION_TYPE_SPRINT
+        return constants.SESSION_TYPE_SPRINT
     if "race" in s_name_lower and "pre-race" not in s_name_lower:
-        return config.SESSION_TYPE_RACE
+        return constants.SESSION_TYPE_RACE
     return "Unknown"
 
 
@@ -582,7 +582,7 @@ def prepare_car_data_updates(actual_data_payload: Dict[str, Any],
                 continue
 
             current_car_data_update: Dict[str, Any] = {}
-            for channel_num_str_cfg, data_key_cfg in config.CHANNEL_MAP.items():
+            for channel_num_str_cfg, data_key_cfg in constants.CHANNEL_MAP.items():
                 if channel_num_str_cfg in channels_payload:
                     current_car_data_update[data_key_cfg] = channels_payload[channel_num_str_cfg]
             current_car_data_update['Utc'] = utc_time
@@ -603,11 +603,11 @@ def prepare_car_data_updates(actual_data_payload: Dict[str, Any],
             telemetry_key = (car_num_str, current_lap_num)
             if telemetry_key not in telemetry_specific_updates:
                 telemetry_specific_updates[telemetry_key] = {'Timestamps': [
-                ], **{key: [] for key in config.CHANNEL_MAP.values()}}  # type: ignore
+                ], **{key: [] for key in constants.CHANNEL_MAP.values()}}  # type: ignore
 
             lap_telemetry_update_ref = telemetry_specific_updates[telemetry_key]
             lap_telemetry_update_ref['Timestamps'].append(utc_time)
-            for channel_num_str_cfg, data_key_cfg in config.CHANNEL_MAP.items():
+            for channel_num_str_cfg, data_key_cfg in constants.CHANNEL_MAP.items():
                 value = channels_payload.get(channel_num_str_cfg)
                 if data_key_cfg in ['RPM', 'Speed', 'Gear', 'Throttle', 'Brake', 'DRS']:
                     try:
@@ -717,7 +717,7 @@ def _fetch_track_data_for_cache(session_key: str, year: Optional[str], circuit_k
             f"Fetch Helper: Invalid year or circuit key ({year}, {circuit_key}) for {session_key}")
         return None
 
-    api_url = config.MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE.format(
+    api_url = api.MULTIVIEWER_CIRCUIT_API_URL_TEMPLATE.format(
         circuit_key=str(circuit_key), year=str(year))
     fetch_logger.info(f"Fetch Helper: API fetch initiated for: {api_url}")
 
@@ -726,8 +726,8 @@ def _fetch_track_data_for_cache(session_key: str, year: Optional[str], circuit_k
         None]*5
 
     try:
-        response = requests.get(api_url, headers={'User-Agent': config.MULTIVIEWER_API_USER_AGENT},
-                                timeout=config.REQUESTS_TIMEOUT_SECONDS, verify=False)  # Consider verify=True for production
+        response = requests.get(api_url, headers={'User-Agent': api.MULTIVIEWER_API_USER_AGENT},
+                                timeout=api.REQUESTS_TIMEOUT_SECONDS, verify=False)  # Consider verify=True for production
         response.raise_for_status()
         map_api_data = response.json()
 
@@ -1141,7 +1141,7 @@ def get_current_or_next_session_info() -> Tuple[Optional[str], Optional[str]]:
                             last_past_session.update({'date': session_date, 'event_name': event.get(
                                 'EventName'), 'session_name': event.get(session_name_col)})
         ongoing_window = pd.Timedelta(hours=getattr(
-            config, 'FASTF1_ONGOING_SESSION_WINDOW_HOURS', 3))
+            settings, 'FASTF1_ONGOING_SESSION_WINDOW_HOURS', 3))
         if last_past_session.get('event_name') and (now - last_past_session.get('date', now)) <= ongoing_window:
             return last_past_session['event_name'], last_past_session['session_name']
         elif next_future_session.get('event_name'):
@@ -1165,7 +1165,7 @@ def generate_driver_options(session_timing_state: Dict[str, Any]) -> List[Dict[s
         logger.warning(
             "utils.generate_driver_options received empty or invalid session_timing_state.")
         # Ensure this constant is defined in config.py
-        return config.DROPDOWN_NO_DRIVERS_OPTIONS
+        return constants.DROPDOWN_NO_DRIVERS_OPTIONS
 
     driver_list_for_sorting = []
     for driver_num_key, driver_data in session_timing_state.items():  # driver_num_key is the key from timing_state
@@ -1204,7 +1204,7 @@ def generate_driver_options(session_timing_state: Dict[str, Any]) -> List[Dict[s
 
     if not options:
         # Ensure this constant is in config.py
-        return config.DROPDOWN_NO_DRIVERS_PROCESSED_OPTIONS
+        return constants.DROPDOWN_NO_DRIVERS_PROCESSED_OPTIONS
 
     return options
 

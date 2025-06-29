@@ -10,9 +10,9 @@ import dash
 from dash import no_update, Patch
 from dash.dependencies import Input, Output, State, ClientsideFunction
 
-from app_instance import app
-import app_state
-import config
+from app.app_instance import app
+from app import app_state
+from app import settings, constants, api
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def toggle_clientside_interval(connect_clicks, replay_clicks,
     if triggered_id in ['connect-button', 'replay-button']:
         if triggered_id == 'replay-button' and not selected_replay_file:
             logger.info(
-                f"Replay button clicked, but no file selected ({config.TEXT_REPLAY_SELECT_FILE}). Clientside interval remains disabled.") # Use constant
+                f"Replay button clicked, but no file selected ({constants.TEXT_REPLAY_SELECT_FILE}). Clientside interval remains disabled.") # Use constant
             return True
 
         logger.debug(

@@ -12,9 +12,9 @@ from io import StringIO
 
 import plotly.graph_objects as go
 
-from app_instance import app
-from historical_data_fetcher import load_historical_laps, load_historical_telemetry
-from utils import (
+from app.app_instance import app
+from app.historical_data_fetcher import load_historical_laps, load_historical_telemetry
+from app.utils import (
     create_lap_position_chart, 
     create_tyre_degradation_chart, 
     create_telemetry_comparison_chart

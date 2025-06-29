@@ -2,7 +2,7 @@
 
 import dash
 import dash_bootstrap_components as dbc
-import config
+from app import settings, constants, api, config
 import flask
 import os
 import sys # Import sys to allow exiting
@@ -30,7 +30,7 @@ secret_key = os.environ.get('SECRET_KEY') # Changed from FLASK_SECRET_KEY for co
 
 if not secret_key:
     # If no secret key is set in the environment:
-    if config.IS_PRODUCTION:
+    if settings.IS_PRODUCTION:
         # In a production environment, a fixed secret key is required.
         error_msg = "FATAL: SECRET_KEY environment variable is not set in production mode. Application cannot start."
         logger.error(error_msg)
@@ -51,12 +51,12 @@ app = dash.Dash(__name__,
                 suppress_callback_exceptions=True,
                 update_title=None)
 
-app.title = config.APP_TITLE
+app.title = constants.APP_TITLE
 server = app.server # This re-assigns the server object, which is standard practice
 
 # --- Eruda Debug Script (Conditional) ---
 eruda_script = ""
-if config.DASH_DEBUG_MODE:
+if settings.DASH_DEBUG_MODE:
     eruda_script = """
                 <script src="//cdn.jsdelivr.net/npm/eruda"></script>
                 <script>eruda.init();</script>"""

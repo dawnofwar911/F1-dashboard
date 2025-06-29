@@ -7,8 +7,8 @@ import logging
 import fastf1
 import pandas as pd
 
-import app_state
-import utils
+from app import app_state
+from app import utils
 
 logger = logging.getLogger(__name__)
 

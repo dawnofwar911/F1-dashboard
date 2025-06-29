@@ -22,9 +22,9 @@ import queue  # For queue.Full exception
 
 # Local imports
 # app_state will be passed as an argument (session_state) to functions
-import app_state
-import config
-import utils
+from app import app_state
+from app import utils
+from app import settings, constants, api, config
 
 # Module-level loggers (can still be used, but messages should include session context)
 main_logger = logging.getLogger("F1App.SignalR")  # General SignalR operations
@@ -37,16 +37,16 @@ def build_connection_url(negotiate_url_base_arg: str, hub_name_arg: str):
     main_logger.info(f"SignalR: ENTERING build_connection_url. Base: {negotiate_url_base_arg}, Hub: {hub_name_arg}") # NEW LOG
     try:
         connection_data = json.dumps([{"name": hub_name_arg}])
-        params = {"clientProtocol": config.SIGNALR_CLIENT_PROTOCOL,
+        params = {"clientProtocol": api.SIGNALR_CLIENT_PROTOCOL,
                   "connectionData": connection_data}
         negotiate_url_full = f"{negotiate_url_base_arg}/negotiate?{urllib.parse.urlencode(params)}"
         main_logger.info(f"SignalR: Negotiate URL: {negotiate_url_full}") # NEW LOG
 
-        negotiate_headers = {"User-Agent": config.USER_AGENT_NEGOTIATE}
-        main_logger.info(f"SignalR: Attempting requests.get to {negotiate_url_full} with timeout {config.REQUESTS_TIMEOUT_SECONDS}s") # NEW LOG
+        negotiate_headers = {"User-Agent": api.USER_AGENT_NEGOTIATE}
+        main_logger.info(f"SignalR: Attempting requests.get to {negotiate_url_full} with timeout {api.REQUESTS_TIMEOUT_SECONDS}s") # NEW LOG
 
         response = requests.get(negotiate_url_full, headers=negotiate_headers,
-                                verify=True, timeout=config.REQUESTS_TIMEOUT_SECONDS)
+                                verify=True, timeout=api.REQUESTS_TIMEOUT_SECONDS)
 
         main_logger.info(f"SignalR: Negotiate GET response status: {response.status_code}") # NEW LOG
         response.raise_for_status() # This will raise an exception for 4xx/5xx errors
@@ -70,18 +70,18 @@ def build_connection_url(negotiate_url_base_arg: str, hub_name_arg: str):
         main_logger.info("Got connection token.")
 
         ws_params = {
-            "clientProtocol": config.SIGNALR_CLIENT_PROTOCOL,
+            "clientProtocol": api.SIGNALR_CLIENT_PROTOCOL,
             "transport": "webSockets",
             "connectionToken": connection_token,
             "connectionData": connection_data
         }
-        websocket_url = f"{config.WEBSOCKET_URL_BASE}/connect?{urllib.parse.urlencode(ws_params)}"
+        websocket_url = f"{api.WEBSOCKET_URL_BASE}/connect?{urllib.parse.urlencode(ws_params)}"
         # Log truncated URL
         main_logger.info(
             f"Constructed WebSocket URL: {websocket_url[:150]}...")
 
         ws_headers = {
-            "User-Agent": config.USER_AGENT_WEBSOCKET,
+            "User-Agent": api.USER_AGENT_WEBSOCKET,
             "Accept-Encoding": "gzip, identity"  # Common encoding
         }
         if negotiate_cookie:
@@ -91,13 +91,13 @@ def build_connection_url(negotiate_url_base_arg: str, hub_name_arg: str):
         return websocket_url, ws_headers
 
     except requests.exceptions.Timeout:
-        main_logger.error(f"SignalR: {config.TEXT_SIGNALR_NEGOTIATION_TIMEOUT} for URL: {negotiate_url_full}", exc_info=True) # Add exc_info
+        main_logger.error(f"SignalR: {constants.TEXT_SIGNALR_NEGOTIATION_TIMEOUT} for URL: {negotiate_url_full}", exc_info=True) # Add exc_info
     except requests.exceptions.RequestException as e:
         main_logger.error(
-            f"SignalR: {config.TEXT_SIGNALR_NEGOTIATION_HTTP_FAIL_PREFIX} {str(e)} for URL: {negotiate_url_full}", exc_info=True) # Add exc_info
+            f"SignalR: {constants.TEXT_SIGNALR_NEGOTIATION_HTTP_FAIL_PREFIX} {str(e)} for URL: {negotiate_url_full}", exc_info=True) # Add exc_info
     except Exception as e:
         main_logger.error(
-            f"SignalR: {config.TEXT_SIGNALR_NEGOTIATION_ERROR_PREFIX} {str(e)} for URL: {negotiate_url_full}", exc_info=True) # Add exc_info
+            f"SignalR: {constants.TEXT_SIGNALR_NEGOTIATION_ERROR_PREFIX} {str(e)} for URL: {negotiate_url_full}", exc_info=True) # Add exc_info
 
     main_logger.error("SignalR: build_connection_url FAILED.") # NEW LOG
     return None, None
@@ -145,7 +145,7 @@ def run_connection_session(session_state: 'app_state.SessionState', target_url: 
 
         # Changed from send to send_raw_json based on usage in handle_connect
         if not session_state.hub_connection or not hasattr(session_state.hub_connection, 'send_raw_json'):
-            raise HubConnectionError(config.TEXT_SIGNALR_BUILD_HUB_FAILED)
+            raise HubConnectionError(constants.TEXT_SIGNALR_BUILD_HUB_FAILED)
 
         # Register session-aware handlers using lambdas or functools.partial
         session_state.hub_connection.on_open(
@@ -160,7 +160,7 @@ def run_connection_session(session_state: 'app_state.SessionState', target_url: 
 
         with session_state.lock:
             session_state.app_status.update(
-                {"state": "Connecting", "connection": config.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS})
+                {"state": "Connecting", "connection": constants.TEXT_SIGNALR_SOCKET_CONNECTING_STATUS})
 
         logger_s.info("Starting hub_connection.start()...")
         # This is a blocking call until connection stops or fails
@@ -179,7 +179,7 @@ def run_connection_session(session_state: 'app_state.SessionState', target_url: 
         with session_state.lock:
             if session_state.app_status["state"] not in ["Stopping", "Stopped"]:
                 session_state.app_status.update(
-                    {"state": "Error", "connection": config.TEXT_SIGNALR_THREAD_ERROR_STATUS_PREFIX + type(e).__name__})
+                    {"state": "Error", "connection": constants.TEXT_SIGNALR_THREAD_ERROR_STATUS_PREFIX + type(e).__name__})
         if not session_state.stop_event.is_set():
             session_state.stop_event.set()  # Ensure other parts of this session know to stop
 
@@ -203,7 +203,7 @@ def run_connection_session(session_state: 'app_state.SessionState', target_url: 
             # Added Playback Complete
             if session_state.app_status["state"] not in ["Stopped", "Error", "Playback Complete"]:
                 session_state.app_status.update(
-                    {"state": "Stopped", "connection": config.TEXT_SIGNALR_DISCONNECTED_THREAD_END_STATUS})
+                    {"state": "Stopped", "connection": constants.TEXT_SIGNALR_DISCONNECTED_THREAD_END_STATUS})
             session_state.hub_connection = None  # Clear from session state
             # This thread is ending, so clear its handle
             session_state.connection_thread = None
@@ -293,24 +293,24 @@ def handle_connect_session(session_state: 'app_state.SessionState'):
             # but ensure subscription is active.
         else:
             session_state.app_status.update(
-                {"state": "Live", "connection": config.TEXT_SIGNALR_SOCKET_CONNECTED_SUBSCRIBING_STATUS})
+                {"state": "Live", "connection": constants.TEXT_SIGNALR_SOCKET_CONNECTED_SUBSCRIBING_STATUS})
 
         hub_conn_for_session = session_state.hub_connection  # Get from session_state
 
     if hub_conn_for_session:
         try:
             logger_s.info(
-                f"Attempting to subscribe to streams: {config.STREAMS_TO_SUBSCRIBE}")
+                f"Attempting to subscribe to streams: {api.STREAMS_TO_SUBSCRIBE}")
             invocation_id = str(uuid.uuid4())  # Unique ID for this invocation
             # Correct message structure for SignalR Core:
             # Target method on hub is "Subscribe", arguments is an array containing the list of streams.
             # The library's send method might wrap this structure, or if using send_raw_json, ensure correct format.
             # Based on your original code, using send_raw_json with H, M, A, I structure.
             subscribe_message = {
-                "H": config.HUB_NAME,  # Hub name
+                "H": api.HUB_NAME,  # Hub name
                 "M": "Subscribe",     # Method to invoke on the server hub
                 # Arguments for the method (list of streams is one arg)
-                "A": [config.STREAMS_TO_SUBSCRIBE],
+                "A": [api.STREAMS_TO_SUBSCRIBE],
                 "I": invocation_id    # Invocation ID
             }
             json_string_payload = json.dumps(subscribe_message)
@@ -320,19 +320,19 @@ def handle_connect_session(session_state: 'app_state.SessionState'):
             logger_s.info(
                 f"Subscription request sent. Invocation ID: {invocation_id}")
             with session_state.lock:
-                session_state.app_status["subscribed_streams"] = config.STREAMS_TO_SUBSCRIBE
-                session_state.app_status["connection"] = config.TEXT_SIGNALR_CONNECTED_SUBSCRIBED_STATUS
+                session_state.app_status["subscribed_streams"] = api.STREAMS_TO_SUBSCRIBE
+                session_state.app_status["connection"] = constants.TEXT_SIGNALR_CONNECTED_SUBSCRIBED_STATUS
         except Exception as e:
             logger_s.error(f"Error sending subscription: {e}", exc_info=True)
             with session_state.lock:
                 session_state.app_status.update(
-                    {"state": "Error", "connection": config.TEXT_SIGNALR_SUBSCRIPTION_ERROR_STATUS})
+                    {"state": "Error", "connection": constants.TEXT_SIGNALR_SUBSCRIPTION_ERROR_STATUS})
     else:
         logger_s.error(
             "handle_connect_session called but hub_connection in session_state is None!")
         with session_state.lock:
             session_state.app_status.update(
-                {"state": "Error", "connection": config.TEXT_SIGNALR_HUB_OBJECT_MISSING_STATUS})
+                {"state": "Error", "connection": constants.TEXT_SIGNALR_HUB_OBJECT_MISSING_STATUS})
 
 
 def handle_disconnect_session(session_state: 'app_state.SessionState'):
@@ -345,7 +345,7 @@ def handle_disconnect_session(session_state: 'app_state.SessionState'):
         # Only update status if not already being stopped by user or due to an error
         if session_state.app_status["state"] not in ["Stopping", "Stopped", "Error", "Playback Complete"]:
             session_state.app_status.update(
-                {"connection": config.TEXT_SIGNALR_CLOSED_UNEXPECTEDLY_STATUS, "state": "Stopped"})
+                {"connection": constants.TEXT_SIGNALR_CLOSED_UNEXPECTEDLY_STATUS, "state": "Stopped"})
             # Clear subscribed streams
             session_state.app_status["subscribed_streams"] = []
 
@@ -378,7 +378,7 @@ def handle_error_session(session_state: 'app_state.SessionState', error):
     with session_state.lock:
         if session_state.app_status["state"] not in ["Error", "Stopping", "Stopped"]:
             session_state.app_status.update(
-                {"connection": config.TEXT_SIGNALR_ERROR_STATUS_PREFIX + type(error).__name__, "state": "Error"})
+                {"connection": constants.TEXT_SIGNALR_ERROR_STATUS_PREFIX + type(error).__name__, "state": "Error"})
 
     if not session_state.stop_event.is_set():
         logger_s.info("Setting session stop_event due to SignalR error.")
@@ -421,7 +421,7 @@ def stop_connection_session(session_state: 'app_state.SessionState'):
             return
 
         session_state.app_status.update(
-            {"state": "Stopping", "connection": config.TEXT_SIGNALR_DISCONNECTING_STATUS})
+            {"state": "Stopping", "connection": constants.TEXT_SIGNALR_DISCONNECTING_STATUS})
 
     # Set the session-specific stop event. This will be noticed by run_connection_session's loop.
     session_state.stop_event.set()
@@ -451,7 +451,7 @@ def stop_connection_session(session_state: 'app_state.SessionState'):
         # If it's still "Stopping", move to "Stopped"
         if session_state.app_status["state"] == "Stopping":
             session_state.app_status.update(
-                {"state": "Stopped", "connection": config.TEXT_SIGNALR_DISCONNECTED_STATUS})
+                {"state": "Stopped", "connection": constants.TEXT_SIGNALR_DISCONNECTED_STATUS})
         session_state.app_status["subscribed_streams"] = []
         session_state.hub_connection = None  # Clear from session state
         session_state.connection_thread = None  # Clear thread handle

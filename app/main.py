@@ -15,30 +15,30 @@ from dash import Input, Output, State, html, dcc
 import dash_bootstrap_components as dbc
 
 # --- Local Module Imports ---
-import app_state  # Uses the new multi-session structure from Response #14
-import config
-import utils
-from app_instance import app, server  # Import app AND server
+from app import app_state  # Uses the new multi-session structure from Response #14
+from app import settings, constants, api, config
+from app import utils
+from app.app_instance import app, server  # Import app AND server
 import fastf1
 
 # Import callbacks so they are registered
-import callbacks
+from app import callbacks
 # These modules will be refactored to be session-aware in subsequent steps
-import signalr_client
-import data_processing
-import replay
-import schedule_page
+from app import signalr_client
+from app import data_processing
+from app import replay
+from app import schedule_page
 
-from layout import main_app_layout
+from app.layout import main_app_layout
 
 # --- Initialize FastF1 Cache (from your previous main.py) ---
-if hasattr(config, 'FASTF1_CACHE_DIR') and config.FASTF1_CACHE_DIR:
+if hasattr(settings, 'FASTF1_CACHE_DIR') and settings.FASTF1_CACHE_DIR:
     try:
-        config.FASTF1_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        fastf1.Cache.enable_cache(config.FASTF1_CACHE_DIR)
+        settings.FASTF1_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        fastf1.Cache.enable_cache(settings.FASTF1_CACHE_DIR)
         # print(f"FastF1 Cache enabled at: {config.FASTF1_CACHE_DIR}")
     except Exception as e:
-        print(f"Error enabling FastF1 cache at {config.FASTF1_CACHE_DIR}: {e}")
+        print(f"Error enabling FastF1 cache at {settings.FASTF1_CACHE_DIR}: {e}")
 else:
     print("Warning: FASTF1_CACHE_DIR not defined in config.py as a Path object or is None.")
 
@@ -79,7 +79,7 @@ def global_auto_recorder_service():
     logger_recorder = logging.getLogger("F1App.AutoRecorder")
     logger_recorder.info("Global Auto-Recorder service started.")
    
-    from callbacks import main_controls
+    from app.callbacks import main_controls
 
     first_check = True
     while True:
@@ -113,7 +113,7 @@ def global_auto_recorder_service():
 
             try:
                 next_session = schedule_page.find_next_session_to_connect(
-                    lead_time_minutes=config.AUTO_CONNECT_LEAD_TIME_MINUTES
+                    lead_time_minutes=constants.AUTO_CONNECT_LEAD_TIME_MINUTES
                 )
 
                 if next_session:
@@ -165,10 +165,10 @@ def global_auto_recorder_service():
 def session_garbage_collector():
     """A background thread to remove stale sessions."""
     while True:
-        time.sleep(config.SESSION_CLEANUP_INTERVAL_MINUTES * 60)
+        time.sleep(settings.SESSION_CLEANUP_INTERVAL_MINUTES * 60)
 
         stale_sessions = []
-        timeout_seconds = config.SESSION_TIMEOUT_HOURS * 3600
+        timeout_seconds = settings.SESSION_TIMEOUT_HOURS * 3600
 
         with app_state.SESSIONS_STORE_LOCK:
             for session_id, session in app_state.SESSIONS_STORE.items():
@@ -270,14 +270,14 @@ logger_main_module = logging.getLogger("F1App.Main.ModuleLevel")
 logger_main_module.info(
     "main.py (multi-session structure) module loaded. Initializing...")
 
-if hasattr(config, 'REPLAY_DIR') and config.REPLAY_DIR:
+if hasattr(settings, 'REPLAY_DIR') and settings.REPLAY_DIR:
     try:
-        config.REPLAY_DIR.mkdir(parents=True, exist_ok=True)
+        settings.REPLAY_DIR.mkdir(parents=True, exist_ok=True)
         logger_main_module.info(
-            f"Replay directory checked/created: {config.REPLAY_DIR}")
+            f"Replay directory checked/created: {settings.REPLAY_DIR}")
     except Exception as e:
         logger_main_module.error(
-            f"Could not create replay directory {config.REPLAY_DIR}: {e}")
+            f"Could not create replay directory {settings.REPLAY_DIR}: {e}")
 
 atexit.register(shutdown_application)
 logger_main_module.info("Session-aware shutdown handler registered.")
@@ -307,7 +307,7 @@ logger_main_module.info(
 # --- Main Execution Logic (for direct `python main.py` run) ---
 if __name__ == '__main__':
     logger_main_module.info(
-        f"Running Dash development server on http://{config.DASH_HOST}:{config.DASH_PORT}")
+        f"Running Dash development server on http://{settings.DASH_HOST}:{settings.DASH_PORT}")
     logger_main_module.warning(
         "This development mode is for testing. For production, use a WSGI server like Waitress or Gunicorn.")
 
@@ -315,9 +315,9 @@ if __name__ == '__main__':
         # use_reloader=False is critical when managing threads at the module/application level
         # or per-session threads that should persist across Dash's internal reloads.
         app.run(
-            host=config.DASH_HOST,
-            port=config.DASH_PORT,
-            debug=config.DASH_DEBUG_MODE,
+            host=settings.DASH_HOST,
+            port=settings.DASH_PORT,
+            debug=settings.DASH_DEBUG_MODE,
             use_reloader=False
         )
     except KeyboardInterrupt:

@@ -2,7 +2,7 @@
 
 from dash import html
 import dash_bootstrap_components as dbc
-import config # For default values
+from app import settings, constants, api, config
 
 def create_settings_layout():
     """Creates the layout for the /settings page."""
@@ -25,13 +25,13 @@ def create_settings_layout():
                             dbc.Switch(
                                 id="hide-retired-drivers-switch",
                                 label="Hide Retired/Out Drivers",
-                                value=config.HIDE_RETIRED_DRIVERS,
+                                value=settings.HIDE_RETIRED_DRIVERS,
                                 className="mb-3"
                             ),
                             dbc.Switch(
                                 id="use-mph-switch",
                                 label="Display Speed in MPH (instead of KPH)",
-                                value=config.USE_MPH,
+                                value=settings.USE_MPH,
                                 className="mb-3"
                             ),
                         ],

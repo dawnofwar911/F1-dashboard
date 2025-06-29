@@ -4,13 +4,13 @@ import dash_bootstrap_components as dbc
 from dash import dcc, html, dash_table # Removed Input, Output, State as they are for callbacks
 import plotly.graph_objects as go
 
-# Import config for constants and replay for file listing
-import config 
-import replay 
-import utils # Make sure utils is imported if create_empty_figure_with_message is used
+# Import settings, constants, and api for configuration and replay for file listing
+from app import settings, constants, api 
+from app import replay 
+from app import utils # Make sure utils is imported if create_empty_figure_with_message is used
 
 sidebar_header = dbc.Row(
-    [dbc.Col(html.H4(config.APP_TITLE, className="app-title"), className="text-center")],
+    [dbc.Col(html.H4(constants.APP_TITLE, className="app-title"), className="text-center")],
     className="my-3",
 )
 
@@ -42,7 +42,7 @@ sidebar = html.Div([
     html.Div([
         html.Small("F1 Dashboard v0.2.1", className="text-muted") 
     ], className="text-center mt-auto p-2", style={'position':'absolute', 'bottom':'0', 'left':'0', 'right':'0'})
-], style=config.SIDEBAR_STYLE_HIDDEN, id="sidebar")
+], style=constants.SIDEBAR_STYLE_HIDDEN, id="sidebar")
 
 # --- Sidebar Toggle Button ---
 # (sidebar_toggle_button remains unchanged)
@@ -56,7 +56,7 @@ sidebar_toggle_button = dbc.Button(
     outline=True
 )
 
-content_area = html.Div(id="page-content", style=config.CONTENT_STYLE_FULL_WIDTH)
+content_area = html.Div(id="page-content", style=constants.CONTENT_STYLE_FULL_WIDTH)
 
 
 # --- Main App Layout Definition (CORRECTED) ---
@@ -89,7 +89,7 @@ def define_dashboard_layout():
 
     try:
         replay.ensure_replay_dir_exists()
-        replay_file_options = replay.get_replay_files(config.REPLAY_DIR)
+        replay_file_options = replay.get_replay_files(settings.REPLAY_DIR)
     except Exception as e:
         logger.error(f"Failed to get replay files during layout creation: {e}")
         replay_file_options = []
@@ -120,10 +120,10 @@ def define_dashboard_layout():
 
     header_zone = dbc.Row([
         # ... (header_zone remains unchanged) ...
-        dbc.Col(html.H2(config.APP_TITLE, className="mb-0"), width="auto", lg=4), 
-        dbc.Col(html.Div(id='session-info-display', children=config.TEXT_SESSION_INFO_AWAITING), 
+        dbc.Col(html.H2(constants.APP_TITLE, className="mb-0"), width="auto", lg=4), 
+        dbc.Col(html.Div(id='session-info-display', children=constants.TEXT_SESSION_INFO_AWAITING), 
                 lg=5, className="text-center align-self-center"),
-        dbc.Col(html.Div(id='connection-status', children=config.STATUS_INITIALIZING), 
+        dbc.Col(html.Div(id='connection-status', children=constants.STATUS_INITIALIZING), 
                 lg=3, className="text-end align-self-center")
     ], className="mb-2 p-2 bg-dark text-white rounded", id='header-zone', align="center")
 
@@ -150,7 +150,7 @@ def define_dashboard_layout():
                 dcc.Dropdown(
                     id='replay-file-selector',
                     options=replay_file_options,
-                    placeholder=config.TEXT_REPLAY_SELECT_FILE,
+                    placeholder=constants.TEXT_REPLAY_SELECT_FILE,
                     style={'color': '#333', 'minWidth': '200px'}
                 ), 
                 xs=12, lg=5, className="mb-2 mb-lg-0"
@@ -238,7 +238,7 @@ def define_dashboard_layout():
                 dbc.CardBody( 
                     html.Div([ 
                         html.Strong("Track Status: ", style={'marginRight':'5px'}), 
-                        html.Span(id='prominent-track-status-text', children=config.TEXT_TRACK_STATUS_DEFAULT_LABEL, 
+                        html.Span(id='prominent-track-status-text', children=constants.TEXT_TRACK_STATUS_DEFAULT_LABEL, 
                                   style={'fontWeight':'bold', 'padding':'2px 5px', 'borderRadius':'4px'}) 
                     ]), 
                     className="p-2 text-center", 
@@ -256,7 +256,7 @@ def define_dashboard_layout():
                 dbc.CardBody( 
                     html.Div([ 
                         html.Span(id='weather-main-icon', className="me-2", style={'fontSize': '1.5rem'}), 
-                        html.Div(id='prominent-weather-display', children=config.TEXT_WEATHER_AWAITING, 
+                        html.Div(id='prominent-weather-display', children=constants.TEXT_WEATHER_AWAITING, 
                                  style={'fontSize':'0.8rem', 'lineHeight':'1.2'}) 
                     ], style={'display': 'flex', 'alignItems': 'center'}), 
                     className="p-2" 
@@ -273,7 +273,7 @@ def define_dashboard_layout():
     main_data_zone = dbc.Row([
         dbc.Col([
             html.H4("Live Timing"),
-            html.P(id='timing-data-timestamp', children=config.TEXT_WAITING_FOR_DATA, className='text-muted small mb-1'),
+            html.P(id='timing-data-timestamp', children=constants.TEXT_WAITING_FOR_DATA, className='text-muted small mb-1'),
             dash_table.DataTable(
                 id='timing-data-actual-table',
                 fixed_rows={'headers': True},
@@ -377,10 +377,10 @@ def define_dashboard_layout():
                              'filter_query': '{PitDisplayState_Str} = "SHOW_COMPLETED_DURATION"'}, **PIT_DURATION_STYLE},
                     {'if': {'column_id': ['Pos', 'No.', 'Car', 'IntervalGap', 'Pits', 'Status'], 
                              'filter_query': '{QualiHighlight_Str} = "RED_DANGER"'},
-                       **config.QUALIFYING_DANGER_RED_STYLE},
+                       **constants.QUALIFYING_DANGER_RED_STYLE},
                     {'if': {'column_id': ['Pos', 'No.', 'Car', 'Tyre', 'Last Lap', 'IntervalGap', 'Best Lap', 'S1', 'S2', 'S3', 'Pits', 'Status'], 
                              'filter_query': '{QualiHighlight_Str} = "GREY_ELIMINATED"'},
-                       **config.QUALIFYING_ELIMINATED_STYLE},
+                       **constants.QUALIFYING_ELIMINATED_STYLE},
                     {'if': {'column_id': 'Last Lap'}, 'width': '70px', 'minWidth': '70px',
                         'maxWidth': '85px', 'textAlign': 'right', 'paddingRight': '5px'},
                     {'if': {'column_id': 'Best Lap'}, 'width': '70px', 'minWidth': '70px',
@@ -398,7 +398,7 @@ def define_dashboard_layout():
             ),
             dbc.Accordion([
                 dbc.AccordionItem(
-                    children=[dcc.Textarea(id='race-control-log-display', value=config.TEXT_RC_WAITING,
+                    children=[dcc.Textarea(id='race-control-log-display', value=constants.TEXT_RC_WAITING,
                                             className='race-control-log', readOnly=True)],
                     title="Race Control Messages", item_id="rcm-accordion"
                 ),
@@ -434,10 +434,10 @@ def define_dashboard_layout():
                                 style={'height': '100%', 'width': '100%'},
                                 figure=go.Figure(layout={
                                     'template': 'plotly_dark',
-                                    'uirevision': config.INITIAL_TRACK_MAP_UIREVISION, 
+                                    'uirevision': constants.INITIAL_TRACK_MAP_UIREVISION, 
                                     'xaxis': {'visible': False, 'range': [0,1], 'fixedrange': True},
                                     'yaxis': {'visible': False, 'range': [0,1], 'scaleanchor':'x', 'scaleratio':1, 'fixedrange': True},
-                                    'margin': config.TRACK_MAP_MARGINS, 
+                                    'margin': constants.TRACK_MAP_MARGINS, 
                                     'plot_bgcolor': 'rgb(30,30,30)',
                                     'paper_bgcolor': 'rgba(0,0,0,0)',
                                     'dragmode': False # Disable all drag modes
@@ -474,7 +474,7 @@ def define_dashboard_layout():
                 dbc.CardBody([
                     html.H5("Driver Focus", className="card-title mb-2"),
                     dcc.Dropdown(
-                        id='driver-select-dropdown', options=[], placeholder=config.TEXT_DRIVER_SELECT,
+                        id='driver-select-dropdown', options=[], placeholder=constants.TEXT_DRIVER_SELECT,
                         style={'color': '#333', 'marginBottom':'10px', 'fontSize': '0.9rem'}
                     ),
                     html.Div(id='driver-details-output',
@@ -501,12 +501,12 @@ def define_dashboard_layout():
                                             style={'height': '100%', 'width': '100%'},
                                             figure=go.Figure(layout={
                                                 'template': 'plotly_dark',
-                                                'uirevision': config.INITIAL_TELEMETRY_UIREVISION,
-                                                'annotations': [{'text': config.TEXT_DRIVER_SELECT_LAP, 'xref': 'paper',
+                                                'uirevision': constants.INITIAL_TELEMETRY_UIREVISION,
+                                                'annotations': [{'text': constants.TEXT_DRIVER_SELECT_LAP, 'xref': 'paper',
                                                                  'yref': 'paper', 'showarrow': False, 'font': {'size': 10}}],
                                                 'xaxis': {'visible': False, 'range': [0,1]},
                                                 'yaxis': {'visible': False, 'range': [0,1]},
-                                                'margin': config.TELEMETRY_MARGINS_EMPTY
+                                                'margin': constants.TELEMETRY_MARGINS_EMPTY
                                             })
                                         )
                                     ]
@@ -526,7 +526,7 @@ def define_dashboard_layout():
                                             {'name': 'Stint Laps', 'id': 'total_laps_on_tyre_in_stint'},
                                             {'name': 'Total Tyre Age', 'id': 'tyre_total_laps_at_stint_end'},
                                         ],
-                                        style_table={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px', 'overflowY': 'auto', 'marginTop': '10px'},
+                                        style_table={'height': f'{constants.TELEMETRY_WRAPPER_HEIGHT}px', 'overflowY': 'auto', 'marginTop': '10px'},
                                         style_cell={
                                             'textAlign': 'center', 'padding': '3px', 'fontSize':'0.75rem',
                                             'backgroundColor': 'rgb(60, 60, 60)', 'color': 'white',
@@ -553,7 +553,7 @@ def define_dashboard_layout():
                                              'backgroundColor': '#0077FF', 'color': 'white', 'fontWeight': 'bold'},
                                         ]
                                     ),
-                                    style={'height': f'{config.TELEMETRY_WRAPPER_HEIGHT}px', 'marginTop': '5px'}
+                                    style={'height': f'{constants.TELEMETRY_WRAPPER_HEIGHT}px', 'marginTop': '5px'}
                                 )
                             ]) 
                         ] 
@@ -591,12 +591,12 @@ def define_dashboard_layout():
                             style={'height': '100%', 'width': '100%'},
                             figure=go.Figure(layout={
                                 'template': 'plotly_dark',
-                                'uirevision': config.INITIAL_LAP_PROG_UIREVISION,
-                                'annotations': [{'text': config.TEXT_LAP_PROG_SELECT_DRIVERS, 'xref': 'paper',
+                                'uirevision': constants.INITIAL_LAP_PROG_UIREVISION,
+                                'annotations': [{'text': constants.TEXT_LAP_PROG_SELECT_DRIVERS, 'xref': 'paper',
                                                  'yref': 'paper', 'showarrow': False, 'font': {'size': 12}}],
                                 'xaxis': {'visible': False, 'range': [0,1]},
                                 'yaxis': {'visible': False, 'range': [0,1]},
-                                'margin': config.LAP_PROG_MARGINS_EMPTY
+                                'margin': constants.LAP_PROG_MARGINS_EMPTY
                             }),
                             config={'autosizable': True, 'responsive': True}
                         )

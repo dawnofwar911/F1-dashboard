@@ -6,14 +6,14 @@ from dash.dependencies import Input, Output
 import dash_bootstrap_components as dbc
 from dash import html
 
-from app_instance import app
+from app.app_instance import app
 
 # Import each page's layout from its own file
-from layout import dashboard_content_layout
-from schedule_page import schedule_page_layout
-from standings_page import standings_page_layout
-from settings_layout import create_settings_layout
-from historical_analysis_page import historical_analysis_page_layout
+from app.layout import dashboard_content_layout
+from app.schedule_page import schedule_page_layout
+from app.standings_page import standings_page_layout
+from app.settings_layout import create_settings_layout
+from app.historical_analysis_page import historical_analysis_page_layout
 
 @app.callback(
     Output("page-content", "children"),

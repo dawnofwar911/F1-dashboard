@@ -16,10 +16,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 
-from app_instance import app
-import app_state
-import config
-import utils
+from app.app_instance import app
+from app import app_state
+from app import utils
+from app import settings, constants, api, config
 
 logger = logging.getLogger(__name__)
 logger.setLevel(config.CALLBACK_LOG_LEVEL)
@@ -52,7 +52,7 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
     # Load the 'use_mph' preference from the session preferences store.
     # Fallback to the default value from the config if it's not set.
     session_prefs = session_prefs or {}
-    use_mph_pref = session_prefs.get('use_mph', config.USE_MPH)
+    use_mph_pref = session_prefs.get('use_mph', settings.USE_MPH)
     # --- END FIX ---
     
     ctx = dash.callback_context
@@ -63,20 +63,19 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
         f"ActiveTab='{active_tab_id}', SelectedLap='{selected_lap_for_telemetry}'"
     )
 
-    driver_basic_details_children = [html.P(config.TEXT_DRIVER_SELECT, style={'fontSize':'0.8rem', 'padding':'5px'})]
-    telemetry_lap_options = config.DROPDOWN_NO_LAPS_OPTIONS
+    driver_basic_details_children = [html.P(constants.TEXT_DRIVER_SELECT, style={'fontSize':'0.8rem', 'padding':'5px'})]
+    telemetry_lap_options = constants.DROPDOWN_NO_LAPS_OPTIONS
     telemetry_lap_value = None
     telemetry_lap_disabled = True
     fig_telemetry = utils.create_empty_figure_with_message(
-        config.TELEMETRY_WRAPPER_HEIGHT, config.INITIAL_TELEMETRY_UIREVISION,
-        config.TEXT_DRIVER_SELECT_LAP, config.TELEMETRY_MARGINS_EMPTY
+        constants.TELEMETRY_WRAPPER_HEIGHT, constants.INITIAL_TELEMETRY_UIREVISION,
+        constants.TEXT_DRIVER_SELECT_LAP, constants.TELEMETRY_MARGINS_EMPTY
     )
     stint_history_data = []
     stint_history_columns_output = no_update 
 
     if not selected_driver_number:
-        if current_telemetry_figure and \
-           current_telemetry_figure.get('layout', {}).get('uirevision') == config.INITIAL_TELEMETRY_UIREVISION:
+        if current_telemetry_figure and           current_telemetry_figure.get('layout', {}).get('uirevision') == constants.INITIAL_TELEMETRY_UIREVISION:
             fig_telemetry_output = no_update
         else:
             fig_telemetry_output = fig_telemetry
@@ -180,8 +179,8 @@ def update_driver_focus_content(selected_driver_number, active_tab_id,
                                     fig_telemetry.update_yaxes(fixedrange=True, row=i+1, col=1, title_text="", title_standoff=2, title_font_size=9, tickfont_size=8)
                             
                             fig_telemetry.update_layout(
-                                template='plotly_dark', height=config.TELEMETRY_WRAPPER_HEIGHT,
-                                hovermode="x unified", showlegend=False, margin=config.TELEMETRY_MARGINS_DATA,
+                                template='plotly_dark', height=constants.TELEMETRY_WRAPPER_HEIGHT,
+                                hovermode="x unified", showlegend=False, margin=constants.TELEMETRY_MARGINS_DATA,
                                 title_text=f"<b>{tla} - Lap {telemetry_lap_value} Telemetry</b>",
                                 title_x=0.5, title_y=0.98, title_font_size=12,
                                 uirevision=data_plot_uirevision_telemetry,
@@ -359,13 +358,13 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
         logger.debug(f"Lock in '{func_name}' - HELD for critical section: {time.monotonic() - critical_section_start_time:.4f}s")
 
     if not expected_session_id or not isinstance(expected_session_id, str) or '_' not in expected_session_id:
-        fig_empty = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"empty_map_init_{time.time()}", config.TEXT_TRACK_MAP_DATA_WILL_LOAD, config.TRACK_MAP_MARGINS)
+        fig_empty = utils.create_empty_figure_with_message(constants.TRACK_MAP_WRAPPER_HEIGHT, f"empty_map_init_{time.time()}", constants.TEXT_TRACK_MAP_DATA_WILL_LOAD, constants.TRACK_MAP_MARGINS)
         fig_empty.layout.plot_bgcolor = 'rgb(30,30,30)'; fig_empty.layout.paper_bgcolor = 'rgba(0,0,0,0)'
         return fig_empty, f"empty_map_ver_{time.time()}", ""
 
     is_cache_ready_for_base = (cached_data.get('session_key') == expected_session_id and cached_data.get('x') and cached_data.get('y'))
     if not is_cache_ready_for_base:
-        fig_loading = utils.create_empty_figure_with_message(config.TRACK_MAP_WRAPPER_HEIGHT, f"loading_{expected_session_id}_{time.time()}", f"{config.TEXT_TRACK_MAP_LOADING_FOR_SESSION_PREFIX}{expected_session_id}...", config.TRACK_MAP_MARGINS)
+        fig_loading = utils.create_empty_figure_with_message(constants.TRACK_MAP_WRAPPER_HEIGHT, f"loading_{expected_session_id}_{time.time()}", f"{constants.TEXT_TRACK_MAP_LOADING_FOR_SESSION_PREFIX}{expected_session_id}...", constants.TRACK_MAP_MARGINS)
         fig_loading.layout.plot_bgcolor = 'rgb(30,30,30)'; fig_loading.layout.paper_bgcolor = 'rgba(0,0,0,0)'
         return fig_loading, f"loading_ver_{time.time()}", ""
 
@@ -418,25 +417,25 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
         valid_corners = [c for c in (cached_data.get('corners_data') or []) if c.get('x') is not None and c.get('y') is not None]
         valid_lights = [m for m in (cached_data.get('marshal_lights_data') or []) if m.get('x') is not None and m.get('y') is not None]
         
-        fig_data.append(go.Scatter(x=list(cached_data['x']), y=list(cached_data['y']), mode='lines', line=dict(color='grey', width=getattr(config, 'TRACK_LINE_WIDTH', 2)), name='Track', hoverinfo='none'))
+        fig_data.append(go.Scatter(x=list(cached_data['x']), y=list(cached_data['y']), mode='lines', line=dict(color='grey', width=getattr(constants, 'TRACK_LINE_WIDTH', 2)), name='Track', hoverinfo='none'))
         if valid_corners:
             fig_data.append(go.Scatter(
                 x=[c['x'] for c in valid_corners], y=[c['y'] for c in valid_corners], mode='markers+text', 
-                marker=dict(size=config.CORNER_MARKER_SIZE, color=config.CORNER_MARKER_COLOR, symbol='circle-open'),
-                text=[str(c['number']) for c in valid_corners], textposition=config.CORNER_TEXT_POSITION,
-                textfont=dict(size=config.CORNER_TEXT_SIZE, color=config.CORNER_TEXT_COLOR),
-                dx=config.CORNER_TEXT_DX, dy=config.CORNER_TEXT_DY, name='Corners', hoverinfo='text'))
+                marker=dict(size=constants.CORNER_MARKER_SIZE, color=constants.CORNER_MARKER_COLOR, symbol='circle-open'),
+                text=[str(c['number']) for c in valid_corners], textposition=constants.CORNER_TEXT_POSITION,
+                textfont=dict(size=constants.CORNER_TEXT_SIZE, color=constants.CORNER_TEXT_COLOR),
+                dx=constants.CORNER_TEXT_DX, dy=constants.CORNER_TEXT_DY, name='Corners', hoverinfo='text'))
         if valid_lights:
-            fig_data.append(go.Scatter(x=[m['x'] for m in valid_lights], y=[m['y'] for m in valid_lights], mode='markers', marker=dict(size=getattr(config, 'MARSHAL_MARKER_SIZE', 5), color=getattr(config, 'MARSHAL_MARKER_COLOR', 'orange'), symbol='diamond'), name='Marshal Posts', hoverinfo='text', text=[f"M{m['number']}" for m in valid_lights]))
-        for i in range(config.MAX_YELLOW_SECTOR_PLACEHOLDERS):
-            fig_data.append(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=getattr(config, 'YELLOW_FLAG_COLOR', 'yellow'), width=getattr(config, 'YELLOW_FLAG_WIDTH', 4)), name=f"{config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}", hoverinfo='name', opacity=getattr(config, 'YELLOW_FLAG_OPACITY', 0.7), visible=False))
+            fig_data.append(go.Scatter(x=[m['x'] for m in valid_lights], y=[m['y'] for m in valid_lights], mode='markers', marker=dict(size=getattr(constants, 'MARSHAL_MARKER_SIZE', 5), color=getattr(constants, 'MARSHAL_MARKER_COLOR', 'orange'), symbol='diamond'), name='Marshal Posts', hoverinfo='text', text=[f"M{m['number']}" for m in valid_lights]))
+        for i in range(constants.MAX_YELLOW_SECTOR_PLACEHOLDERS):
+            fig_data.append(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color=getattr(constants, 'YELLOW_FLAG_COLOR', 'yellow'), width=getattr(constants, 'YELLOW_FLAG_WIDTH', 4)), name=f"{constants.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}", hoverinfo='name', opacity=getattr(constants, 'YELLOW_FLAG_OPACITY', 0.7), visible=False))
         for car_num_str_init, driver_state_init in driver_list_snapshot.items():
             if not isinstance(driver_state_init, dict): continue
             tla_init = driver_state_init.get('Tla', car_num_str_init); team_color_hex_init = driver_state_init.get('TeamColour', '808080')
             if not team_color_hex_init.startswith('#'): team_color_hex_init = '#' + team_color_hex_init.replace("#", "")
             if len(team_color_hex_init) not in [4, 7]: team_color_hex_init = '#808080'
             racing_number_for_uid = driver_state_init.get('RacingNumber', car_num_str_init)
-            fig_data.append(go.Scatter(x=[None], y=[None], mode='markers+text', name=tla_init, uid=str(racing_number_for_uid), marker=dict(size=getattr(config, 'CAR_MARKER_SIZE', 8), color=team_color_hex_init, line=dict(width=1, color='Black')), textfont=dict(size=getattr(config, 'CAR_MARKER_TEXT_SIZE', 8), color='white'), textposition='middle right', hoverinfo='text', text=tla_init))
+            fig_data.append(go.Scatter(x=[None], y=[None], mode='markers+text', name=tla_init, uid=str(racing_number_for_uid), marker=dict(size=getattr(constants, 'CAR_MARKER_SIZE', 8), color=team_color_hex_init, line=dict(width=1, color='Black')), textfont=dict(size=getattr(constants, 'CAR_MARKER_TEXT_SIZE', 8), color='white'), textposition='middle right', hoverinfo='text', text=tla_init))
 
         fig_layout = go.Layout(
             template='plotly_dark', 
@@ -452,7 +451,7 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
                        autorange=False, 
                        automargin=True),
             showlegend=False, plot_bgcolor='rgb(30,30,30)', paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='white'), margin=config.TRACK_MAP_MARGINS,
+            font=dict(color='white'), margin=constants.TRACK_MAP_MARGINS,
             height=None, width=None, # Explicitly None for autosize
             annotations=[]
         )
@@ -509,20 +508,20 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
         logger.debug(f"Recalculated Placeholder Offset: {placeholder_trace_offset}. Active Yellows: {active_yellow_sectors_snapshot}")
 
         # First, reset all yellow flag placeholders to invisible
-        for i in range(config.MAX_YELLOW_SECTOR_PLACEHOLDERS):
+        for i in range(constants.MAX_YELLOW_SECTOR_PLACEHOLDERS):
             trace_index_for_placeholder = placeholder_trace_offset + i
             if trace_index_for_placeholder < len(figure_output.data) and \
-               figure_output.data[trace_index_for_placeholder].name.startswith(config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX) or \
+               figure_output.data[trace_index_for_placeholder].name.startswith(constants.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX) or \
                figure_output.data[trace_index_for_placeholder].name.startswith("Yellow Sector"): # Catch renamed ones too
                 figure_output.data[trace_index_for_placeholder].x = [None]
                 figure_output.data[trace_index_for_placeholder].y = [None]
                 figure_output.data[trace_index_for_placeholder].visible = False
-                figure_output.data[trace_index_for_placeholder].name = f"{config.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}" # Reset name
+                figure_output.data[trace_index_for_placeholder].name = f"{constants.YELLOW_FLAG_PLACEHOLDER_NAME_PREFIX}{i}" # Reset name
 
         # Then, activate the current yellow sectors
         for sector_num_active in active_yellow_sectors_snapshot:
             placeholder_idx_for_sector = sector_num_active - 1 
-            if 0 <= placeholder_idx_for_sector < config.MAX_YELLOW_SECTOR_PLACEHOLDERS:
+            if 0 <= placeholder_idx_for_sector < constants.MAX_YELLOW_SECTOR_PLACEHOLDERS:
                 trace_index_to_update = placeholder_trace_offset + placeholder_idx_for_sector
                 if trace_index_to_update < len(figure_output.data): 
                     segment_indices = cached_data['marshal_sector_segments'].get(sector_num_active)
@@ -536,8 +535,8 @@ def initialize_track_map(n_intervals, expected_session_id, sidebar_toggled_signa
                                 figure_output.data[trace_index_to_update].visible = True
                                 figure_output.data[trace_index_to_update].name = f"Yellow Sector {sector_num_active}" # Rename active
                                 figure_output.data[trace_index_to_update].mode = 'lines' if len(x_seg) > 1 else 'markers'
-                                if len(x_seg) == 1 and hasattr(config, 'YELLOW_FLAG_MARKER_SIZE'): 
-                                    figure_output.data[trace_index_to_update].marker = dict(color=getattr(config, 'YELLOW_FLAG_COLOR', 'yellow'), size=getattr(config, 'YELLOW_FLAG_MARKER_SIZE', 8))
+                                if len(x_seg) == 1 and hasattr(constants, 'YELLOW_FLAG_MARKER_SIZE'): 
+                                    figure_output.data[trace_index_to_update].marker = dict(color=getattr(constants, 'YELLOW_FLAG_COLOR', 'yellow'), size=getattr(constants, 'YELLOW_FLAG_MARKER_SIZE', 8))
     # --- End yellow sector common logic ---
     
         logger.debug(f"'{func_name}' - Yellow flag processing: {time.monotonic() - yellow_flag_start_time:.4f}s")
@@ -596,7 +595,7 @@ def update_driver_dropdown_options(n_intervals):
     func_name = inspect.currentframe().f_code.co_name
     logger.debug(f"Callback '{func_name}' START")
     logger.debug("Attempting to update driver dropdown options...")
-    options = config.DROPDOWN_NO_DRIVERS_OPTIONS # Use constant
+    options = constants.DROPDOWN_NO_DRIVERS_OPTIONS # Use constant
     try:
         with session_state.lock:
             timing_state_copy = session_state.timing_state.copy()
@@ -605,7 +604,7 @@ def update_driver_dropdown_options(n_intervals):
         logger.debug(f"Updating driver dropdown options: {len(options)} options generated.")
     except Exception as e:
          logger.error(f"Error generating driver dropdown options: {e}", exc_info=True)
-         options = config.DROPDOWN_ERROR_LOADING_DRIVERS_OPTIONS # Use constant
+         options = constants.DROPDOWN_ERROR_LOADING_DRIVERS_OPTIONS # Use constant
     logger.debug(f"Callback '{func_name}' END. Took: {time.monotonic() - callback_start_time:.4f}s")
     return options, options, options
 
@@ -649,8 +648,8 @@ def update_lap_time_progression_chart(driver1_rno, driver2_rno, n_intervals, cur
     # -------------------------------------------------------------
 
     fig_empty_lap_prog = utils.create_empty_figure_with_message(
-        config.LAP_PROG_WRAPPER_HEIGHT, config.INITIAL_LAP_PROG_UIREVISION,
-        config.TEXT_LAP_PROG_SELECT_DRIVERS, config.LAP_PROG_MARGINS_EMPTY
+        constants.LAP_PROG_WRAPPER_HEIGHT, constants.INITIAL_LAP_PROG_UIREVISION,
+        constants.TEXT_LAP_PROG_SELECT_DRIVERS, constants.LAP_PROG_MARGINS_EMPTY
     )
 
     if not selected_drivers_rnos:
@@ -670,8 +669,8 @@ def update_lap_time_progression_chart(driver1_rno, driver2_rno, n_intervals, cur
 
     fig_with_data = go.Figure(layout={
         'template': 'plotly_dark', 'uirevision': data_plot_uirevision,
-        'height': config.LAP_PROG_WRAPPER_HEIGHT,
-        'margin': config.LAP_PROG_MARGINS_DATA,
+        'height': constants.LAP_PROG_WRAPPER_HEIGHT,
+        'margin': constants.LAP_PROG_MARGINS_DATA,
         'xaxis_title': 'Lap Number', 'yaxis_title': 'Lap Time (s)',
         'hovermode': 'x unified', 'title_text': 'Lap Time Progression', 'title_x':0.5, 'title_font_size':14,
         'showlegend':True, 'legend_title_text':'Drivers', 'legend_font_size':10,
@@ -733,7 +732,7 @@ def update_lap_time_progression_chart(driver1_rno, driver2_rno, n_intervals, cur
     logger.debug(f"'{func_name}' - Python Data Prep & Plotly Traces Added took: {time.monotonic() - python_and_plotly_prep_start_time:.4f}s")
 
     if not data_actually_plotted:
-        fig_empty_lap_prog.layout.annotations[0].text = config.TEXT_LAP_PROG_NO_DATA
+        fig_empty_lap_prog.layout.annotations[0].text = constants.TEXT_LAP_PROG_NO_DATA
         fig_empty_lap_prog.layout.uirevision = data_plot_uirevision 
         logger.debug(f"Callback '{func_name}' END_OVERALL (No data plotted). Total Took: {time.monotonic() - overall_callback_start_time:.4f}s")
         return fig_empty_lap_prog
