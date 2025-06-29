@@ -296,13 +296,16 @@ def start_background_services():
     recorder_thread.start()
 
     logger_main_module.info("Background services started.")
+
+# Start background services at the module level
+start_background_services()
+
 logger_main_module.info(
     f"To run with Waitress/Gunicorn, target this 'server' object: app_instance.server")
 
 
 # --- Main Execution Logic (for direct `python main.py` run) ---
 if __name__ == '__main__':
-    start_background_services()
     logger_main_module.info(
         f"Running Dash development server on http://{config.DASH_HOST}:{config.DASH_PORT}")
     logger_main_module.warning(
