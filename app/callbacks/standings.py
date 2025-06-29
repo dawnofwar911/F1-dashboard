@@ -49,6 +49,12 @@ def update_standings_tables(pathname, active_tab, n_intervals):
     is_live_session = session_state.app_status.get("state") == "Live"
     live_standings_data = session_state.live_standings
 
+    logger.debug(f"Standings Callback: is_live_session={is_live_session}, live_standings_data_present={live_standings_data is not None}")
+    if live_standings_data:
+        logger.debug(f"Standings Callback: live_standings_data keys: {live_standings_data.keys()}")
+        if 'drivers' in live_standings_data: logger.debug(f"Standings Callback: live_standings_data['drivers'] count: {len(live_standings_data.get('drivers'))}")
+        if 'teams' in live_standings_data: logger.debug(f"Standings Callback: live_standings_data['teams'] count: {len(live_standings_data.get('teams'))}")
+
     # --- Use Live Data if session is active AND live data has been received ---
     if is_live_session and live_standings_data:
         badge = dbc.Badge("Live Projection", color="danger", className="ms-2")

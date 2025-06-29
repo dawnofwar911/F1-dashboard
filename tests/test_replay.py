@@ -4,7 +4,7 @@ import datetime
 from pathlib import Path
 import threading
 
-from app import replay, app_state, config, utils
+from app import replay, app_state, constants, utils
 
 class TestReplay(unittest.TestCase):
 
@@ -44,7 +44,7 @@ class TestReplay(unittest.TestCase):
         }
         filename = replay.generate_live_filename_session(self.mock_session_state)
         # Fallback prefix is defined in config.py
-        expected_filename_prefix = config.LIVE_DATA_FILENAME_FALLBACK_PREFIX
+        expected_filename_prefix = constants.LIVE_DATA_FILENAME_FALLBACK_PREFIX
         self.assertTrue(filename.startswith(expected_filename_prefix))
         self.assertTrue(filename.endswith(".data.txt"))
 
@@ -76,7 +76,7 @@ class TestReplay(unittest.TestCase):
             mock_datetime.datetime.now.return_value = datetime.datetime(2025, 6, 28, 12, 0, 0, tzinfo=datetime.timezone.utc)
             mock_datetime.timezone = datetime.timezone
             filename = replay.generate_live_filename_session(self.mock_session_state)
-            expected_filename = f"{config.LIVE_DATA_FILENAME_FALLBACK_PREFIX}_20250628_120000UTC.data.txt"
+            expected_filename = f"{constants.LIVE_DATA_FILENAME_FALLBACK_PREFIX}_20250628_120000UTC.data.txt"
             self.assertEqual(filename, expected_filename)
 
 

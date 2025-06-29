@@ -16,3 +16,6 @@ LOG_REPLAY_FILE_STOP_MSG_PREFIX = "\n# Recording Stopped: "
 # Callback Logging Level (e.g., logging.INFO, logging.DEBUG, logging.WARNING)
 CALLBACK_LOG_LEVEL = logging.INFO
 
+# --- Session Management ---
+SESSION_TIMEOUT_HOURS = 1  # Sessions will be cleaned up after this many hours of inactivity
+

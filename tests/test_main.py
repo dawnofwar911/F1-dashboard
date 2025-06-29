@@ -10,7 +10,8 @@ thread_patcher = patch('threading.Thread')
 thread_patcher.start()
 
 # Now that threading.Thread is patched, we can safely import the main module.
-from app import main, app_state, config, schedule_page
+from app import main, app_state, schedule_page, settings
+from app import config # Keep config for other potential uses if any, but specifically import settings for SESSION_TIMEOUT_HOURS
 
 class TestMain(unittest.TestCase):
 
@@ -82,7 +83,7 @@ class TestMain(unittest.TestCase):
         # Create a stale session state object
         stale_session_id = "stale_session"
         stale_session_obj = MagicMock()
-        stale_session_obj.last_accessed_time = 1000 - (config.SESSION_TIMEOUT_HOURS * 3600) - 1 # Make it stale
+        stale_session_obj.last_accessed_time = 1000 - (settings.SESSION_TIMEOUT_HOURS * 3600) - 1 # Make it stale
 
         # Mock SESSIONS_STORE.items() to return our stale session
         with patch('main.app_state.SESSIONS_STORE', {stale_session_id: stale_session_obj}):

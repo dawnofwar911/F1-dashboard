@@ -5,38 +5,38 @@ import json
 import pandas as pd
 from pathlib import Path
 
-from app import utils, config
+from app import utils, constants, settings
 
 class TestUtils(unittest.TestCase):
 
-    @patch('utils.config.SETTINGS_FILE_PATH')
+    @patch('utils.settings.SETTINGS_FILE_PATH')
     @patch('builtins.open', new_callable=mock_open)
     @patch('json.load')
     def test_load_global_settings_file_exists(self, mock_json_load, mock_file_open, mock_settings_file_path):
         mock_settings_file_path.exists.return_value = True
         mock_json_load.return_value = {'record_live_sessions': True, 'theme': 'dark'}
 
-        settings = utils.load_global_settings()
+        loaded_settings = utils.load_global_settings()
 
         mock_settings_file_path.exists.assert_called_once()
         mock_file_open.assert_called_once_with(mock_settings_file_path, 'r')
         mock_json_load.assert_called_once_with(mock_file_open())
-        self.assertEqual(settings, {'record_live_sessions': True, 'theme': 'dark'})
+        self.assertEqual(loaded_settings, {'record_live_sessions': True, 'theme': 'dark'})
 
-    @patch('utils.config.SETTINGS_FILE_PATH')
+    @patch('utils.settings.SETTINGS_FILE_PATH')
     @patch('builtins.open', new_callable=mock_open)
     @patch('json.load', side_effect=json.JSONDecodeError("Test Error", "doc", 0))
     def test_load_global_settings_json_error(self, mock_json_load, mock_file_open, mock_settings_file_path):
         mock_settings_file_path.exists.return_value = True
 
-        settings = utils.load_global_settings()
+        loaded_settings = utils.load_global_settings()
 
         mock_settings_file_path.exists.assert_called_once()
         mock_file_open.assert_called_once_with(mock_settings_file_path, 'r')
         mock_json_load.assert_called_once_with(mock_file_open())
-        self.assertEqual(settings, {'record_live_sessions': False})
+        self.assertEqual(loaded_settings, {'record_live_sessions': False})
 
-    @patch('utils.config.SETTINGS_FILE_PATH')
+    @patch('utils.settings.SETTINGS_FILE_PATH')
     @patch('builtins.open', new_callable=mock_open)
     @patch('json.dump')
     def test_save_global_settings(self, mock_json_dump, mock_file_open, mock_settings_file_path):
@@ -48,12 +48,12 @@ class TestUtils(unittest.TestCase):
         mock_json_dump.assert_called_once_with(settings_to_save, mock_file_open(), indent=4)
 
     def test_convert_kph_to_mph_single_value(self):
-        config.KPH_TO_MPH_FACTOR = 0.621371
+        settings.KPH_TO_MPH_FACTOR = 0.621371
         self.assertAlmostEqual(utils.convert_kph_to_mph(100), 62.1371)
         self.assertAlmostEqual(utils.convert_kph_to_mph(0), 0)
 
     def test_convert_kph_to_mph_list(self):
-        config.KPH_TO_MPH_FACTOR = 0.621371
+        settings.KPH_TO_MPH_FACTOR = 0.621371
         result = utils.convert_kph_to_mph([100, 200, 50])
         self.assertIsInstance(result, list)
         self.assertAlmostEqual(result[0], 62.1371)
@@ -61,7 +61,7 @@ class TestUtils(unittest.TestCase):
         self.assertAlmostEqual(result[2], 31.06855)
 
     def test_convert_kph_to_mph_pandas_series(self):
-        config.KPH_TO_MPH_FACTOR = 0.621371
+        settings.KPH_TO_MPH_FACTOR = 0.621371
         series = pd.Series([100, 200, 50])
         result = utils.convert_kph_to_mph(series)
         self.assertIsInstance(result, pd.Series)
@@ -80,13 +80,13 @@ class TestUtils(unittest.TestCase):
             self.assertIn("received an unexpected type", cm.output[0])
 
     def test_determine_session_type_from_name(self):
-        self.assertEqual(utils.determine_session_type_from_name("Free Practice 1"), config.SESSION_TYPE_PRACTICE)
-        self.assertEqual(utils.determine_session_type_from_name("Qualifying"), config.SESSION_TYPE_QUALI)
-        self.assertEqual(utils.determine_session_type_from_name("Sprint Race"), config.SESSION_TYPE_SPRINT)
+        self.assertEqual(utils.determine_session_type_from_name("Free Practice 1"), constants.SESSION_TYPE_PRACTICE)
+        self.assertEqual(utils.determine_session_type_from_name("Qualifying"), constants.SESSION_TYPE_QUALI)
+        self.assertEqual(utils.determine_session_type_from_name("Sprint Race"), constants.SESSION_TYPE_SPRINT)
         self.assertEqual(utils.determine_session_type_from_name("Grand Prix"), "Unknown")
         self.assertEqual(utils.determine_session_type_from_name("Unknown Session"), "Unknown")
         self.assertEqual(utils.determine_session_type_from_name("Pre-Race Show"), "Unknown")
-        self.assertEqual(utils.determine_session_type_from_name("Sprint Qualifying"), config.SESSION_TYPE_QUALI)
+        self.assertEqual(utils.determine_session_type_from_name("Sprint Qualifying"), constants.SESSION_TYPE_QUALI)
 
     def test_prepare_session_info_data_new_session(self):
         session_info_data = {"Type": "Race", "Meeting": {"Name": "Test Grand Prix", "Circuit": {"Key": 1234}}, "StartDate": "2025-01-01T00:00:00Z"}
@@ -101,21 +101,21 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(details["Type"], "Qualifying")
         self.assertTrue(flags["reset_q_and_practice"])
 
-    @patch('utils.config.SETTINGS_FILE_PATH')
+    @patch('utils.settings.SETTINGS_FILE_PATH')
     def test_load_global_settings_file_not_found(self, mock_settings_file_path):
         mock_settings_file_path.exists.return_value = False
-        settings = utils.load_global_settings()
-        self.assertEqual(settings, config.DEFAULT_GLOBAL_SETTINGS)
+        loaded_settings = utils.load_global_settings()
+        self.assertEqual(loaded_settings, settings.DEFAULT_GLOBAL_SETTINGS)
 
-    @patch('utils.config.SETTINGS_FILE_PATH')
+    @patch('utils.settings.SETTINGS_FILE_PATH')
     @patch('builtins.open', new_callable=mock_open)
     @patch('json.load', side_effect=IOError("Can't read"))
     def test_load_global_settings_io_error(self, mock_json_load, mock_file_open, mock_settings_file_path):
         mock_settings_file_path.exists.return_value = True
-        settings = utils.load_global_settings()
-        self.assertEqual(settings, config.DEFAULT_GLOBAL_SETTINGS)
+        loaded_settings = utils.load_global_settings()
+        self.assertEqual(loaded_settings, settings.DEFAULT_GLOBAL_SETTINGS)
 
-    @patch('utils.config.SETTINGS_FILE_PATH')
+    @patch('utils.settings.SETTINGS_FILE_PATH')
     @patch('builtins.open', new_callable=mock_open)
     @patch('json.dump', side_effect=IOError("Can't write"))
     def test_save_global_settings_io_error(self, mock_json_dump, mock_file_open, mock_settings_file_path):
@@ -123,15 +123,15 @@ class TestUtils(unittest.TestCase):
             utils.save_global_settings({'record_live_sessions': True})
             self.assertIn("Error saving settings file", cm.output[0])
 
-    @patch('utils.config.SETTINGS_FILE_PATH')
+    @patch('utils.settings.SETTINGS_FILE_PATH')
     @patch('builtins.open', mock_open(read_data='{"theme": "dark"}'))
     @patch('json.load', return_value={'theme': 'dark'})
     def test_load_global_settings_partial_data(self, mock_json_load, mock_settings_file_path):
         mock_settings_file_path.exists.return_value = True
-        settings = utils.load_global_settings()
-        expected_settings = config.DEFAULT_GLOBAL_SETTINGS.copy()
+        loaded_settings = utils.load_global_settings()
+        expected_settings = settings.DEFAULT_GLOBAL_SETTINGS.copy()
         expected_settings.update({'theme': 'dark'})
-        self.assertEqual(settings, expected_settings)
+        self.assertEqual(loaded_settings, expected_settings)
 
     
 
