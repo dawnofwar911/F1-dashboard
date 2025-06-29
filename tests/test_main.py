@@ -1,11 +1,23 @@
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
+import threading
 import time
 import os
 
-from app import main, app_state, utils, config, schedule_page
+# Patch threading.Thread at the module level before main is imported.
+# This prevents the background services from starting real threads during testing.
+thread_patcher = patch('threading.Thread')
+thread_patcher.start()
+
+# Now that threading.Thread is patched, we can safely import the main module.
+from app import main, app_state, config, schedule_page
 
 class TestMain(unittest.TestCase):
+
+    @classmethod
+    def tearDownClass(cls):
+        # Stop the module-level patcher after all tests in the class have run.
+        thread_patcher.stop()
 
     def setUp(self):
         # Set up a temporary directory for recordings
