@@ -15,7 +15,7 @@ import queue  # For queue.Empty
 from pathlib import Path
 import math
 from typing import Any, Optional, List, Dict
-# import re # Not used in the provided code
+import re # Added for regex
 
 # Import shared state and config
 import app_state  # For app_state.SessionState type hint and get_or_create_session_state if needed by callers
@@ -34,38 +34,63 @@ logger = logging.getLogger("F1App.Replay")  # Module-level logger
 def generate_live_filename_session(session_state: 'app_state.SessionState') -> str:
     """
     Generates a filename for live recording based on the given session's details.
-    Format: {year}-{circuit}-{session}.data.txt
+    Format: {year}-{circuit}-{session_type_short}_{timestamp}.data.txt
     """
     with session_state.lock:
         s_details = session_state.session_details
-        year = s_details.get('Year')
         
-        # --- START: CORRECTED KEY ACCESS ---
-        # Get the circuit name from the 'Meeting' dictionary
+        # Prioritize Year from session_details, fallback to StartDate
+        year = s_details.get('Year')
+        start_date_str = s_details.get('StartDate')
+        if year is None and start_date_str:
+            try:
+                year = datetime.datetime.fromisoformat(start_date_str.replace('Z', '+00:00')).year
+            except ValueError:
+                year = None
+
         circuit_name = s_details.get('Meeting', {}).get('Name')
-        # Get the session name from the 'Name' key
-        session_name = s_details.get('Name')
-        # --- END: CORRECTED KEY ACCESS ---
+        session_type_full = s_details.get('Type') # e.g., "Practice 1 (FP1)"
+        session_name_from_details = s_details.get('Name') # e.g., "Practice 1"
 
     sess_id_log = session_state.session_id[:8]
 
-    if not all([year, circuit_name, session_name]):
-        timestamp = datetime.datetime.now(
-            timezone.utc).strftime("%Y%m%d_%H%M%S%Z")
-        fallback_name = f"{config.LIVE_DATA_FILENAME_FALLBACK_PREFIX}_{timestamp}.data.txt"
+    # Determine the timestamp suffix
+    timestamp_dt = None
+    if start_date_str:
+        timestamp_dt = utils.parse_iso_timestamp_safe(start_date_str)
+    if timestamp_dt is None:
+        timestamp_dt = datetime.datetime.now(timezone.utc)
+    
+    timestamp_suffix = timestamp_dt.strftime("%Y%m%d_%H%M%SUTC") # Always UTC
+
+    # Extract short session type (e.g., FP1 from "Practice 1 (FP1)")
+    session_type_short = ""
+    if session_type_full:
+        match = re.search(r'\((.*?)\)', session_type_full)
+        if match:
+            session_type_short = match.group(1)
+        elif session_name_from_details: # Fallback to session name if no short type in parentheses
+            session_type_short = session_name_from_details
+        else:
+            session_type_short = session_type_full # Use full type if no other option
+    elif session_name_from_details:
+        session_type_short = session_name_from_details
+    
+    # Sanitize components
+    s_year = str(year) if year else "UnknownYear"
+    s_circuit = utils.sanitize_filename(str(circuit_name)) if circuit_name else "UnknownCircuit"
+    s_session_type = utils.sanitize_filename(str(session_type_short)) if session_type_short else "UnknownSession"
+
+    # Construct final filename
+    if not all([year, circuit_name, session_type_short]):
+        fallback_name = f"{config.LIVE_DATA_FILENAME_FALLBACK_PREFIX}_{timestamp_suffix}.data.txt"
         logger.warning(
-            f"Session {sess_id_log}: Missing details for structured filename (Year: {year}, Circuit: {circuit_name}, Session: {session_name}). "
+            f"Session {sess_id_log}: Missing details for structured filename (Year: {year}, Circuit: {circuit_name}, Session Type: {session_type_full}). "
             f"Using fallback: {fallback_name}"
         )
         return fallback_name
 
-    s_year = str(year)
-    s_circuit = utils.sanitize_filename(str(circuit_name))
-    s_session = utils.sanitize_filename(str(session_name))
-    
-    timestamp_suffix = datetime.datetime.now(
-        timezone.utc).strftime("%Y%m%d_%H%M%S%Z")
-    final_filename = f"{s_year}-{s_circuit}-{s_session}_{timestamp_suffix}.data.txt"
+    final_filename = f"{s_year}-{s_circuit}-{s_session_type}_{timestamp_suffix}.data.txt"
     logger.info(
         f"Session {sess_id_log}: Generated live filename: {final_filename}")
     return final_filename

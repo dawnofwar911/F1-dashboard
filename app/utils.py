@@ -835,17 +835,32 @@ def _background_track_fetch_and_update_session(session_key: str, year: Optional[
         f"Background track fetch finished for session_key: {session_key}.")
 
 
+
+
+
+
+
+import unicodedata
+
 def sanitize_filename(name: Any) -> str:
-    # (Your existing sanitize_filename - seems okay)
+    """
+    Sanitizes a string to be used as a safe filename component.
+    Replaces invalid characters with underscores and handles multiple underscores.
+    Converts Unicode characters to ASCII equivalents.
+    """
     if not name:
         return "Unknown"
     name_str = str(name).strip()
-    name_str = re.sub(r'[\\/:*?"<>|\s\-\:\.,\(\)]+', '_',
-                      name_str)  # Added colon, comma, parentheses
+    
+    # Normalize Unicode characters to their closest ASCII equivalents
+    name_str = unicodedata.normalize('NFKD', name_str).encode('ascii', 'ignore').decode('utf-8')
+
+    # Replace invalid characters with underscores
+    name_str = re.sub(r'[\\/:*?"<>|\s\-:\.,\(\)]+', '_', name_str)
     # Remove any remaining non-alphanumeric (excluding underscore)
     name_str = re.sub(r'[^\w_]+', '', name_str)
-    name_str = re.sub(r'_+', '_', name_str)  # Consolidate multiple underscores
-    name_str = name_str.strip('_')
+    # Consolidate multiple underscores and strip leading/trailing underscores
+    name_str = re.sub(r'_+', '_', name_str).strip('_')
     return name_str if name_str else "InvalidName"
 
 

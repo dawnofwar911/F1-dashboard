@@ -88,5 +88,20 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(utils.determine_session_type_from_name("Pre-Race Show"), "Unknown")
         self.assertEqual(utils.determine_session_type_from_name("Sprint Qualifying"), config.SESSION_TYPE_QUALI)
 
+    def test_prepare_session_info_data_new_session(self):
+        session_info_data = {"Type": "Race", "Meeting": {"Name": "Test Grand Prix", "Circuit": {"Key": 1234}}, "StartDate": "2025-01-01T00:00:00Z"}
+        details, flags, _, _ = utils.prepare_session_info_data(session_info_data, "", None, None)
+        self.assertEqual(details["Type"], "Race")
+        self.assertEqual(details["SessionKey"], "2025_1234")
+        self.assertTrue(flags["reset_q_and_practice"])
+
+    def test_prepare_session_info_data_session_change(self):
+        session_info_data = {"Type": "Qualifying", "SessionKey": "5678", "Meeting": {"Name": "Test Grand Prix"}}
+        details, flags, _, _ = utils.prepare_session_info_data(session_info_data, "Race", "1234", None)
+        self.assertEqual(details["Type"], "Qualifying")
+        self.assertTrue(flags["reset_q_and_practice"])
+
+    
+
 if __name__ == '__main__':
     unittest.main()

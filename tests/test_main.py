@@ -52,7 +52,7 @@ class TestMain(unittest.TestCase):
         mock_session_state = MagicMock()
         mock_get_or_create_session_state.return_value = mock_session_state
 
-        # Patch CURRENT_LIVE_SESSION_INFO and CURRENT_LIVE_SESSION_INFO_LOCK within the test
+        # Patch CURRENT_LIVE_SESSION_INFO and CURRENT_LIVE_INFO_LOCK within the test
         with patch('main.app_state.CURRENT_LIVE_SESSION_INFO', None), \
              patch('main.app_state.CURRENT_LIVE_SESSION_INFO_LOCK'):
             # Run the recorder service, expecting it to be interrupted by mock_sleep
@@ -83,6 +83,11 @@ class TestMain(unittest.TestCase):
 
             # Check that the stale session was removed
             mock_remove_session_state.assert_called_with(stale_session_id)
+
+    def test_main_index_route(self):
+        with main.app.server.test_client() as client:
+            response = client.get('/')
+            self.assertEqual(response.status_code, 200)
 
 if __name__ == '__main__':
     unittest.main()
