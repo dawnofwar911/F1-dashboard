@@ -18,7 +18,7 @@ class TestDataProcessing(unittest.TestCase):
         self.mock_session_state = app_state.SessionState(session_id="test_session_123")
         self.mock_session_state.data_queue = self.data_queue  # Use real queue
         self.mock_session_state.stop_event = self.stop_event  # Use real event
-        self.mock_session_state.lock = threading.Lock() # Use a real lock for thread safety
+        self.mock_session_state.lock = threading.RLock() # Use a real lock for thread safety
         # Manually set other attributes that are not initialized by default in SessionState
         self.mock_session_state.app_status = {}
         self.mock_session_state.team_radio_messages = MagicMock()
@@ -39,6 +39,17 @@ class TestDataProcessing(unittest.TestCase):
         self.mock_session_state.current_recording_filename = None
         self.mock_session_state.all_pit_stop_durations = {}
         self.mock_session_state.lap_time_history = {}
+
+        # Add a dummy driver to timing_state for tests that require it
+        self.mock_session_state.timing_state = {
+            "1": {
+                "RacingNumber": "1",
+                "PositionData": {},
+                "PreviousPositionData": {},
+                "CarData": {},
+                "NumberOfLaps": 0
+            }
+        }
 
     def tearDown(self):
         # Ensure the processing thread is stopped and joined
@@ -388,32 +399,51 @@ class TestDataProcessing(unittest.TestCase):
         self.assertEqual(len(self.mock_session_state.driver_stint_data["16"]), 2)
         self.assertEqual(self.mock_session_state.driver_stint_data["16"][1]['tyre_age_at_stint_start'], 10)
 
-    @patch('app.data_processing.utils.prepare_position_data_updates')
-    @patch('app.data_processing.utils.prepare_car_data_updates')
-    def test_data_processing_loop_dispatches_position_and_car_data(self, mock_prepare_car_data, mock_prepare_position_data):
-        self.mock_session_state.data_queue.put({"stream": "Position", "data": {"some": "pos_data"}, "timestamp": "ts1"})
-        self.mock_session_state.data_queue.put({"stream": "CarData", "data": {"some": "car_data"}, "timestamp": "ts2"})
-        
-        mock_prepare_position_data.return_value = {}
-        mock_prepare_car_data.return_value = ({}, {})
-
-        # Run the loop in a separate thread
-        processing_thread = threading.Thread(target=data_processing.data_processing_loop_session, args=(self.mock_session_state,))
-        processing_thread.start()
-
-        # Wait for mocks to be called, with a timeout to prevent hanging
-        timeout = 5  # seconds
-        start_time = time.time()
-        while not (mock_prepare_position_data.called and mock_prepare_car_data.called) and (time.time() - start_time < timeout):
-            time.sleep(0.1) # Wait a bit before checking again
-
-        # Signal the processing thread to stop
-        self.mock_session_state.stop_event.set()
-        processing_thread.join(timeout=1) # Give the thread a short time to finish
-
-        # Assert that the mocks were called
-        mock_prepare_position_data.assert_called_once()
-        mock_prepare_car_data.assert_called_once()
-
-        mock_prepare_position_data.assert_called_once()
-        mock_prepare_car_data.assert_called_once()
+    def test_data_processing_loop_dispatches_position_and_car_data(self):
+        # --- Test Setup ---
+        position_data_processed = threading.Event()
+        car_data_processed = threading.Event()
+    
+        # Mock processor for "Position"
+        def mock_position_processor(session_state, data):
+            position_data_processed.set()  # Signal that this was called
+    
+        # Mock processor for "CarData"
+        def mock_car_data_processor(session_state, data):
+            car_data_processed.set()  # Signal that this was called
+    
+        # Use patch.dict to temporarily replace the real processors.
+        # The patch will now remain active until the thread is fully joined.
+        with patch.dict(data_processing.STREAM_PROCESSORS, {
+            'Position': mock_position_processor,
+            'CarData': mock_car_data_processor,
+        }):
+            # --- Action ---
+            self.mock_session_state.data_queue.put({"stream": "Position", "data": {"some": "pos_data"}, "timestamp": "ts1"})
+            self.mock_session_state.data_queue.put({"stream": "CarData", "data": {"some": "car_data"}, "timestamp": "ts2"})
+    
+            processing_thread = threading.Thread(
+                target=data_processing.data_processing_loop_session,
+                args=(self.mock_session_state,)
+            )
+            self.mock_session_state.data_processing_thread = processing_thread
+            processing_thread.start()
+    
+            # --- Assertion ---
+            timeout = 5  # seconds
+            position_processed_successfully = position_data_processed.wait(timeout)
+            car_processed_successfully = car_data_processed.wait(timeout)
+    
+            # Signal the processing thread to stop and clean up
+            self.mock_session_state.stop_event.set()
+            # IMPORTANT: The join call is now INSIDE the with block
+            processing_thread.join(timeout=2)
+    
+            # Assert that both events were set
+            self.assertTrue(position_processed_successfully, "The mock 'Position' processor was not called within the timeout.")
+            self.assertTrue(car_processed_successfully, "The mock 'CarData' processor was not called within the timeout.")
+            
+            # Verify the thread terminated cleanly
+            self.assertFalse(processing_thread.is_alive(), "The data processing thread did not terminate.")
+    
+            

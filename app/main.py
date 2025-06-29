@@ -298,8 +298,9 @@ def start_background_services():
     logger_main_module.info("Background services started.")
 
 # Start background services at the module level
-start_background_services()
-
+if os.environ.get('F1_DASHBOARD_IS_TESTING') != 'True':
+    start_background_services()
+    
 logger_main_module.info(
     f"To run with Waitress/Gunicorn, target this 'server' object: app_instance.server")
 

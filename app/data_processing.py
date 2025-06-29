@@ -973,6 +973,46 @@ def _process_championship_prediction(session_state: app_state.SessionState, data
         'teams': processed_teams
     }
 
+def _process_position_data(session_state: app_state.SessionState, data: Dict[str, Any]):
+    sess_id_log = session_state.session_id[:8]
+    logger.debug(f"Session {sess_id_log}: Processing Position stream.")
+    
+    current_timing_state_snapshot = {
+        k: {'PositionData': v.get('PositionData', {}), 'PreviousPositionData': v.get('PreviousPositionData', {})}
+        for k, v in session_state.timing_state.items()
+    }
+    
+    position_batch_updates = utils.prepare_position_data_updates(data, current_timing_state_snapshot)
+    
+    for car_n_str, updates in position_batch_updates.items():
+        if car_n_str in session_state.timing_state:
+            session_state.timing_state[car_n_str]['PreviousPositionData'] = updates['PreviousPositionData']
+            session_state.timing_state[car_n_str]['PositionData'] = updates['PositionData']
+            
+def _process_car_data(session_state: app_state.SessionState, data: Dict[str, Any]):
+    sess_id_log = session_state.session_id[:8]
+    logger.debug(f"Session {sess_id_log}: Processing CarData stream.")
+
+    current_timing_state_snapshot = {
+        k: {'NumberOfLaps': v.get('NumberOfLaps', -1)}
+        for k, v in session_state.timing_state.items()
+    }
+
+    car_specific_updates, telemetry_updates = utils.prepare_car_data_updates(data, current_timing_state_snapshot)
+
+    for car_n_str, updates in car_specific_updates.items():
+        if car_n_str in session_state.timing_state and 'CarData' in updates:
+            session_state.timing_state[car_n_str].setdefault('CarData', {}).update(updates['CarData'])
+            
+    for (car_n_str, lap_n), telem_upd in telemetry_updates.items():
+        lap_data = session_state.telemetry_data.setdefault(car_n_str, {}).setdefault(
+            lap_n, {'Timestamps': [], **{k_map: [] for k_map in constants.CHANNEL_MAP.values()}}
+        )
+        lap_data['Timestamps'].extend(telem_upd['Timestamps'])
+        for ch_key_map in constants.CHANNEL_MAP.values():
+            lap_data[ch_key_map].extend(telem_upd[ch_key_map])
+
+
 # --- Main Processing Loop (Session-Aware) ---
 
 
@@ -1000,6 +1040,7 @@ def data_processing_loop_session(session_state: app_state.SessionState):
             stream_name = item['stream']
             actual_data = item['data']
             timestamp = item.get('timestamp')
+            logger.debug(f"Session {sess_id_log}: Processing stream: {stream_name}")
 
             if timestamp:
                 msg_dt = utils.parse_iso_timestamp_safe(timestamp)
@@ -1012,41 +1053,15 @@ def data_processing_loop_session(session_state: app_state.SessionState):
                 session_state._pending_background_fetch = None
 
                 try:
+                    # UNIFIED LOGIC: Look up the processor for the stream name
                     processor = STREAM_PROCESSORS.get(stream_name)
                     if processor:
-                        # These streams use timestamp as a third argument
+                        logger.debug(f"Session {sess_id_log}: Found processor for stream '{stream_name}'.")
+                        # Pass timestamp to streams that need it
                         if stream_name in ["Heartbeat", "ExtrapolatedClock", "SessionInfo", "TimingData"]:
                             processor(session_state, actual_data, timestamp)
                         else:
                             processor(session_state, actual_data)
-                    elif stream_name == "Position":
-                        # Position data prep uses a snapshot, so get snapshot then call prepare
-                        current_timing_state_snapshot_for_pos = {k: {'PositionData': v.get('PositionData', {}), 'PreviousPositionData': v.get('PreviousPositionData', {}) } 
-                                                                 for k, v in session_state.timing_state.items()}
-                        position_batch_updates = utils.prepare_position_data_updates(
-                            actual_data, current_timing_state_snapshot_for_pos)  # type: ignore
-                        for car_n_str, updates in position_batch_updates.items():
-                            if car_n_str in session_state.timing_state:
-                                session_state.timing_state[car_n_str]['PreviousPositionData'] = updates['PreviousPositionData']
-                                session_state.timing_state[car_n_str]['PositionData'] = updates['PositionData']
-                    elif stream_name == "CarData":
-                        current_timing_state_snapshot_for_car = {k: {'NumberOfLaps': v.get('NumberOfLaps', -1)}
-                                                                 for k, v in session_state.timing_state.items()}
-                        car_specific_updates, telemetry_updates = utils.prepare_car_data_updates(
-                            actual_data, current_timing_state_snapshot_for_car)  # type: ignore
-                        for car_n_str, updates in car_specific_updates.items():
-                            if car_n_str in session_state.timing_state:
-                                if 'CarData' in updates:
-                                    session_state.timing_state[car_n_str].setdefault(
-                                        'CarData', {}).update(updates['CarData'])
-                        for (car_n_str, lap_n), telem_upd in telemetry_updates.items():
-                            session_state.telemetry_data.setdefault(car_n_str, {}).setdefault(
-                                lap_n, {'Timestamps': [], **{k_map: [] for k_map in constants.CHANNEL_MAP.values()}})
-                            session_state.telemetry_data[car_n_str][lap_n]['Timestamps'].extend(
-                                telem_upd['Timestamps'])
-                            for ch_key_map in constants.CHANNEL_MAP.values():
-                                session_state.telemetry_data[car_n_str][lap_n][ch_key_map].extend(
-                                    telem_upd[ch_key_map])
                     else:
                         logger.debug(f"No specific processor for stream: {stream_name}")
                 except Exception as proc_ex:
@@ -1089,7 +1104,7 @@ def data_processing_loop_session(session_state: app_state.SessionState):
                     session_state.data_queue.task_done()
                 except ValueError:
                     pass 
-            time.sleep(0.1)
+            # time.sleep(0.1)
 
     logger.info(
         f"Data processing thread for session {sess_id_log} finished. Stop_event: {session_state.stop_event.is_set()}")
@@ -1109,6 +1124,8 @@ STREAM_PROCESSORS = {
     "SessionData": _process_session_data,
     "TimingData": _process_timing_data,
     "ChampionshipPrediction": _process_championship_prediction,
+    "Position": _process_position_data,
+    "CarData": _process_car_data,
 }
 
 
