@@ -42,9 +42,89 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
+import os
+import sys # Added for logging setup
+
 logger = logging.getLogger("F1App.Utils")
 
+def setup_logging():
+    log_formatter = logging.Formatter(config.LOG_FORMAT_DEFAULT)
+    actual_root_logger = logging.getLogger()
+    actual_root_logger.setLevel(logging.INFO)
+    if actual_root_logger.hasHandlers():
+        actual_root_logger.handlers.clear()
+    root_console_handler = logging.StreamHandler(sys.stdout)
+    root_console_handler.setFormatter(log_formatter)
+    actual_root_logger.addHandler(root_console_handler)
+
+    # Add a file handler to the root logger
+    log_file_path = os.path.join(os.path.dirname(__file__), 'f1_dashboard.log')
+    root_file_handler = logging.FileHandler(log_file_path, mode='a')
+    root_file_handler.setFormatter(log_formatter)
+    actual_root_logger.addHandler(root_file_handler)
+
+    f1_app_logger = logging.getLogger("F1App")
+    f1_app_logger.setLevel(logging.INFO)
+    f1_app_logger.propagate = True
+
+    # Logger for per-session auto-connect (will be dynamically named)
+    # For general auto-connect config/module logging:
+    logging.getLogger("F1App.AutoConnect").setLevel(logging.DEBUG)
+    logging.getLogger("F1App.SessionID").setLevel(logging.INFO)
+
+    logging.getLogger("SignalRCoreClient").setLevel(logging.WARNING)
+    logging.getLogger("signalrcore").setLevel(logging.WARNING)
+
+    # Set level for callbacks.data_displays early
+    logging.getLogger("callbacks.data_displays").setLevel(logging.INFO)
+
+    werkzeug_logger = logging.getLogger('werkzeug')
+    werkzeug_logger.setLevel(
+        logging.ERROR if not config.DASH_DEBUG_MODE else logging.INFO)
+    werkzeug_logger.propagate = True
+    if werkzeug_logger.hasHandlers():
+        werkzeug_logger.handlers.clear()
+
+    logging.getLogger('requests').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    logging.getLogger('fastf1').setLevel(logging.INFO)
+
+
+
 # --- Utility Functions (Many can remain as is if they are pure or use config) ---
+
+def load_global_settings():
+    """
+    Loads global settings from settings.json, merging them with defaults
+    from config.py to ensure all settings are present.
+    """
+    # Start with a copy of the defaults
+    settings = config.DEFAULT_GLOBAL_SETTINGS.copy()
+
+    if not config.SETTINGS_FILE_PATH.exists():
+        # If the file doesn't exist, return the defaults
+        return settings
+
+    try:
+        with open(config.SETTINGS_FILE_PATH, 'r') as f:
+            user_settings = json.load(f)
+            # Update the defaults with the user's settings
+            if isinstance(user_settings, dict):
+                settings.update(user_settings)
+    except (IOError, json.JSONDecodeError) as e:
+        logger.error(f"Error loading settings file, using defaults: {e}")
+        # In case of error, we still return the default settings
+        return config.DEFAULT_GLOBAL_SETTINGS.copy()
+
+    return settings
+
+def save_global_settings(settings):
+    """Saves the global settings dictionary to settings.json."""
+    try:
+        with open(config.SETTINGS_FILE_PATH, 'w') as f:
+            json.dump(settings, f, indent=4)
+    except IOError as e:
+        logger.error(f"Error saving settings file: {e}")
 
 def create_telemetry_comparison_chart(session, driver1_tla, lap1_num, driver2_tla, lap2_num, use_mph=False):
     """
@@ -768,17 +848,32 @@ def _background_track_fetch_and_update_session(session_key: str, year: Optional[
         f"Background track fetch finished for session_key: {session_key}.")
 
 
+
+
+
+
+
+import unicodedata
+
 def sanitize_filename(name: Any) -> str:
-    # (Your existing sanitize_filename - seems okay)
+    """
+    Sanitizes a string to be used as a safe filename component.
+    Replaces invalid characters with underscores and handles multiple underscores.
+    Converts Unicode characters to ASCII equivalents.
+    """
     if not name:
         return "Unknown"
     name_str = str(name).strip()
-    name_str = re.sub(r'[\\/:*?"<>|\s\-\:\.,\(\)]+', '_',
-                      name_str)  # Added colon, comma, parentheses
+    
+    # Normalize Unicode characters to their closest ASCII equivalents
+    name_str = unicodedata.normalize('NFKD', name_str).encode('ascii', 'ignore').decode('utf-8')
+
+    # Replace invalid characters with underscores
+    name_str = re.sub(r'[\\/:*?"<>|\s\-:\.,\(\)]+', '_', name_str)
     # Remove any remaining non-alphanumeric (excluding underscore)
     name_str = re.sub(r'[^\w_]+', '', name_str)
-    name_str = re.sub(r'_+', '_', name_str)  # Consolidate multiple underscores
-    name_str = name_str.strip('_')
+    # Consolidate multiple underscores and strip leading/trailing underscores
+    name_str = re.sub(r'_+', '_', name_str).strip('_')
     return name_str if name_str else "InvalidName"
 
 

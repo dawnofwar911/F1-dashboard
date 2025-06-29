@@ -8,6 +8,7 @@ import collections  # For collections.deque
 import logging
 from copy import deepcopy
 import uuid
+import time
 import flask  # Required for accessing Flask's session object
 from typing import Dict, Optional, Set, Deque, List, Any  # Import necessary types
 
@@ -25,6 +26,9 @@ INITIAL_SESSION_APP_STATUS: Dict[str, Any] = {  # Added type hint
     "auto_connected_session_identifier": None,
     "auto_connected_session_end_detected_utc": None,
 }
+
+CURRENT_LIVE_SESSION_INFO: Optional[Dict] = None
+CURRENT_LIVE_SESSION_INFO_LOCK: threading.Lock = threading.Lock()
 
 INITIAL_SESSION_DATA_STORE: Dict = {}  # Example type hint
 INITIAL_SESSION_TIMING_STATE: Dict = {}
@@ -66,6 +70,7 @@ INITIAL_DRIVER_INFO: Dict = {}
 class SessionState:
     def __init__(self, session_id: str):
         self.session_id: str = session_id
+        self.last_accessed_time: float = time.time()
         self.lock: threading.RLock = threading.RLock()
 
         self.app_status: Dict[str, Any] = deepcopy(INITIAL_SESSION_APP_STATUS)
@@ -131,6 +136,7 @@ class SessionState:
 
         # Assuming driver number as str
         self.selected_driver_for_map_and_lap_chart: Optional[str] = None
+        self.all_pit_stop_durations: Dict[str, List[float]] = {}
 
         self.connection_thread: Optional[threading.Thread] = None  # CORRECTED
         # Replace Any with actual HubConnection type if available
@@ -215,6 +221,61 @@ class SessionState:
             logger.info(
                 f"Session {self.session_id}: State variables have been reset to defaults.")
 
+    def stop_all_threads(self):
+        """
+        Signals all active threads associated with this session to stop and attempts to join them.
+        This method should be called before resetting the session state or removing the session.
+        """
+        sess_id_log = self.session_id[:8]
+        logger.info(f"Session {sess_id_log}: Signalling all threads to stop...")
+        self.stop_event.set() # Signal all threads to stop
+
+        threads_to_join = [
+            ("SignalR Connection", self.connection_thread),
+            ("Replay", self.replay_thread),
+            ("Data Processing", self.data_processing_thread),
+            ("Auto-Connect Monitor", self.auto_connect_thread),
+            ("Track Data Fetch", self.track_data_fetch_thread),
+        ]
+
+        # Stop hub connection directly if it exists
+        if self.hub_connection:
+            try:
+                logger.debug(f"Session {sess_id_log}: Attempting to stop session's hub_connection directly.")
+                self.hub_connection.stop()
+            except Exception as e_hub_stop:
+                logger.error(f"Session {sess_id_log}: Error stopping session's hub_connection: {e_hub_stop}")
+
+        for thread_name, thread_obj in threads_to_join:
+            if thread_obj and thread_obj.is_alive():
+                logger.info(f"Session {sess_id_log}: Waiting for {thread_name} thread ({thread_obj.name}) to join...")
+                thread_obj.join(timeout=5.0) # Give threads a chance to finish
+                if thread_obj.is_alive():
+                    logger.warning(f"Session {sess_id_log}: Thread {thread_obj.name} did not exit cleanly.")
+                else:
+                    logger.info(f"Session {sess_id_log}: Thread {thread_obj.name} joined successfully.")
+            else:
+                logger.debug(f"Session {sess_id_log}: {thread_name} thread is not active or already stopped.")
+        
+        # Clear thread references after attempting to join
+        with self.lock:
+            self.connection_thread = None
+            self.replay_thread = None
+            self.data_processing_thread = None
+            self.auto_connect_thread = None
+            self.hub_connection = None
+            self.track_data_fetch_thread = None
+            logger.info(f"Session {sess_id_log}: All thread references cleared.")
+
+        # Close live data file if open
+        if self.live_data_file and not self.live_data_file.closed:
+            try:
+                self.live_data_file.close()
+                logger.info(f"Session {sess_id_log}: Closed live_data_file.")
+            except Exception as e:
+                logger.error(f"Session {sess_id_log}: Error closing live_data_file: {e}")
+            self.live_data_file = None
+
 
 # --- Global Session Management ---
 SESSIONS_STORE: Dict[str, SessionState] = {}  # Added type hint
@@ -278,7 +339,9 @@ def get_or_create_session_state(session_id: Optional[str] = None) -> Optional[Se
                 f"Session_id '{resolved_session_id}' not in SESSIONS_STORE. Creating new SessionState.")
             SESSIONS_STORE[resolved_session_id] = SessionState(
                 resolved_session_id)
-        return SESSIONS_STORE[resolved_session_id]
+        session = SESSIONS_STORE[resolved_session_id]
+        session.last_accessed_time = time.time() # Add this line to update time
+        return session
 
 
 def remove_session_state(session_id: str):

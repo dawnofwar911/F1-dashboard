@@ -15,7 +15,7 @@ import queue  # For queue.Empty
 from pathlib import Path
 import math
 from typing import Any, Optional, List, Dict
-# import re # Not used in the provided code
+import re # Added for regex
 
 # Import shared state and config
 import app_state  # For app_state.SessionState type hint and get_or_create_session_state if needed by callers
@@ -34,38 +34,63 @@ logger = logging.getLogger("F1App.Replay")  # Module-level logger
 def generate_live_filename_session(session_state: 'app_state.SessionState') -> str:
     """
     Generates a filename for live recording based on the given session's details.
-    Format: {year}-{circuit}-{session}.data.txt
+    Format: {year}-{circuit}-{session_type_short}_{timestamp}.data.txt
     """
     with session_state.lock:
         s_details = session_state.session_details
-        year = s_details.get('Year')
         
-        # --- START: CORRECTED KEY ACCESS ---
-        # Get the circuit name from the 'Meeting' dictionary
+        # Prioritize Year from session_details, fallback to StartDate
+        year = s_details.get('Year')
+        start_date_str = s_details.get('StartDate')
+        if year is None and start_date_str:
+            try:
+                year = datetime.datetime.fromisoformat(start_date_str.replace('Z', '+00:00')).year
+            except ValueError:
+                year = None
+
         circuit_name = s_details.get('Meeting', {}).get('Name')
-        # Get the session name from the 'Name' key
-        session_name = s_details.get('Name')
-        # --- END: CORRECTED KEY ACCESS ---
+        session_type_full = s_details.get('Type') # e.g., "Practice 1 (FP1)"
+        session_name_from_details = s_details.get('Name') # e.g., "Practice 1"
 
     sess_id_log = session_state.session_id[:8]
 
-    if not all([year, circuit_name, session_name]):
-        timestamp = datetime.datetime.now(
-            timezone.utc).strftime("%Y%m%d_%H%M%S%Z")
-        fallback_name = f"{config.LIVE_DATA_FILENAME_FALLBACK_PREFIX}_{timestamp}.data.txt"
+    # Determine the timestamp suffix
+    timestamp_dt = None
+    if start_date_str:
+        timestamp_dt = utils.parse_iso_timestamp_safe(start_date_str)
+    if timestamp_dt is None:
+        timestamp_dt = datetime.datetime.now(timezone.utc)
+    
+    timestamp_suffix = timestamp_dt.strftime("%Y%m%d_%H%M%SUTC") # Always UTC
+
+    # Extract short session type (e.g., FP1 from "Practice 1 (FP1)")
+    session_type_short = ""
+    if session_type_full:
+        match = re.search(r'\((.*?)\)', session_type_full)
+        if match:
+            session_type_short = match.group(1)
+        elif session_name_from_details: # Fallback to session name if no short type in parentheses
+            session_type_short = session_name_from_details
+        else:
+            session_type_short = session_type_full # Use full type if no other option
+    elif session_name_from_details:
+        session_type_short = session_name_from_details
+    
+    # Sanitize components
+    s_year = str(year) if year else "UnknownYear"
+    s_circuit = utils.sanitize_filename(str(circuit_name)) if circuit_name else "UnknownCircuit"
+    s_session_type = utils.sanitize_filename(str(session_type_short)) if session_type_short else "UnknownSession"
+
+    # Construct final filename
+    if not all([year, circuit_name, session_type_short]):
+        fallback_name = f"{config.LIVE_DATA_FILENAME_FALLBACK_PREFIX}_{timestamp_suffix}.data.txt"
         logger.warning(
-            f"Session {sess_id_log}: Missing details for structured filename (Year: {year}, Circuit: {circuit_name}, Session: {session_name}). "
+            f"Session {sess_id_log}: Missing details for structured filename (Year: {year}, Circuit: {circuit_name}, Session Type: {session_type_full}). "
             f"Using fallback: {fallback_name}"
         )
         return fallback_name
 
-    s_year = str(year)
-    s_circuit = utils.sanitize_filename(str(circuit_name))
-    s_session = utils.sanitize_filename(str(session_name))
-    
-    timestamp_suffix = datetime.datetime.now(
-        timezone.utc).strftime("%Y%m%d_%H%M%S%Z")
-    final_filename = f"{s_year}-{s_circuit}-{s_session}_{timestamp_suffix}.data.txt"
+    final_filename = f"{s_year}-{s_circuit}-{s_session_type}_{timestamp_suffix}.data.txt"
     logger.info(
         f"Session {sess_id_log}: Generated live filename: {final_filename}")
     return final_filename
@@ -113,53 +138,63 @@ def get_replay_files(directory: str) -> list:
 
 
 def init_live_file_session(session_state: 'app_state.SessionState') -> bool:
-    """Initializes the live data recording file for the given session using a temporary name."""
-    sess_id_log = session_state.session_id[:8]
-    with session_state.lock:
-        should_record = session_state.record_live_data
-
-    if not should_record:
-        logger.info(
-            f"Session {sess_id_log}: Live recording is disabled by preference. No file will be created.")
+    """
+    Initializes a recording file ONLY if global recording is enabled AND
+    this session is the designated global recorder session.
+    """
+    # Step 1: Check the global setting. If it's off, no one can record.
+    # This uses the new utility function to read from settings.json.
+    settings = utils.load_global_settings()
+    if not settings.get('record_live_sessions'):
+        # Log only if the session *thought* it should record, to reduce noise.
+        if "auto-recorder-" in session_state.session_id:
+             logger.info("Global recording is disabled in settings.json. Recorder will not start.")
         return False
 
+    # Step 2: Check if this session has the special recorder role.
+    is_recorder_session = "auto-recorder-" in session_state.session_id
+    
+    # Step 3: If it's a normal user session, deny permission to save.
+    if not is_recorder_session:
+        logger.debug(f"Session {session_state.session_id}: Global recording is active, but user sessions cannot save.")
+        return False
+
+    # Step 4: If we get here, it's the recorder session and the setting is ON.
+    # Proceed with recording. No lock files or temp files are needed.
+    sess_id_log = session_state.session_id[:8]
     ensure_replay_dir_exists()
     
-    # Generate a temporary filename based on the unique session ID
-    temp_filename = f"recording_temp_{session_state.session_id}.data.txt"
-    filepath = Path(config.TARGET_SAVE_DIRECTORY) / temp_filename
+    # Generate the final, descriptive filename directly.
+    final_filename = generate_live_filename_session(session_state)
+    filepath = Path(config.TARGET_SAVE_DIRECTORY) / final_filename
 
     try:
         with session_state.lock:
             if session_state.live_data_file and not session_state.live_data_file.closed:
-                logger.warning(
-                    f"Session {sess_id_log}: Closing previously open live data file: {session_state.current_recording_filename}")
+                logger.warning(f"Recorder {sess_id_log}: Closing previously open live data file.")
                 session_state.live_data_file.close()
 
             session_state.live_data_file = open(filepath, 'a', encoding='utf-8')
             session_state.is_saving_active = True
-            session_state.current_recording_filename = temp_filename # Store the temp name
+            session_state.current_recording_filename = final_filename
 
-            start_time_str = datetime.datetime.now(timezone.utc).strftime(
-                config.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
+            # Add the standard file header
+            start_time_str = datetime.datetime.now(timezone.utc).strftime(config.LOG_REPLAY_FILE_HEADER_TS_FORMAT)
             header_msg = f"{config.LOG_REPLAY_FILE_START_MSG_PREFIX}{start_time_str}\n"
-
             s_details = session_state.session_details
             s_details_for_header = {
                 'Year': s_details.get('Year'), 'CircuitName': s_details.get('CircuitName'),
                 'EventName': s_details.get('EventName'), 'SessionName': s_details.get('SessionName'),
-                'SessionType': s_details.get('Type'), 'SessionStartTimeUTC': s_details.get('SessionStartTimeUTC')
             }
             header_msg += f"# Recording for SessionID {sess_id_log}: {s_details_for_header}\n"
             session_state.live_data_file.write(header_msg)
             session_state.live_data_file.flush()
 
-        logger.info(
-            f"Session {sess_id_log}: Live data recording started. Saving to temporary file: {temp_filename}")
+        logger.info(f"Designated Recorder {sess_id_log}: Live data recording started. Saving to: {final_filename}")
         return True
+
     except Exception as e:
-        logger.error(
-            f"Session {sess_id_log}: Failed to initialize live recording file '{filepath.name}': {e}", exc_info=True)
+        logger.error(f"Recorder {sess_id_log}: Failed to initialize recording file '{filepath.name}': {e}", exc_info=True)
         with session_state.lock:
             session_state.live_data_file = None
             session_state.is_saving_active = False

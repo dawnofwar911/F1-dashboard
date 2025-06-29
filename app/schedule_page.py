@@ -9,7 +9,7 @@ import dash_bootstrap_components as dbc
 import pandas as pd
 import fastf1
 from fastf1.ergast import Ergast
-import datetime  # Use datetime directly
+from datetime import datetime, timedelta
 import pytz  # For timezone handling
 import logging
 from typing import List, Dict, Any, Optional  # For type hinting
@@ -22,6 +22,53 @@ import utils  # For parse_iso_timestamp_safe
 
 # --- Setup Logger for this Module ---
 logger = logging.getLogger("F1App.SchedulePage")
+
+def find_next_session_to_connect(lead_time_minutes: int) -> Optional[dict]:
+    """
+    Scans the full F1 schedule and finds the next upcoming session that is
+    within the connection lead time. Returns the session details dict or None.
+    """
+    full_schedule_data = get_current_year_schedule_with_sessions()
+    if not full_schedule_data:
+        return None
+
+    now_utc = datetime.now(pytz.utc)
+    next_session_to_connect = None
+    min_future_start_time = datetime.max.replace(tzinfo=pytz.utc)
+
+    for event in full_schedule_data:
+        event_official_name = event.get('OfficialEventName', event.get('EventName', 'Unknown Event'))
+        event_year = utils.parse_iso_timestamp_safe(event.get('EventDate')).year if event.get('EventDate') and utils.parse_iso_timestamp_safe(event.get('EventDate')) else now_utc.year
+        for session_detail in event.get('Sessions', []):
+            session_name = session_detail.get('SessionName')
+            session_date_utc_str = session_detail.get('SessionDateUTC')
+            if session_date_utc_str and session_name:
+                session_dt_utc = utils.parse_iso_timestamp_safe(session_date_utc_str)
+                if session_dt_utc and session_dt_utc > now_utc and session_dt_utc < min_future_start_time:
+                    min_future_start_time = session_dt_utc
+                    next_session_to_connect = {
+                        'event_name': event_official_name, 'session_name': session_name,
+                        'start_time_utc': session_dt_utc, 'year': event_year,
+                        'circuit_name': event.get('Location', "N/A"), 'circuit_key': event.get('CircuitKey'),
+                        'session_type': utils.determine_session_type_from_name(session_name),
+                        'unique_id': f"{event_year}_{event_official_name}_{session_name}",
+                        'SessionKey': session_detail.get('SessionKey'),
+                        'SessionInfo': session_detail, # Pass the whole dict for flexibility
+                    }
+
+    if next_session_to_connect:
+        time_to_session = next_session_to_connect['start_time_utc'] - now_utc
+        # Check if the found session is within the lead time window
+        if time_to_session.total_seconds() <= (lead_time_minutes * 60) and time_to_session.total_seconds() > -300: # Ensure it's not too far in the past
+            return next_session_to_connect
+            
+    return None
+    
+def is_session_over(session_start_time: datetime, duration_hours: int = 3) -> bool:
+    """Checks if a session is likely over based on its start time and a duration."""
+    if not session_start_time:
+        return True
+    return datetime.now(pytz.utc) > (session_start_time + timedelta(hours=duration_hours))
 
 def get_championship_standings(year: int) -> list:
     """
@@ -82,7 +129,7 @@ def get_current_year_schedule_with_sessions(year: Optional[int] = None) -> List[
     FastF1's own cache should be enabled globally (e.g., in main.py).
     """
     if year is None:
-        year = datetime.datetime.now().year
+        year = datetime.now().year
 
     logger.info(
         f"Executing get_current_year_schedule_with_sessions for year: {year} (Cache key: {year})")
@@ -214,7 +261,7 @@ def calculate_countdown(target_utc_iso_str: Optional[str]):
         if not target_dt_utc:
             return 0, 0, 0, 0, True, "Invalid Target Date"
 
-        now_utc = datetime.datetime.now(pytz.utc)
+        now_utc = datetime.now(pytz.utc)
         delta = target_dt_utc - now_utc
 
         if delta.total_seconds() < 0:
@@ -322,7 +369,7 @@ def display_f1_schedule_callback(schedule_data: Optional[List[Dict[str, Any]]], 
         return dbc.Alert("Schedule data is loading or unavailable.", color="warning", className="mt-3 text-center")
 
     accordion_items = []
-    now_utc = datetime.datetime.now(pytz.utc)
+    now_utc = datetime.now(pytz.utc)
     first_upcoming_event_idx = -1
 
     def get_event_sort_key(event_dict):
@@ -330,8 +377,8 @@ def display_f1_schedule_callback(schedule_data: Optional[List[Dict[str, Any]]], 
         date_str = event_dict.get('EventDate')
         if date_str:
             dt = utils.parse_iso_timestamp_safe(date_str)
-            return dt if dt else datetime.datetime.max.replace(tzinfo=pytz.utc)
-        return datetime.datetime.max.replace(tzinfo=pytz.utc)
+            return dt if dt else datetime.max.replace(tzinfo=pytz.utc)
+        return datetime.max.replace(tzinfo=pytz.utc)
 
     try:
         sorted_schedule_data = sorted(schedule_data, key=get_event_sort_key)
@@ -370,7 +417,7 @@ def display_f1_schedule_callback(schedule_data: Optional[List[Dict[str, Any]]], 
             if last_session_dt_utc_for_event < now_utc:
                 event_status = "Completed"
                 item_class_name += " event-completed opacity-75"
-            elif first_session_dt_utc_for_event <= now_utc <= (last_session_dt_utc_for_event + datetime.timedelta(hours=getattr(config, 'FASTF1_ONGOING_SESSION_WINDOW_HOURS', 3))):
+            elif first_session_dt_utc_for_event <= now_utc <= (last_session_dt_utc_for_event + timedelta(hours=getattr(config, 'FASTF1_ONGOING_SESSION_WINDOW_HOURS', 3))):
                 event_status = "Ongoing"
                 item_class_name += " event-ongoing"
                 if first_upcoming_event_idx == -1:
@@ -387,7 +434,7 @@ def display_f1_schedule_callback(schedule_data: Optional[List[Dict[str, Any]]], 
                 event_header_date_str = format_session_time_local(
                     event_date_utc.isoformat(), user_timezone_str).split(' - ')[0]
                 # Rough completed
-                if event_date_utc < now_utc - datetime.timedelta(days=3):
+                if event_date_utc < now_utc - timedelta(days=3):
                     event_status = "Completed"
                     item_class_name += " event-completed opacity-75"
                 else:
@@ -490,10 +537,10 @@ def update_countdowns_callback(n_intervals: int, schedule_data: Optional[List[Di
                 loading_name, loading_text, loading_datetime,
                 False)  # Keep interval enabled
 
-    now_utc = datetime.datetime.now(pytz.utc)
-    next_overall_session_info = {'dt': datetime.datetime.max.replace(
+    now_utc = datetime.now(pytz.utc)
+    next_overall_session_info = {'dt': datetime.max.replace(
         tzinfo=pytz.utc), 'name': None, 'event': None, 'iso': None}
-    next_race_session_info = {'dt': datetime.datetime.max.replace(
+    next_race_session_info = {'dt': datetime.max.replace(
         tzinfo=pytz.utc), 'name': None, 'event': None, 'iso': None}
 
     for event in schedule_data:

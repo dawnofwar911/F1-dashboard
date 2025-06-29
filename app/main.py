@@ -31,42 +31,6 @@ import schedule_page
 
 from layout import main_app_layout
 
-# --- Logging Setup (from your previous main.py) ---
-
-def setup_logging():
-    log_formatter = logging.Formatter(config.LOG_FORMAT_DEFAULT)
-    actual_root_logger = logging.getLogger()
-    actual_root_logger.setLevel(logging.INFO)
-    if actual_root_logger.hasHandlers():
-        actual_root_logger.handlers.clear()
-    root_console_handler = logging.StreamHandler(sys.stdout)
-    root_console_handler.setFormatter(log_formatter)
-    actual_root_logger.addHandler(root_console_handler)
-
-    f1_app_logger = logging.getLogger("F1App")
-    f1_app_logger.setLevel(logging.INFO)
-    f1_app_logger.propagate = True
-
-    # Logger for per-session auto-connect (will be dynamically named)
-    # For general auto-connect config/module logging:
-    logging.getLogger("F1App.AutoConnect").setLevel(logging.DEBUG)
-    logging.getLogger("F1App.SessionID").setLevel(logging.INFO)
-
-    logging.getLogger("SignalRCoreClient").setLevel(logging.WARNING)
-    logging.getLogger("signalrcore").setLevel(logging.WARNING)
-
-    werkzeug_logger = logging.getLogger('werkzeug')
-    werkzeug_logger.setLevel(
-        logging.ERROR if not config.DASH_DEBUG_MODE else logging.INFO)
-    werkzeug_logger.propagate = True
-    if werkzeug_logger.hasHandlers():
-        werkzeug_logger.handlers.clear()
-
-    logging.getLogger('requests').setLevel(logging.WARNING)
-    logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('fastf1').setLevel(logging.INFO)
-
-
 # --- Initialize FastF1 Cache (from your previous main.py) ---
 if hasattr(config, 'FASTF1_CACHE_DIR') and config.FASTF1_CACHE_DIR:
     try:
@@ -107,10 +71,130 @@ app.clientside_callback(
     Input('url', 'pathname'),
 )
 
-# --- Target function for per-session auto-connect threads ---
+def global_auto_recorder_service():
+    """
+    A background service that checks the F1 schedule, updates a global
+    status variable, and automatically records live sessions if enabled.
+    """
+    logger_recorder = logging.getLogger("F1App.AutoRecorder")
+    logger_recorder.info("Global Auto-Recorder service started.")
+   
+    from callbacks import main_controls
+
+    first_check = True
+    while True:
+        if first_check:
+            time.sleep(1) # Initial quick check
+            first_check = False
+        else:
+            time.sleep(60) # Check every 60 seconds
+        
+        current_live_info = None
+        with app_state.CURRENT_LIVE_SESSION_INFO_LOCK:
+            current_live_info = app_state.CURRENT_LIVE_SESSION_INFO
+
+        # --- Step A: Check if the currently tracked session is over ---
+        if current_live_info:
+            # We need to parse the start time from the dictionary
+            session_start_time = utils.parse_iso_timestamp_safe(current_live_info.get('start_time_utc'))
+            
+            # Check if 3 hours have passed since the session started
+            if schedule_page.is_session_over(session_start_time):
+                logger_recorder.info(f"Session '{current_live_info.get('unique_id')}' is over. Clearing global status.")
+                with app_state.CURRENT_LIVE_SESSION_INFO_LOCK:
+                    app_state.CURRENT_LIVE_SESSION_INFO = None
+                continue # Restart the loop
+
+        # --- Step B: If no session is live, scan for the next one ---
+        if not current_live_info:
+            settings = utils.load_global_settings()
+            if not settings.get('record_live_sessions'):
+                continue
+
+            try:
+                next_session = schedule_page.find_next_session_to_connect(
+                    lead_time_minutes=config.AUTO_CONNECT_LEAD_TIME_MINUTES
+                )
+
+                if next_session:
+                    # Found a new session! Update global status and start recorder.
+                    with app_state.CURRENT_LIVE_SESSION_INFO_LOCK:
+                        app_state.CURRENT_LIVE_SESSION_INFO = next_session
+                    
+                    session_key = next_session.get('SessionKey')
+                    if not session_key: continue
+                    
+                    recorder_session_id = f"auto-recorder-{session_key}"
+                    existing_recorder_session = app_state.get_session_state(recorder_session_id)
+                    if existing_recorder_session:
+                        # Check if any of its threads are still alive
+                        any_thread_alive = False
+                        with existing_recorder_session.lock: # Acquire lock to safely access thread objects
+                            if existing_recorder_session.connection_thread and existing_recorder_session.connection_thread.is_alive():
+                                any_thread_alive = True
+                            elif existing_recorder_session.replay_thread and existing_recorder_session.replay_thread.is_alive():
+                                any_thread_alive = True
+                            elif existing_recorder_session.data_processing_thread and existing_recorder_session.data_processing_thread.is_alive():
+                                any_thread_alive = True
+                            elif existing_recorder_session.auto_connect_thread and existing_recorder_session.auto_connect_thread.is_alive():
+                                any_thread_alive = True
+                            elif existing_recorder_session.track_data_fetch_thread and existing_recorder_session.track_data_fetch_thread.is_alive():
+                                any_thread_alive = True
+
+                        if any_thread_alive:
+                            logger_recorder.info(f"Recorder session {recorder_session_id[:8]} already exists and its threads are alive. Skipping.")
+                            continue # Skip if an active recorder session already exists
+                        else:
+                            logger_recorder.warning(f"Stale recorder session {recorder_session_id[:8]} found (no active threads). Removing it. Attempting to create new one.")
+                            app_state.remove_session_state(recorder_session_id) # Remove the stale one
+
+                    logger_recorder.info(f"Time to connect for {next_session.get('session_name')}. Starting recorder session.")
+                    recorder_session_state = app_state.get_or_create_session_state(recorder_session_id)
+                    
+                    if recorder_session_state:
+                        with recorder_session_state.lock:
+                            recorder_session_state.session_details.update(next_session['SessionInfo'])
+                        main_controls.start_live_connection(recorder_session_state, trigger_source="global_auto_recorder")
+                    else:
+                        logger_recorder.error(f"Failed to get or create session state for {recorder_session_id[:8]}. Cannot start recorder.")
+
+            except Exception as e:
+                logger_recorder.error(f"Error in auto-recorder service scan: {e}", exc_info=True)
+
+
+def session_garbage_collector():
+    """A background thread to remove stale sessions."""
+    while True:
+        time.sleep(config.SESSION_CLEANUP_INTERVAL_MINUTES * 60)
+
+        stale_sessions = []
+        timeout_seconds = config.SESSION_TIMEOUT_HOURS * 3600
+
+        with app_state.SESSIONS_STORE_LOCK:
+            for session_id, session in app_state.SESSIONS_STORE.items():
+                if (time.time() - session.last_accessed_time) > timeout_seconds:
+                    stale_sessions.append(session_id)
+
+        if stale_sessions:
+            logging.info(f"Garbage Collector: Found {len(stale_sessions)} stale sessions. Removing them.")
+            for session_id in stale_sessions:
+                # Here we call the existing cleanup function
+                app_state.remove_session_state(session_id)
 
 # --- Shutdown Hook (Updated for per-session auto_connect_thread) ---
 
+
+def _join_thread(logger, session_id, thread_name, thread_obj):
+    if thread_obj and thread_obj.is_alive():
+        logger.info(
+            f"Session {session_id}: Waiting for {thread_name} thread ({thread_obj.name}) to join...")
+        thread_obj.join(timeout=5.0)
+        if thread_obj.is_alive():
+            logger.warning(
+                f"Session {session_id}: Thread {thread_obj.name} did not exit cleanly.")
+        else:
+            logger.info(
+                f"Session {session_id}: Thread {thread_obj.name} joined successfully.")
 
 def shutdown_application():
     logger_shutdown = logging.getLogger("F1App.Main.Shutdown")
@@ -128,25 +212,17 @@ def shutdown_application():
         if session_state:
             logger_shutdown.info(f"Cleaning up session: {session_id}...")
             with session_state.lock:
-                session_state.stop_event.set()  # Signal all threads for this session
+                session_state.stop_event.set()
 
-                threads_to_join = []
-                if session_state.connection_thread and session_state.connection_thread.is_alive():
-                    threads_to_join.append(
-                        ("SignalR Connection", session_state.connection_thread))
-                if session_state.replay_thread and session_state.replay_thread.is_alive():
-                    threads_to_join.append(
-                        ("Replay", session_state.replay_thread))
-                if session_state.data_processing_thread and session_state.data_processing_thread.is_alive():
-                    threads_to_join.append(
-                        ("Data Processing", session_state.data_processing_thread))
-                if session_state.auto_connect_thread and session_state.auto_connect_thread.is_alive():  # ADDED
-                    threads_to_join.append(
-                        ("Auto-Connect Monitor", session_state.auto_connect_thread))
-                if session_state.track_data_fetch_thread and session_state.track_data_fetch_thread.is_alive(): # NEW
-                    threads_to_join.append(
-                        ("Track Data Fetch", session_state.track_data_fetch_thread))
-                if session_state.hub_connection:  # Attempt to stop hub directly if part of this session's state
+                threads_to_join = [
+                    ("SignalR Connection", session_state.connection_thread),
+                    ("Replay", session_state.replay_thread),
+                    ("Data Processing", session_state.data_processing_thread),
+                    ("Auto-Connect Monitor", session_state.auto_connect_thread),
+                    ("Track Data Fetch", session_state.track_data_fetch_thread),
+                ]
+
+                if session_state.hub_connection:
                     try:
                         logger_shutdown.debug(
                             f"Session {session_id}: Attempting to stop session's hub_connection directly.")
@@ -156,23 +232,15 @@ def shutdown_application():
                             f"Session {session_id}: Error stopping session's hub_connection: {e_hub_stop}")
 
             for thread_name, thread_obj in threads_to_join:
-                logger_shutdown.info(
-                    f"Session {session_id}: Waiting for {thread_name} thread ({thread_obj.name}) to join...")
-                thread_obj.join(timeout=5.0)  # Standard timeout
-                if thread_obj.is_alive():
-                    logger_shutdown.warning(
-                        f"Session {session_id}: Thread {thread_obj.name} did not exit cleanly.")
-                else:
-                    logger_shutdown.info(
-                        f"Session {session_id}: Thread {thread_obj.name} joined successfully.")
+                _join_thread(logger_shutdown, session_id, thread_name, thread_obj)
 
-            with session_state.lock:  # Re-acquire lock to nullify handles and close files
+            with session_state.lock:
                 session_state.connection_thread = None
                 session_state.replay_thread = None
                 session_state.data_processing_thread = None
                 session_state.auto_connect_thread = None
                 session_state.hub_connection = None
-                session_state.track_data_fetch_thread = None #
+                session_state.track_data_fetch_thread = None
 
                 if session_state.live_data_file and not session_state.live_data_file.closed:
                     try:
@@ -182,7 +250,7 @@ def shutdown_application():
                     except Exception as e:
                         logger_shutdown.error(
                             f"Session {session_id}: Error closing live_data_file: {e}")
-                session_state.live_data_file = None  # Ensure it's cleared
+                session_state.live_data_file = None
 
     with app_state.SESSIONS_STORE_LOCK:
         if app_state.SESSIONS_STORE:  # Only log if there was something to clear
@@ -196,7 +264,7 @@ def shutdown_application():
 
 # --- Module Level Execution ---
 faulthandler.enable()
-setup_logging()  # Call your logging setup
+utils.setup_logging()  # Call your logging setup
 logger_main_module = logging.getLogger("F1App.Main.ModuleLevel")
 
 logger_main_module.info(
@@ -212,10 +280,26 @@ if hasattr(config, 'REPLAY_DIR') and config.REPLAY_DIR:
             f"Could not create replay directory {config.REPLAY_DIR}: {e}")
 
 atexit.register(shutdown_application)
+logger_main_module.info("Session-aware shutdown handler registered.")
 
+# Start the cache warmer thread
 threading.Thread(target=warm_up_schedule_cache, daemon=True, name="ScheduleCacheWarmer").start()
 
-logger_main_module.info("Session-aware shutdown handler registered.")
+def start_background_services():
+    logger_main_module.info("Starting background services (Garbage Collector and Auto-Recorder)...")
+
+    global cleanup_thread, recorder_thread # Declare as global if they are accessed outside this function
+    cleanup_thread = threading.Thread(target=session_garbage_collector, daemon=True, name="SessionGarbageCollector")
+    cleanup_thread.start()
+
+    recorder_thread = threading.Thread(target=global_auto_recorder_service, daemon=True, name="GlobalAutoRecorder")
+    recorder_thread.start()
+
+    logger_main_module.info("Background services started.")
+
+# Start background services at the module level
+start_background_services()
+
 logger_main_module.info(
     f"To run with Waitress/Gunicorn, target this 'server' object: app_instance.server")
 

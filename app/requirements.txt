@@ -24,8 +24,9 @@ fastf1
 # For geometric operations (used in utils.py for track data)
 Shapely
 
-# For Development Server
+# For Development/Production Server
 waitress
+gunicorn
 
 # for cacheing
 cachetools>=4.0.0,<6.0.0
