@@ -30,6 +30,7 @@ from app import replay
 from app import schedule_page
 
 from app.layout import main_app_layout
+from app.shutdown import controlled_shutdown # Import the new shutdown function
 
 # --- Initialize FastF1 Cache (from your previous main.py) ---
 if hasattr(settings, 'FASTF1_CACHE_DIR') and settings.FASTF1_CACHE_DIR:
@@ -181,87 +182,6 @@ def session_garbage_collector():
                 # Here we call the existing cleanup function
                 app_state.remove_session_state(session_id)
 
-# --- Shutdown Hook (Updated for per-session auto_connect_thread) ---
-
-
-def _join_thread(logger, session_id, thread_name, thread_obj):
-    if thread_obj and thread_obj.is_alive():
-        logger.info(
-            f"Session {session_id}: Waiting for {thread_name} thread ({thread_obj.name}) to join...")
-        thread_obj.join(timeout=5.0)
-        if thread_obj.is_alive():
-            logger.warning(
-                f"Session {session_id}: Thread {thread_obj.name} did not exit cleanly.")
-        else:
-            logger.info(
-                f"Session {session_id}: Thread {thread_obj.name} joined successfully.")
-
-def shutdown_application():
-    logger_shutdown = logging.getLogger("F1App.Main.Shutdown")
-    logger_shutdown.info(
-        "Initiating application shutdown sequence via atexit...")
-
-    active_session_ids = []
-    with app_state.SESSIONS_STORE_LOCK:
-        active_session_ids = list(app_state.SESSIONS_STORE.keys())
-    logger_shutdown.info(
-        f"Found {len(active_session_ids)} active session(s) to clean up.")
-
-    for session_id in active_session_ids:
-        session_state = app_state.get_session_state(session_id)
-        if session_state:
-            logger_shutdown.info(f"Cleaning up session: {session_id}...")
-            with session_state.lock:
-                session_state.stop_event.set()
-
-                threads_to_join = [
-                    ("SignalR Connection", session_state.connection_thread),
-                    ("Replay", session_state.replay_thread),
-                    ("Data Processing", session_state.data_processing_thread),
-                    ("Auto-Connect Monitor", session_state.auto_connect_thread),
-                    ("Track Data Fetch", session_state.track_data_fetch_thread),
-                ]
-
-                if session_state.hub_connection:
-                    try:
-                        logger_shutdown.debug(
-                            f"Session {session_id}: Attempting to stop session's hub_connection directly.")
-                        session_state.hub_connection.stop()
-                    except Exception as e_hub_stop:
-                        logger_shutdown.error(
-                            f"Session {session_id}: Error stopping session's hub_connection: {e_hub_stop}")
-
-            for thread_name, thread_obj in threads_to_join:
-                _join_thread(logger_shutdown, session_id, thread_name, thread_obj)
-
-            with session_state.lock:
-                session_state.connection_thread = None
-                session_state.replay_thread = None
-                session_state.data_processing_thread = None
-                session_state.auto_connect_thread = None
-                session_state.hub_connection = None
-                session_state.track_data_fetch_thread = None
-
-                if session_state.live_data_file and not session_state.live_data_file.closed:
-                    try:
-                        session_state.live_data_file.close()
-                        logger_shutdown.info(
-                            f"Session {session_id}: Closed live_data_file.")
-                    except Exception as e:
-                        logger_shutdown.error(
-                            f"Session {session_id}: Error closing live_data_file: {e}")
-                session_state.live_data_file = None
-
-    with app_state.SESSIONS_STORE_LOCK:
-        if app_state.SESSIONS_STORE:  # Only log if there was something to clear
-            app_state.SESSIONS_STORE.clear()
-            logger_shutdown.info("Cleared all sessions from SESSIONS_STORE.")
-        else:
-            logger_shutdown.info("SESSIONS_STORE was already empty.")
-
-    logger_shutdown.info("Application shutdown sequence complete.")
-
-
 # --- Module Level Execution ---
 faulthandler.enable()
 utils.setup_logging()  # Call your logging setup
@@ -279,8 +199,9 @@ if hasattr(settings, 'REPLAY_DIR') and settings.REPLAY_DIR:
         logger_main_module.error(
             f"Could not create replay directory {settings.REPLAY_DIR}: {e}")
 
-atexit.register(shutdown_application)
-logger_main_module.info("Session-aware shutdown handler registered.")
+# Registering the controlled shutdown for production environments (like Gunicorn/Waitress)
+# For local development, the finally block in __main__ is more reliable.
+# atexit.register(controlled_shutdown)
 
 # Start the cache warmer thread
 threading.Thread(target=warm_up_schedule_cache, daemon=True, name="ScheduleCacheWarmer").start()
@@ -298,11 +219,16 @@ def start_background_services():
     logger_main_module.info("Background services started.")
 
 # Start background services at the module level
+# When testing with pytest, we don't want these running in the background.
 if os.environ.get('F1_DASHBOARD_IS_TESTING') != 'True':
     start_background_services()
-    
+
+# When running with Gunicorn, a gunicorn.conf.py file is used to hook into the
+# worker_exit signal to call the controlled_shutdown function.
+# When running locally, the try...finally block in __main__ handles the shutdown.
 logger_main_module.info(
     f"To run with Waitress/Gunicorn, target this 'server' object: app_instance.server")
+
 
 
 # --- Main Execution Logic (for direct `python main.py` run) ---
@@ -323,9 +249,12 @@ if __name__ == '__main__':
         )
     except KeyboardInterrupt:
         logger_main_module.info(
-            "KeyboardInterrupt detected in development server. Shutdown will be handled by atexit.")
+            "KeyboardInterrupt detected in development server. Initiating shutdown...")
     except Exception as main_err:
         logger_main_module.error(
             f"Critical error during development server run: {main_err}", exc_info=True)
-
-    logger_main_module.info("Development server has finished.")
+    finally:
+        # This ensures a clean shutdown when running locally
+        logger_main_module.info("Development server is stopping. Running controlled shutdown.")
+        controlled_shutdown()
+        logger_main_module.info("Development server has finished.")
