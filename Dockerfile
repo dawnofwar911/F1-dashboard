@@ -5,27 +5,27 @@ FROM python:3.10-slim
 # Set the working directory in the container
 WORKDIR /usr/src/app
 
-# Install git
-# This is necessary for pip to install packages from git repositories
-RUN apt-get update &&     apt-get install -y git --no-install-recommends &&     rm -rf /var/lib/apt/lists/*
+# Install git, needed for some pip installations from git repos
+RUN apt-get update && \
+    apt-get install -y git --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container at /usr/src/app
+# Copy the requirements file first to leverage Docker layer caching.
+# This way, dependencies are only re-installed when requirements.txt changes.
 COPY app/requirements.txt .
 
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application's code into the container at /usr/src/app/app
-COPY app/ app/
-
-# Ensure the 'replays' directory exists
-RUN mkdir -p app/replays 
+# Now copy the rest of the application code and config
+COPY gunicorn.conf.py .
+COPY app/ ./app/
 
 # Make port 8050 available to the world outside this container
 EXPOSE 8050
 
-# Define environment variable
+# Define environment variable for unbuffered python output
 ENV PYTHONUNBUFFERED=1
 
-# Run main.py with the recommended threaded Gunicorn server using the config file
+# Run main.py with the Gunicorn server using our config file
 CMD ["gunicorn", "-c", "gunicorn.conf.py", "app.main:server"]
